@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+
+# 运行数据（宿主目录约定见 docs/08）
+data/
+logs/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# 临时与本地
+.tmp/
+.research/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
