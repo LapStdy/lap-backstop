@@ -4,8 +4,8 @@
 
 ## P0：契约与内核
 
-- [ ] contracts/：manifest schema、RunContext、能力协议、VerificationPolicy、事件类型、Verdict/Evidence、错误码。
 - [ ] 契约单一真源校验：docs/05 与 contracts/ 一份定义，02/03/09 只引用。
+- [ ] pre-commit 钩子跑 `scripts/gate.py`，钩子失败不允许提交。
 - [ ] core/scheduler：持久化 next_run、cron/at/interval、补跑、合并、优先级、deadline。
 - [ ] core/jobs：JobRun 状态机、队列、attempt、取消、幂等键。
 - [ ] core/environments：环境状态机、probe、prepare、reset、cleanup、保温。

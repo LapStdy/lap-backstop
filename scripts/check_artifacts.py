@@ -15,6 +15,7 @@
     1  有高风险命中（--strict 下任意命中即 1）
     2  参数或环境错误
 """
+
 from __future__ import annotations
 
 import argparse
@@ -35,6 +36,7 @@ FENCE = chr(96) * 3
 
 # ---------------------------------------------------------------- 规则
 
+
 @dataclass(frozen=True)
 class Rule:
     rid: str
@@ -48,68 +50,98 @@ class Rule:
 
 RULES = [
     Rule(
-        "history_high", "high", ("doc",),
+        "history_high",
+        "high",
+        ("doc",),
         "历史渗入：写进了旧版本或变更说明",
         "读者不需要知道以前是什么。这句话只对「刚和你聊过天的人」有意义，而交付物的读者是陌生人。",
         "删掉这句；旧版本归提交说明、CHANGELOG 或 archive/ 管。",
-        re.compile(r"(已(改为|更新为|调整为|修正为|改成|删掉|移除)|上一版|旧版(?:是|为|中|里|的)|"
-                   r"(变更|更新|修订|修改)(记录|说明|日志|历史))"),
+        re.compile(
+            r"(已(改为|更新为|调整为|修正为|改成|删掉|移除)|上一版|旧版(?:是|为|中|里|的)|"
+            r"(变更|更新|修订|修改)(记录|说明|日志|历史))"
+        ),
     ),
     Rule(
-        "history_mid", "mid", ("doc",),
+        "history_mid",
+        "mid",
+        ("doc",),
         "历史渗入：拿「原来」作参照",
         "用「原来」来铺垫，等于把读者拉进你上一次的上下文。",
         "改写成现状陈述；确实需要对比时，放迁移说明或 CHANGELOG。",
-        re.compile(r"((原先|原来|原本)(是|的|版本|方案|设计|实现|只|有)|"
-                   r"之前版本|与之前不同|不同于之前|以前(是|的)|"
-                   r"本次(修改|更新|变更|调整|改动)|这次(的)?改动)"),
+        re.compile(
+            r"((原先|原来|原本)(是|的|版本|方案|设计|实现|只|有)|"
+            r"之前版本|与之前不同|不同于之前|以前(是|的)|"
+            r"本次(修改|更新|变更|调整|改动)|这次(的)?改动)"
+        ),
     ),
     Rule(
-        "placeholder_ui", "high", ("ui",),
+        "placeholder_ui",
+        "high",
+        ("ui",),
         "界面文案里有施工字",
         "界面读者是没参与施工的陌生人。「待定/此处/占位」是给施工队看的告示。",
         "换成用户看得懂的话；没内容就不放这一行。",
-        re.compile(r"(待定|待补|待确认|待核实|此处(待|显示|放|填|插入)|占位|"
-                   r"TODO|TBD|FIXME|暂未实现|后续(再)?补充|临时(方案|处理|占位)|先这样)"),
+        re.compile(
+            r"(待定|待补|待确认|待核实|此处(待|显示|放|填|插入)|占位|"
+            r"TODO|TBD|FIXME|暂未实现|后续(再)?补充|临时(方案|处理|占位)|先这样)"
+        ),
     ),
     Rule(
-        "placeholder_doc", "mid", ("doc",),
+        "placeholder_doc",
+        "mid",
+        ("doc",),
         "文档里有占位/待办字",
         "「待定/待补」是工作状态，不是内容。它会让读者以为这份文档还没写完。",
         "写完再发；确实要留空就删掉整段，把待办放进任务清单。",
-        re.compile(r"(待定|待补充?|待确认|待核实|此处(待|显示|放|填|插入)|占位|"
-                   r"TODO|TBD|FIXME|暂未实现|后续(再)?补充|临时(方案|处理|占位)|先这样)"),
+        re.compile(
+            r"(待定|待补充?|待确认|待核实|此处(待|显示|放|填|插入)|占位|"
+            r"TODO|TBD|FIXME|暂未实现|后续(再)?补充|临时(方案|处理|占位)|先这样)"
+        ),
     ),
     Rule(
-        "placeholder_comment", "low", ("comment",),
+        "placeholder_comment",
+        "low",
+        ("comment",),
         "注释里有占位字",
         "TODO/FIXME 属于任务清单，不属于代码；它会永远留在那里。",
         "能在本轮做完就做完；做不完记进任务清单并删掉这一行。",
         re.compile(r"(TODO|FIXME|TBD|待定|待补|占位|XXX)"),
     ),
     Rule(
-        "memo_doc", "mid", ("doc",),
+        "memo_doc",
+        "mid",
+        ("doc",),
         "文档里有备忘口吻",
         "「记一下/回头再改」是写给自己的字条，收件人不是读者。",
         "删掉；要留就去任务清单或交接账本。",
-        re.compile(r"(备忘|记一下|提醒自己|回头(再)?(改|补|看)|以后再说|"
-                   r"先放着|暂时先这样|此处备注)"),
+        re.compile(
+            r"(备忘|记一下|提醒自己|回头(再)?(改|补|看)|以后再说|"
+            r"先放着|暂时先这样|此处备注)"
+        ),
     ),
     Rule(
-        "chat_doc", "mid", ("doc",),
+        "chat_doc",
+        "mid",
+        ("doc",),
         "文档里有聊天腔",
         "「刚才/接下来我/你说过」默认读者和你共享上下文，而读者没有。",
         "改成第三人称的现状陈述。",
-        re.compile(r"(刚才我|你刚才|你说过|接下来我|我把它|我这边|"
-                   r"更正一下|上面说错|你说的)"),
+        re.compile(
+            r"(刚才我|你刚才|你说过|接下来我|我把它|我这边|"
+            r"更正一下|上面说错|你说的)"
+        ),
     ),
     Rule(
-        "comment_changelog", "mid", ("comment",),
+        "comment_changelog",
+        "mid",
+        ("comment",),
         "注释在讲改动",
         "注释该说「为什么这么写」；「改成/原来是/修正」是在讲过程，代码读起来会像日记。",
         "删掉过程，只留原因；改动由版本历史回答。",
-        re.compile(r"((之前|原来|原先|以前)(是|的|会|只)|改为|改成|调整为|"
-                   r"删掉|移除|修正|修复\s*#\d+)"),
+        re.compile(
+            r"((之前|原来|原先|以前)(是|的|会|只)|改为|改成|调整为|"
+            r"删掉|移除|修正|修复\s*#\d+)"
+        ),
     ),
 ]
 
@@ -119,26 +151,105 @@ LEVEL_NAME = {"high": "高", "mid": "中", "low": "低"}
 # ---------------------------------------------------------------- 文件分类
 
 DOC_EXT = {".md", ".mdx", ".txt", ".rst", ".adoc"}
-CODE_EXT = {".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue",
-            ".java", ".go", ".rs", ".cs", ".cpp", ".cc", ".c", ".h", ".hpp",
-            ".rb", ".php", ".swift", ".kt", ".kts", ".lua", ".sh", ".ps1",
-            ".bat", ".cmd"}
-UI_EXT = {".html", ".htm", ".vue", ".tsx", ".jsx", ".xaml", ".axaml",
-          ".resx", ".properties", ".strings", ".po", ".pot"}
+CODE_EXT = {
+    ".py",
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".vue",
+    ".java",
+    ".go",
+    ".rs",
+    ".cs",
+    ".cpp",
+    ".cc",
+    ".c",
+    ".h",
+    ".hpp",
+    ".rb",
+    ".php",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".lua",
+    ".sh",
+    ".ps1",
+    ".bat",
+    ".cmd",
+}
+UI_EXT = {
+    ".html",
+    ".htm",
+    ".vue",
+    ".tsx",
+    ".jsx",
+    ".xaml",
+    ".axaml",
+    ".resx",
+    ".properties",
+    ".strings",
+    ".po",
+    ".pot",
+}
 DATA_EXT = {".json", ".yaml", ".yml"}
 
-LOCALE_HINTS = ("locale", "locales", "i18n", "lang", "langs",
-                "translation", "translations", "messages", "strings")
+LOCALE_HINTS = (
+    "locale",
+    "locales",
+    "i18n",
+    "lang",
+    "langs",
+    "translation",
+    "translations",
+    "messages",
+    "strings",
+)
 
-EXEMPT_DIRS = {".git", "node_modules", "dist", "build", "out", "target",
-               ".venv", "venv", "__pycache__", "archive", "handoff",
-               ".dsh-memory", ".tmp", ".pytest_cache", ".mypy_cache",
-               ".ruff_cache", ".idea", ".vscode", "coverage", ".next",
-               "expected", "golden", "snapshots"}
+EXEMPT_DIRS = {
+    ".git",
+    "node_modules",
+    "dist",
+    "build",
+    "out",
+    "target",
+    ".venv",
+    "venv",
+    "__pycache__",
+    "archive",
+    "handoff",
+    ".dsh-memory",
+    ".tmp",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".idea",
+    ".vscode",
+    "coverage",
+    ".next",
+    "expected",
+    "golden",
+    "snapshots",
+}
 
-EXEMPT_GLOBS = ("CHANGELOG*", "CHANGES*", "HISTORY*", "NEWS*", "RELEASE*",
-                "HANDOFF*", "CONTINUE*", "*迁移*", "*migration*", "LICENSE*",
-                "*.lock", "*.min.js", "*.map", "*.log")
+EXEMPT_GLOBS = (
+    "CHANGELOG*",
+    "CHANGES*",
+    "HISTORY*",
+    "NEWS*",
+    "RELEASE*",
+    "HANDOFF*",
+    "CONTINUE*",
+    "*迁移*",
+    "*migration*",
+    "LICENSE*",
+    "*.lock",
+    "*.min.js",
+    "*.map",
+    "*.log",
+)
 
 EXEMPT_MARK_FILE = "artifact-check: off"
 EXEMPT_MARK_LINE = "artifact-check: ignore"
@@ -165,9 +276,30 @@ def is_exempt(path: Path) -> bool:
 # ---------------------------------------------------------------- 行内处理
 
 HASH_LANGS = {".py", ".rb", ".sh", ".ps1", ".yml", ".yaml", ".toml", ".cfg", ".ini"}
-SLASH_LANGS = {".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".vue", ".java",
-               ".go", ".rs", ".cs", ".cpp", ".cc", ".c", ".h", ".hpp",
-               ".php", ".swift", ".kt", ".kts", ".scss", ".css"}
+SLASH_LANGS = {
+    ".js",
+    ".mjs",
+    ".cjs",
+    ".ts",
+    ".tsx",
+    ".jsx",
+    ".vue",
+    ".java",
+    ".go",
+    ".rs",
+    ".cs",
+    ".cpp",
+    ".cc",
+    ".c",
+    ".h",
+    ".hpp",
+    ".php",
+    ".swift",
+    ".kt",
+    ".kts",
+    ".scss",
+    ".css",
+}
 DASH_LANGS = {".lua", ".sql"}
 HTML_LANGS = {".html", ".htm", ".xaml", ".axaml"}
 
@@ -194,7 +326,7 @@ def _py_comment(line: str) -> str:
                 continue
             i += 1
             continue
-        if ch in ("'", "\""):
+        if ch in ("'", '"'):
             if line.startswith(ch * 3, i):
                 quote, triple = ch, True
                 i += 3
@@ -213,7 +345,7 @@ PAIRS = (("「", "」"), ("“", "”"), ("『", "』"), (chr(96), chr(96)))
 
 def quoted(text: str, m) -> bool:
     """命中词在引号里，通常是在讨论这个词，不是在用它。"""
-    head = text[:m.start()]
+    head = text[: m.start()]
     for open_q, close_q in PAIRS:
         if open_q == close_q:
             if head.count(open_q) % 2 == 1:
@@ -233,7 +365,7 @@ def comment_part(line: str, ext: str) -> str:
         return s[i:] if i >= 0 else ""
     if ext in SLASH_LANGS:
         cand = [i for i in (s.find("//"), s.find("/*")) if i >= 0]
-        return s[min(cand):] if cand else ""
+        return s[min(cand) :] if cand else ""
     if ext in HTML_LANGS:
         i = s.find("<!--")
         return s[i:] if i >= 0 else ""
@@ -256,6 +388,7 @@ def is_fence(line: str) -> bool:
 
 
 # ---------------------------------------------------------------- 扫描
+
 
 @dataclass
 class Hit:
@@ -357,14 +490,17 @@ def collect(paths: list) -> list:
 
 # ---------------------------------------------------------------- 输出
 
+
 def render(report: Report, max_per_rule: int) -> None:
     hits = sorted(report.hits, key=lambda h: (LEVEL_ORDER[h.rule.level], h.path, h.line))
     hi, mid, lo = report.count("high"), report.count("mid"), report.count("low")
     total = len(hits)
 
     if total:
-        print(f"交付物检查：FAIL（扫描 {report.files} 个文件，命中 {total} 处："
-              f"高 {hi} / 中 {mid} / 低 {lo}）")
+        print(
+            f"交付物检查：FAIL（扫描 {report.files} 个文件，命中 {total} 处："
+            f"高 {hi} / 中 {mid} / 低 {lo}）"
+        )
     else:
         print(f"交付物检查：PASS（扫描 {report.files} 个文件，未发现可疑文字）")
     if not total:
@@ -386,16 +522,17 @@ def render(report: Report, max_per_rule: int) -> None:
         print(f"  {h.path}:{h.line}")
         print(f"      {h.text}")
     print()
-    print("提示：CHANGELOG、交接账本、archive/、迁移说明 本来就记历史，已自动豁免；"
-          "确属误报可在该行加 artifact-check: ignore。")
+    print(
+        "提示：CHANGELOG、交接账本、archive/、迁移说明 本来就记历史，已自动豁免；"
+        "确属误报可在该行加 artifact-check: ignore。"
+    )
 
 
 # ---------------------------------------------------------------- 自检
 
 SELFTEST_CASES = {
     "doc.md": (
-        "# 结构\n\n原先的 6 目录结构已改为 5 个。\n\n"
-        + FENCE + "text\nTODO 不算\n" + FENCE + "\n",
+        "# 结构\n\n原先的 6 目录结构已改为 5 个。\n\n" + FENCE + "text\nTODO 不算\n" + FENCE + "\n",
         {"history_high", "history_mid"},
     ),
     "ui.tsx": ("export const T = () => <div>待定</div>;\n", {"placeholder_ui"}),
@@ -427,9 +564,11 @@ def selftest() -> int:
 
 # ---------------------------------------------------------------- 入口
 
+
 def main(argv: list) -> int:
     ap = argparse.ArgumentParser(
-        description="交付物通道检查：查文档/界面文案/注释里的历史、备忘、占位、聊天腔。")
+        description="交付物通道检查：查文档/界面文案/注释里的历史、备忘、占位、聊天腔。"
+    )
     ap.add_argument("paths", nargs="*", default=["."], help="要扫描的目录或文件，默认当前目录")
     ap.add_argument("--strict", action="store_true", help="任意命中即返回 1（中风险也要修）")
     ap.add_argument("--max", type=int, default=8, help="每条规则最多展开几处，默认 8")

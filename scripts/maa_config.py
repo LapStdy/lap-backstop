@@ -47,8 +47,17 @@ from pathlib import Path
 CONFIG_REL = Path("config") / "gui.new.json"
 
 POST_ACTIONS = {
-    "None", "ExitArknights", "BackToAndroidHome", "ExitEmulator", "ExitSelf",
-    "IfNoOtherMaa", "Hibernate", "Shutdown", "Sleep", "SkipOnError", "LockScreen",
+    "None",
+    "ExitArknights",
+    "BackToAndroidHome",
+    "ExitEmulator",
+    "ExitSelf",
+    "IfNoOtherMaa",
+    "Hibernate",
+    "Shutdown",
+    "Sleep",
+    "SkipOnError",
+    "LockScreen",
 }
 
 # 新增任务时的最小骨架；$type 决定反序列化成哪个类，其余字段用 MAA 自己的默认值。
@@ -56,10 +65,24 @@ POST_ACTIONS = {
 LIST_FIELDS = {"StagePlan", "RoomList", "StageList"}
 
 TASK_TYPES = {
-    "StartUpTask", "CloseDownTask", "FightTask", "OperProgressTask", "AwardTask",
-    "MallTask", "InfrastTask", "RecruitTask", "RoguelikeTask", "CopilotTask",
-    "SSSCopilotTask", "SingleStepTask", "DepotTask", "OperBoxTask",
-    "UserDataUpdateTask", "ReclamationTask", "DepotMaintainTask", "SwitchThemeTask",
+    "StartUpTask",
+    "CloseDownTask",
+    "FightTask",
+    "OperProgressTask",
+    "AwardTask",
+    "MallTask",
+    "InfrastTask",
+    "RecruitTask",
+    "RoguelikeTask",
+    "CopilotTask",
+    "SSSCopilotTask",
+    "SingleStepTask",
+    "DepotTask",
+    "OperBoxTask",
+    "UserDataUpdateTask",
+    "ReclamationTask",
+    "DepotMaintainTask",
+    "SwitchThemeTask",
     "CustomTask",
 }
 
@@ -81,7 +104,9 @@ def maa_running(maa_dir: Path) -> bool:
     try:
         out = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq MAA.exe", "/FO", "CSV", "/NH"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         ).stdout
     except OSError:
         return False
@@ -254,20 +279,42 @@ def main(argv: list[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("profiles").set_defaults(func=cmd_profiles)
-    p = sub.add_parser("use"); p.add_argument("name"); p.set_defaults(func=cmd_use)
-    p = sub.add_parser("new"); p.add_argument("name"); p.set_defaults(func=cmd_new)
+    p = sub.add_parser("use")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_use)
+    p = sub.add_parser("new")
+    p.add_argument("name")
+    p.set_defaults(func=cmd_new)
     sub.add_parser("tasks").set_defaults(func=cmd_tasks)
-    p = sub.add_parser("add"); p.add_argument("type"); p.add_argument("--name", default=None)
-    p.add_argument("--index", type=int, default=None); p.set_defaults(func=cmd_add)
-    p = sub.add_parser("rm"); p.add_argument("index", type=int); p.set_defaults(func=cmd_rm)
-    p = sub.add_parser("move"); p.add_argument("index", type=int); p.add_argument("to", type=int)
+    p = sub.add_parser("add")
+    p.add_argument("type")
+    p.add_argument("--name", default=None)
+    p.add_argument("--index", type=int, default=None)
+    p.set_defaults(func=cmd_add)
+    p = sub.add_parser("rm")
+    p.add_argument("index", type=int)
+    p.set_defaults(func=cmd_rm)
+    p = sub.add_parser("move")
+    p.add_argument("index", type=int)
+    p.add_argument("to", type=int)
     p.set_defaults(func=cmd_move)
-    p = sub.add_parser("set"); p.add_argument("index", type=int); p.add_argument("field")
-    p.add_argument("value"); p.set_defaults(func=cmd_set)
-    p = sub.add_parser("show"); p.add_argument("index", type=int); p.set_defaults(func=cmd_show)
-    p = sub.add_parser("post-actions"); p.add_argument("value"); p.set_defaults(func=cmd_post_actions)
-    p = sub.add_parser("run-directly"); p.add_argument("value"); p.set_defaults(func=cmd_run_directly)
-    p = sub.add_parser("title-prefix"); p.add_argument("value"); p.set_defaults(func=cmd_title_prefix)
+    p = sub.add_parser("set")
+    p.add_argument("index", type=int)
+    p.add_argument("field")
+    p.add_argument("value")
+    p.set_defaults(func=cmd_set)
+    p = sub.add_parser("show")
+    p.add_argument("index", type=int)
+    p.set_defaults(func=cmd_show)
+    p = sub.add_parser("post-actions")
+    p.add_argument("value")
+    p.set_defaults(func=cmd_post_actions)
+    p = sub.add_parser("run-directly")
+    p.add_argument("value")
+    p.set_defaults(func=cmd_run_directly)
+    p = sub.add_parser("title-prefix")
+    p.add_argument("value")
+    p.set_defaults(func=cmd_title_prefix)
 
     args = ap.parse_args(argv)
     cfg_path = resolve_config(args.maa_dir)

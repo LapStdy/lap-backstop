@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plugin://manifest/1",
+  "title": "插件 manifest",
+  "description": "插件包根目录的 plugin.json；语义见 docs/05。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "version", "api_version", "capabilities", "config_schema", "requires"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{1,31}$",
+      "title": "插件 id"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "title": "展示名"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "title": "插件版本"
+    },
+    "api_version": {
+      "type": "integer",
+      "minimum": 1,
+      "title": "插件实现的契约版本"
+    },
+    "capabilities": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "environment",
+          "script",
+          "verifier",
+          "config_projection",
+          "notifier",
+          "advisor"
+        ]
+      },
+      "title": "声明实现的能力"
+    },
+    "config_schema": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!.*\\.\\.).+$",
+      "title": "配置 schema 的包内相对路径"
+    },
+    "description": {
+      "type": "string",
+      "title": "一句话说明"
+    },
+    "requires": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract"],
+      "properties": {
+        "contract": {
+          "type": "string",
+          "minLength": 1,
+          "title": "兼容的契约版本范围，例如 >=1 <2"
+        },
+        "platform": {
+          "type": "string",
+          "default": "windows"
+        },
+        "python": {
+          "type": "string",
+          "title": "Python 版本范围，例如 >=3.12"
+        },
+        "executables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "min_version": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "config_migrations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to", "handler"],
+        "properties": {
+          "from": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "to": {
+            "type": "integer",
+            "minimum": 2
+          },
+          "handler": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "error_map": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^E_"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "recovery"],
+        "properties": {
+          "category": {
+            "enum": ["environment", "script", "config", "verify", "resource", "system"]
+          },
+          "retryable": {
+            "type": "boolean",
+            "default": false
+          },
+          "recovery": {
+            "enum": ["retry", "reset_environment", "restart_script", "abort"]
+          },
+          "message": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

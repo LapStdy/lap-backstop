@@ -1,0 +1,15 @@
+[importlinter]
+root_packages =
+    contracts
+include_external_packages = true
+
+[importlinter:contract:contracts-isolation]
+name = contracts 不依赖内核、插件、界面与存储
+type = forbidden
+source_modules =
+    contracts
+forbidden_modules =
+    core
+    plugins
+    web
+    storage
