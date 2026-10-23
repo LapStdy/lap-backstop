@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 from contracts import (
     Advisor,
+    Capability,
     ConfigProjection,
     EnvironmentProvider,
     Notifier,
@@ -30,15 +31,15 @@ class PluginCapabilities:
     notifier: Notifier | None = None
     advisor: Advisor | None = None
 
-    def declared(self) -> tuple[str, ...]:
+    def declared(self) -> tuple[Capability, ...]:
         """已实现的能力名，按固定顺序。"""
         pairs = (
-            ("environment", self.environment),
-            ("script", self.script),
-            ("verifier", self.verifier),
-            ("config_projection", self.config_projection),
-            ("notifier", self.notifier),
-            ("advisor", self.advisor),
+            (Capability.ENVIRONMENT, self.environment),
+            (Capability.SCRIPT, self.script),
+            (Capability.VERIFIER, self.verifier),
+            (Capability.CONFIG_PROJECTION, self.config_projection),
+            (Capability.NOTIFIER, self.notifier),
+            (Capability.ADVISOR, self.advisor),
         )
         return tuple(name for name, value in pairs if value is not None)
 

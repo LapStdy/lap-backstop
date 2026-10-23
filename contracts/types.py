@@ -54,6 +54,15 @@ class PhaseState(StrEnum):
     TIMED_OUT = "timed_out"
 
 
+class PhaseName(StrEnum):
+    """四个执行阶段；顺序即生命周期顺序。"""
+
+    PREPARE = "prepare"
+    EXECUTE = "execute"
+    VERIFY = "verify"
+    CLEANUP = "cleanup"
+
+
 class LeaseState(StrEnum):
     FREE = "free"
     LEASED = "leased"

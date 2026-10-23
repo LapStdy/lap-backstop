@@ -34,6 +34,7 @@ from contracts.events import (
 )
 from contracts.manifest import (
     CAPABILITIES,
+    Capability,
     ConfigMigration,
     ErrorMapEntry,
     ExecutableRequirement,
@@ -63,6 +64,7 @@ from contracts.types import (
     LeaseState,
     Notification,
     NotificationLevel,
+    PhaseName,
     PhaseResult,
     PhaseState,
     RecoveryAction,
@@ -94,6 +96,7 @@ __all__ = [
     "AdvisorStatus",
     "ApplyResult",
     "CancelToken",
+    "Capability",
     "CheckResult",
     "CheckStatus",
     "Clock",
@@ -121,6 +124,7 @@ __all__ = [
     "Notification",
     "NotificationLevel",
     "Notifier",
+    "PhaseName",
     "PhaseResult",
     "PhaseState",
     "RecoveryAction",

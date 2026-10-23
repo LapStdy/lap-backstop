@@ -6,12 +6,12 @@ import sqlite3
 from datetime import datetime
 from uuid import uuid4
 
-from contracts import Clock, EventType, PhaseState
+from contracts import Clock, EventType, PhaseName, PhaseState
 from storage.db.transaction import transaction
 from storage.repositories.events import EventLog
 from storage.repositories.run_phases import RunPhaseRepository, RunPhaseRow
 
-PHASES = ("prepare", "execute", "verify", "cleanup")
+PHASES: tuple[PhaseName, ...] = tuple(PhaseName)
 
 
 class PhaseTracker:
@@ -26,7 +26,7 @@ class PhaseTracker:
     def start(
         self,
         run_id: str,
-        phase: str,
+        phase: PhaseName,
         *,
         attempt: int,
         timeout_seconds: int = 0,
@@ -41,7 +41,7 @@ class PhaseTracker:
                 RunPhaseRow(
                     id=phase_id,
                     run_id=run_id,
-                    phase=phase,
+                    phase=phase.value,
                     attempt=attempt,
                     state=PhaseState.RUNNING,
                     started_at=now,

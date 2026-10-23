@@ -21,7 +21,7 @@ from contracts.events import (
     parse_event_id,
     run_event_id,
 )
-from contracts.manifest import Manifest, kernel_rejects, range_covers
+from contracts.manifest import Capability, Manifest, kernel_rejects, range_covers
 from contracts.types import ErrorCategory, RecoveryAction, Verdict, VerdictStatus
 
 MANIFEST: dict[str, object] = {
@@ -53,7 +53,12 @@ MANIFEST: dict[str, object] = {
 def test_manifest_parses_documented_example() -> None:
     manifest = Manifest.from_dict(MANIFEST)
     assert manifest.id == "maa"
-    assert manifest.capabilities == ("environment", "script", "verifier", "config_projection")
+    assert manifest.capabilities == (
+        Capability.ENVIRONMENT,
+        Capability.SCRIPT,
+        Capability.VERIFIER,
+        Capability.CONFIG_PROJECTION,
+    )
     assert manifest.requires.executables[0].name == "MAA.exe"
     assert manifest.error_map["E_ENV_NOT_READY"].recovery is RecoveryAction.RESET_ENVIRONMENT
 

@@ -20,6 +20,7 @@ from contracts import (
     EventType,
     EvidenceKind,
     Logger,
+    PhaseName,
     PhaseState,
     RecoveryAction,
     RunContext,
@@ -202,7 +203,7 @@ class WorkerExecutor:
         """准备阶段：让插件把环境带到 ready，失败按恢复策略收尾。"""
         if scope.run.state is not RunState.PREPARING:
             return None
-        phase = self._phases.start(scope.run.id, "prepare", attempt=scope.run.attempt)
+        phase = self._phases.start(scope.run.id, PhaseName.PREPARE, attempt=scope.run.attempt)
         prepared = self._environments.prepare(scope.call)
         self._phases.finish(
             phase,
@@ -225,7 +226,7 @@ class WorkerExecutor:
             return self._recover(scope, "E_DEADLINE", "deadline")
         scope.run = self._runs.transition(scope.run.id, RunState.EXECUTING)
         self._environments.mark_busy(scope.call)
-        phase = self._phases.start(scope.run.id, "execute", attempt=scope.run.attempt)
+        phase = self._phases.start(scope.run.id, PhaseName.EXECUTE, attempt=scope.run.attempt)
         handle = scope.script.launch(
             ScriptRef(
                 id=scope.template.id,
@@ -274,7 +275,7 @@ class WorkerExecutor:
     def _verify(self, scope: RunScope) -> JobRunRecord | None:
         """验证阶段：插件结论先与证据核对再落库，缺证据留给清理阶段收尾。"""
         scope.run = self._runs.transition(scope.run.id, RunState.VERIFYING)
-        phase = self._phases.start(scope.run.id, "verify", attempt=scope.run.attempt)
+        phase = self._phases.start(scope.run.id, PhaseName.VERIFY, attempt=scope.run.attempt)
         verdict = scope.verifier.verify(scope.context)
         if not isinstance(verdict, Verdict):
             raise TypeError("验证器返回的不是 Verdict")
@@ -294,7 +295,7 @@ class WorkerExecutor:
     def _clean(self, scope: RunScope) -> JobRunRecord:
         """清理阶段：停脚本、清环境、释放租约，再按结论落终态。"""
         scope.run = self._runs.transition(scope.run.id, RunState.CLEANING)
-        phase = self._phases.start(scope.run.id, "cleanup", attempt=scope.run.attempt)
+        phase = self._phases.start(scope.run.id, PhaseName.CLEANUP, attempt=scope.run.attempt)
         self._stop_script(scope)
         cleaned = self._environments.cleanup(
             scope.call,

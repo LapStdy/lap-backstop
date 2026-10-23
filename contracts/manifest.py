@@ -8,14 +8,25 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any, Final
 
 from contracts.errors import ContractError, ErrorCode
 from contracts.types import ErrorCategory, RecoveryAction
 
-CAPABILITIES: Final[frozenset[str]] = frozenset(
-    {"environment", "script", "verifier", "config_projection", "notifier", "advisor"}
-)
+
+class Capability(StrEnum):
+    """插件能力标识；与 docs/05 的能力名一一对应。"""
+
+    ENVIRONMENT = "environment"
+    SCRIPT = "script"
+    VERIFIER = "verifier"
+    CONFIG_PROJECTION = "config_projection"
+    NOTIFIER = "notifier"
+    ADVISOR = "advisor"
+
+
+CAPABILITIES: Final[frozenset[Capability]] = frozenset(Capability)
 
 _ID_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 _VERSION_RE: Final[re.Pattern[str]] = re.compile(r"^\d+\.\d+\.\d+$")
@@ -57,7 +68,7 @@ class Manifest:
     name: str
     version: str
     api_version: int
-    capabilities: tuple[str, ...]
+    capabilities: tuple[Capability, ...]
     config_schema: str
     requires: Requires
     description: str = ""
@@ -71,7 +82,7 @@ class Manifest:
             name=_require_str(data, "name"),
             version=_require_str(data, "version"),
             api_version=_require_int(data, "api_version"),
-            capabilities=tuple(_require_list(data, "capabilities")),
+            capabilities=_parse_capabilities(data),
             config_schema=_require_str(data, "config_schema"),
             requires=_parse_requires(data.get("requires")),
             description=_optional_str(data, "description"),
@@ -229,6 +240,16 @@ def _parse_migrations(raw: object) -> tuple[ConfigMigration, ...]:
             ConfigMigration(from_version=from_version, to_version=to_version, handler=handler)
         )
     return tuple(migrations)
+
+
+def _parse_capabilities(data: Mapping[str, Any]) -> tuple[Capability, ...]:
+    capabilities: list[Capability] = []
+    for item in _require_list(data, "capabilities"):
+        try:
+            capabilities.append(Capability(item))
+        except ValueError as error:
+            raise _bad(f"未知能力：{item!r}") from error
+    return tuple(capabilities)
 
 
 def _require_str(data: Mapping[str, Any], key: str) -> str:
