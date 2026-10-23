@@ -36,7 +36,7 @@ from contracts import (
 )
 from core.environments.service import EnvironmentCall, EnvironmentService
 from core.events.evidence import EvidenceService
-from core.events.verdicts import MissingEvidenceError, VerdictService
+from core.events.verdicts import VerdictError, VerdictService
 from core.jobs.phases import PhaseTracker
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
@@ -278,11 +278,11 @@ class WorkerExecutor:
         if not isinstance(verdict, Verdict):
             raise TypeError("验证器返回的不是 Verdict")
         try:
-            self._verdicts.record(scope.run.id, verdict)
-        except MissingEvidenceError:
-            scope.verify_error = "E_VERIFY_NO_EVIDENCE"
+            _, effective = self._verdicts.record(scope.run.id, verdict)
+        except VerdictError as error:
+            scope.verify_error = error.code
         else:
-            scope.verdict = verdict
+            scope.verdict = effective
         self._phases.finish(
             phase,
             state=PhaseState.FAILED if scope.verify_error is not None else PhaseState.OK,

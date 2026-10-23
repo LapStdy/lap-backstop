@@ -3,6 +3,17 @@
 from __future__ import annotations
 
 from core.events.evidence import EvidenceService
-from core.events.verdicts import MissingEvidenceError, VerdictService
+from core.events.verdicts import (
+    MissingEvidenceError,
+    VerdictError,
+    VerdictPolicyError,
+    VerdictService,
+)
 
-__all__ = ["EvidenceService", "MissingEvidenceError", "VerdictService"]
+__all__ = [
+    "EvidenceService",
+    "MissingEvidenceError",
+    "VerdictError",
+    "VerdictPolicyError",
+    "VerdictService",
+]
