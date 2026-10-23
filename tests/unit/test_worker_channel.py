@@ -23,10 +23,12 @@ from core.clock import VirtualClock
 from core.plugins.channel import WorkerChannel
 from core.plugins.errors import (
     PluginDegradedError,
+    WorkerCallError,
     WorkerCancelledError,
     WorkerCrashError,
     WorkerTimeoutError,
 )
+from core.plugins.worker_options import WorkerConfig, WorkerLimits
 
 NOW = datetime(2026, 10, 24, 2, 0, tzinfo=UTC)
 STUB = Path(__file__).resolve().parents[1] / "fixtures" / "worker_stub.py"
@@ -35,6 +37,7 @@ CALL_TIMEOUT_SECONDS = 0.2
 START_TIMEOUT_SECONDS = 0.5
 CANCEL_GRACE_SECONDS = 0.2
 MAX_RESTARTS = 3
+DEGRADED_RETRY_SECONDS = 300.0
 CANCEL_DELAY_SECONDS = 0.05
 OK_VALUE: dict[str, Any] = {"state": "ready", "detail": "stub", "observed_at": None}
 
@@ -42,6 +45,7 @@ _SYNCHRONIZE = 0x00100000
 _WAIT_TIMEOUT = 0x00000102
 
 RecordEvidence = Callable[[str, Path, str], str]
+Emit = Callable[[str, Mapping[str, Any]], None]
 
 
 def _process_alive(pid: int) -> bool:
@@ -120,15 +124,17 @@ def _context(
     cancel: _Cancel | None = None,
     log: _RecordingLog | None = None,
     record_evidence: RecordEvidence | None = None,
+    emit: Emit | None = None,
+    config: Mapping[str, Any] | None = None,
 ) -> RunContext:
-    """构造一次能力调用的上下文；取消令牌、日志与证据回调由用例注入。"""
+    """构造一次能力调用的上下文；取消令牌、日志、证据与 emit 由用例注入。"""
     return RunContext(
         run_id="run-1",
         attempt=1,
         template_id="template-1",
         plugin_id="stub",
         environment_id="env-1",
-        config={"scenario": "stub"},
+        config={"scenario": "stub"} if config is None else dict(config),
         work_dir=tmp_path / "work",
         evidence_dir=tmp_path / "evidence",
         deadline_at=NOW + timedelta(minutes=30),
@@ -136,9 +142,29 @@ def _context(
         clock=VirtualClock(NOW),
         secrets={},
         log=_RecordingLog() if log is None else log,
-        emit=_noop_emit,
+        emit=_noop_emit if emit is None else emit,
         record_evidence=_default_record_evidence if record_evidence is None else record_evidence,
     )
+
+
+def _limits(
+    *,
+    call_timeout_seconds: float = 5.0,
+    max_restarts: int = MAX_RESTARTS,
+    degraded_retry_seconds: float = DEGRADED_RETRY_SECONDS,
+) -> WorkerLimits:
+    """真实插件用例的通道参数：超时放宽，避免启动开销撞上调用上限。"""
+    return WorkerLimits(
+        call_timeout_seconds=call_timeout_seconds,
+        start_timeout_seconds=5.0,
+        cancel_grace_seconds=CANCEL_GRACE_SECONDS,
+        max_restarts=max_restarts,
+        degraded_retry_seconds=degraded_retry_seconds,
+    )
+
+
+def _env_args(plugin_id: str) -> dict[str, Any]:
+    return {"env": {"id": "env-1", "provider_id": plugin_id, "config": {}}}
 
 
 class _ChannelFactory:
@@ -157,20 +183,27 @@ class _ChannelFactory:
         start_timeout_seconds: float = START_TIMEOUT_SECONDS,
         cancel_grace_seconds: float = CANCEL_GRACE_SECONDS,
         max_restarts: int = MAX_RESTARTS,
+        degraded_retry_seconds: float = DEGRADED_RETRY_SECONDS,
         log: _RecordingLog | None = None,
     ) -> WorkerChannel:
         command = [sys.executable, "-u", str(STUB), mode]
         if control is not None:
             command.append(str(control))
-        channel = WorkerChannel(
-            "stub",
-            plugins_root=self.tmp_path / "plugins",
-            command=command,
+        limits = WorkerLimits(
             call_timeout_seconds=call_timeout_seconds,
             start_timeout_seconds=start_timeout_seconds,
             cancel_grace_seconds=cancel_grace_seconds,
             max_restarts=max_restarts,
-            log=_RecordingLog() if log is None else log,
+            degraded_retry_seconds=degraded_retry_seconds,
+        )
+        channel = WorkerChannel(
+            "stub",
+            WorkerConfig(
+                plugins_root=self.tmp_path / "plugins",
+                command=tuple(command),
+                limits=limits,
+                log=_RecordingLog() if log is None else log,
+            ),
         )
         self._channels.append(channel)
         return channel
@@ -255,7 +288,8 @@ def test_repeated_failures_degrade_channel(channels: _ChannelFactory) -> None:
         assert channel.pid is None
     assert channel.is_degraded is True
     degraded = [fields for level, fields in log.entries if fields.get("event") == "plugin.degraded"]
-    assert degraded == [{"event": "plugin.degraded", "plugin_id": "stub", "failures": 2}]
+    assert degraded[0]["failures"] == 2
+    assert degraded[0]["retry_after_seconds"] == DEGRADED_RETRY_SECONDS
     with pytest.raises(PluginDegradedError):
         channel.call("environment", "probe", {}, _context(channels.tmp_path))
     assert channel.pid is None
@@ -389,9 +423,7 @@ def test_timeout_kills_process_tree(tmp_path: Path) -> None:
     """超时强杀要连插件拉起的子进程一起结束，不能留下孤儿。"""
     channel = WorkerChannel(
         "child",
-        plugins_root=PLUGIN_FIXTURES,
-        call_timeout_seconds=0.8,
-        start_timeout_seconds=5.0,
+        WorkerConfig(plugins_root=PLUGIN_FIXTURES, limits=_limits(call_timeout_seconds=0.8)),
     )
     try:
         with pytest.raises(WorkerTimeoutError):
@@ -403,5 +435,85 @@ def test_timeout_kills_process_tree(tmp_path: Path) -> None:
             )
         child_pid = int((tmp_path / "work" / "child.pid").read_text(encoding="utf-8"))
         assert _process_ended(child_pid) is True
+    finally:
+        channel.close()
+
+
+def test_degraded_recovers_after_retry_window(channels: _ChannelFactory) -> None:
+    """降级不是终态：重试窗口过后通道重新拉起 worker 并清零失败计数。"""
+    log = _RecordingLog()
+    control = _control(channels, "crash", "ok")
+    channel = channels(
+        "sequence",
+        control=control,
+        max_restarts=1,
+        degraded_retry_seconds=0.2,
+        log=log,
+    )
+    with pytest.raises(WorkerCrashError):
+        channel.call("environment", "probe", {}, _context(channels.tmp_path))
+    assert channel.is_degraded is True
+    with pytest.raises(PluginDegradedError):
+        channel.call("environment", "probe", {}, _context(channels.tmp_path))
+    time.sleep(0.3)
+    assert channel.is_degraded is False
+    assert channel.call("environment", "probe", {}, _context(channels.tmp_path)) == OK_VALUE
+    recovered = [
+        fields for level, fields in log.entries if fields.get("event") == "plugin.recovered"
+    ]
+    assert recovered
+
+
+def test_emit_allows_run_signal(tmp_path: Path) -> None:
+    recorded: list[tuple[str, Mapping[str, Any]]] = []
+
+    def emit(event: str, payload: Mapping[str, Any]) -> None:
+        recorded.append((event, payload))
+
+    channel = WorkerChannel("emitter", WorkerConfig(plugins_root=PLUGIN_FIXTURES, limits=_limits()))
+    try:
+        value = channel.call(
+            "environment",
+            "probe",
+            _env_args("emitter"),
+            _context(
+                tmp_path,
+                emit=emit,
+                config={
+                    "event": "run.signal",
+                    "payload": {"kind": "progress", "payload": {"p": 1}},
+                },
+            ),
+        )
+    finally:
+        channel.close()
+    assert isinstance(value, dict)
+    assert value["detail"] == "emitted"
+    assert recorded == [("run.signal", {"kind": "progress", "payload": {"p": 1}})]
+
+
+@pytest.mark.parametrize(
+    ("event", "payload", "reason"),
+    [
+        ("run.finished", {}, "内核事件"),
+        ("not.an.event", {}, "未知事件类型"),
+        ("run.signal", {"payload": {}}, "kind"),
+    ],
+)
+def test_emit_rejects_events_outside_contract(
+    tmp_path: Path,
+    event: str,
+    payload: dict[str, Any],
+    reason: str,
+) -> None:
+    channel = WorkerChannel("emitter", WorkerConfig(plugins_root=PLUGIN_FIXTURES, limits=_limits()))
+    try:
+        with pytest.raises(WorkerCallError, match=reason):
+            channel.call(
+                "environment",
+                "probe",
+                _env_args("emitter"),
+                _context(tmp_path, config={"event": event, "payload": payload}),
+            )
     finally:
         channel.close()
