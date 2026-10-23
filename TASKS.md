@@ -16,8 +16,6 @@
 
 ## P0 修复：质量审查发现（2026-10-24）
 
-- [ ] 行为缺陷：模板缺失转 FAILED / E_CONFIG 并写事件；`_wait_for_script` 不再伪造 HUNG（无结论返回 None，按 E_DEADLINE 处理）；清理/停止/释放失败记 WARN（core/worker/executor.py:116、295、465）
-  验收：三条回归测试，既有 234 条保持绿。
 - [ ] 执行器结构：抽 `RunScope` 收敛私有方法参数；`execute` 拆成 prepare/execute/verify/cleanup；补齐 `execute`、`transition` 的 Args/Returns/Raises（core/worker/executor.py、core/jobs/run_service.py）
   验收：`execute` ≤50 行、私有方法参数 ≤4、docstring 含三节。
 - [ ] 结论校验：`VerdictService` 改用 `EvidenceRepository.known_ids`；核对模板 `required_evidence` 与 `checks[].evidence_ids`；`policy_id` 回填模板 id

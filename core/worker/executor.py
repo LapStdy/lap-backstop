@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -115,7 +114,7 @@ class WorkerExecutor:
             return run
         template = self._templates.get(run.template_id)
         if template is None:
-            raise ValueError(f"作业模板不存在：{run.template_id}")
+            return self._fail_missing_template(run)
         provider = self._registry.environment(template.plugin_id)
         script = self._registry.script(template.plugin_id)
         verifier = self._registry.verifier(template.plugin_id)
@@ -192,6 +191,19 @@ class WorkerExecutor:
                 context,
             )
             observation = self._wait_for_script(script, handle, context)
+            if observation is None:
+                self._phases.finish(phase, state=PhaseState.TIMED_OUT, detail="deadline")
+                self._stop_script(script, handle, context)
+                return self._recover(
+                    run.id,
+                    call,
+                    script,
+                    None,
+                    context,
+                    template,
+                    "E_DEADLINE",
+                    "deadline",
+                )
             for signal in observation.signals:
                 self._events.append_run(
                     run.id,
@@ -291,14 +303,15 @@ class WorkerExecutor:
         script: ScriptAdapter,
         handle: ScriptHandle,
         context: RunContext,
-    ) -> ScriptObservation:
+    ) -> ScriptObservation | None:
+        """观察脚本直到结束；观察次数用尽或到截止时间返回 None，由调用方按超时收尾。"""
         for _ in range(_MAX_OBSERVATIONS):
             observation = script.observe(handle, context)
             if observation.state is not ScriptState.RUNNING:
                 return observation
             if self._clock.utc_now() >= context.deadline_at:
-                break
-        return ScriptObservation(state=ScriptState.HUNG, since=self._clock.utc_now())
+                return None
+        return None
 
     def _verify(
         self,
@@ -324,6 +337,26 @@ class WorkerExecutor:
         if retry_at is not None and self._clock.utc_now() < retry_at:
             return run
         return self._runs.transition(run_id, RunState.QUEUED, reason="recovery")
+
+    def _fail_missing_template(self, run: JobRunRecord) -> JobRunRecord:
+        """模板缺失是配置错误：直接记失败，不让运行卡在排队里等一个不会来的模板。"""
+        self._log.error(
+            {
+                "event": "executor.template_missing",
+                "run_id": run.id,
+                "template_id": run.template_id,
+                "error_code": "E_CONFIG",
+            }
+        )
+        current = self._runs.get(run.id)
+        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
+            current = self._runs.transition(run.id, RunState.CLEANING, reason="template_missing")
+        return self._runs.transition(
+            run.id,
+            RunState.FAILED,
+            reason="template_missing",
+            error_code="E_CONFIG",
+        )
 
     def _recover(
         self,
@@ -394,10 +427,8 @@ class WorkerExecutor:
         if handle is not None:
             self._stop_script(script, handle, context)
         if decision.action is not RecoveryAction.RESET_ENVIRONMENT:
-            with suppress(Exception):
-                self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
-        with suppress(Exception):
-            self._leases.release(run_id, reason="recovering")
+            self._safe_cleanup(call, run_id=run_id, reason="recovering")
+        self._safe_release(run_id, reason="recovering")
         retry_at = now + timedelta(seconds=decision.delay_seconds)
         return self._runs.mark_recovering(
             run_id,
@@ -419,10 +450,8 @@ class WorkerExecutor:
     ) -> JobRunRecord:
         if handle is not None:
             self._stop_script(script, handle, context)
-        with suppress(Exception):
-            self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
-        with suppress(Exception):
-            self._leases.release(run_id, reason="recovery")
+        self._safe_cleanup(call, run_id=run_id, reason="recovery")
+        self._safe_release(run_id, reason="recovery")
         current = self._runs.get(run_id)
         if current.state in (RunState.EXECUTING, RunState.VERIFYING):
             current = self._runs.transition(run_id, RunState.CLEANING, reason="recovery")
@@ -476,10 +505,8 @@ class WorkerExecutor:
         if handle is not None and script is not None and context is not None:
             self._stop_script(script, handle, context)
         if call is not None:
-            with suppress(Exception):
-                self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
-        with suppress(Exception):
-            self._leases.release(run_id, reason="cancelled")
+            self._safe_cleanup(call, run_id=run_id, reason="cancelled")
+        self._safe_release(run_id, reason="cancelled")
         current = self._runs.get(run_id)
         if current.state in (RunState.EXECUTING, RunState.VERIFYING):
             current = self._runs.transition(run_id, RunState.CLEANING, reason="cancelled")
@@ -497,10 +524,8 @@ class WorkerExecutor:
     ) -> JobRunRecord:
         if handle is not None:
             self._stop_script(script, handle, context)
-        with suppress(Exception):
-            self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
-        with suppress(Exception):
-            self._leases.release(run_id, reason=reason)
+        self._safe_cleanup(call, run_id=run_id, reason=reason)
+        self._safe_release(run_id, reason=reason)
         current = self._runs.get(run_id)
         if current.state in (RunState.EXECUTING, RunState.VERIFYING):
             current = self._runs.transition(run_id, RunState.CLEANING, reason=reason)
@@ -517,8 +542,45 @@ class WorkerExecutor:
         handle: ScriptHandle,
         context: RunContext,
     ) -> None:
-        with suppress(Exception):
+        """停止脚本；失败只记 WARN，收尾不能因为插件拒绝而卡住。"""
+        try:
             script.stop(handle, context, StopMode.FORCE)
+        except Exception as error:
+            self._log.warn(
+                {
+                    "event": "executor.script_stop_failed",
+                    "run_id": context.run_id,
+                    "error": str(error),
+                }
+            )
+
+    def _safe_cleanup(self, call: EnvironmentCall, *, run_id: str, reason: str) -> None:
+        """清理环境；失败只记 WARN，让已经确定的结局继续写入。"""
+        try:
+            self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
+        except Exception as error:
+            self._log.warn(
+                {
+                    "event": "executor.cleanup_failed",
+                    "run_id": run_id,
+                    "reason": reason,
+                    "error": str(error),
+                }
+            )
+
+    def _safe_release(self, run_id: str, *, reason: str) -> None:
+        """释放租约；失败只记 WARN，过期租约由回收扫描兜底。"""
+        try:
+            self._leases.release(run_id, reason=reason)
+        except Exception as error:
+            self._log.warn(
+                {
+                    "event": "executor.lease_release_failed",
+                    "run_id": run_id,
+                    "reason": reason,
+                    "error": str(error),
+                }
+            )
 
     def _build_context(self, run: JobRunRecord, template: JobTemplateRow) -> RunContext:
         work_dir = self._data_root / "work" / run.id

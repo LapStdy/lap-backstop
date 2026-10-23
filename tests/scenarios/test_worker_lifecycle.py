@@ -4,17 +4,24 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from contracts import (
+    EnvironmentRef,
     EnvironmentState,
+    Logger,
+    PhaseResult,
     PhaseState,
     RunContext,
     RunState,
+    ScriptHandle,
+    ScriptObservation,
+    ScriptState,
     Verdict,
     VerdictStatus,
 )
@@ -71,6 +78,39 @@ def make_registry() -> PluginRegistry:
     return registry
 
 
+class _RecordingLogger:
+    """把级别与字段留在内存里，供断言 WARN 用。"""
+
+    def __init__(self) -> None:
+        self.entries: list[tuple[str, dict[str, Any]]] = []
+
+    def debug(self, fields: Mapping[str, Any]) -> None:
+        self.entries.append(("DEBUG", dict(fields)))
+
+    def info(self, fields: Mapping[str, Any]) -> None:
+        self.entries.append(("INFO", dict(fields)))
+
+    def warn(self, fields: Mapping[str, Any]) -> None:
+        self.entries.append(("WARNING", dict(fields)))
+
+    def error(self, fields: Mapping[str, Any]) -> None:
+        self.entries.append(("ERROR", dict(fields)))
+
+
+class _RunningScriptAdapter(FakeScriptAdapter):
+    """永远报告运行中，模拟迟迟不给结论的脚本。"""
+
+    def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
+        return ScriptObservation(state=ScriptState.RUNNING, since=ctx.clock.utc_now())
+
+
+class _FailingCleanupProvider(FakeEnvironmentProvider):
+    """清理必定抛异常，验证收尾异常只降级成 WARN、不打断恢复。"""
+
+    def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
+        raise RuntimeError("清理失败")
+
+
 @pytest.fixture
 def env(
     tmp_path: Path,
@@ -117,6 +157,7 @@ def executor_for(
     data_root: Path,
     *,
     cancel: CancelFlag | None = None,
+    log: Logger | None = None,
 ) -> WorkerExecutor:
     return WorkerExecutor(
         connection,
@@ -124,6 +165,7 @@ def executor_for(
         make_registry(),
         data_root=data_root,
         cancel=cancel,
+        log=log,
     )
 
 
@@ -276,3 +318,71 @@ def test_verifier_without_evidence_ends_unknown(
     result = executor.execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert result.error_code == "E_VERIFY_NO_EVIDENCE"
+
+
+def test_missing_template_marks_run_failed_with_config_error(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    # 模板可能在排队后被外部清掉；外键只在该连接上临时关掉才能造出这种状态。
+    connection.execute("PRAGMA foreign_keys = OFF")
+    connection.execute("DELETE FROM job_templates WHERE id = ?", (TEMPLATE_ID,))
+    connection.execute("PRAGMA foreign_keys = ON")
+    result = executor_for(connection, clock, data_root).execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_CONFIG"
+    assert phases(connection, run_id) == {}
+    events = runs.events(run_id)
+    assert events[-2].payload["reason"] == "template_missing"
+    assert events[-1].type == "run.finished"
+
+
+def test_unfinished_script_ends_with_deadline_not_hung(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    registry = PluginRegistry()
+    registry.register(
+        PluginCapabilities(
+            plugin_id="fake",
+            environment=FakeEnvironmentProvider(),
+            script=_RunningScriptAdapter(),
+            verifier=FakeVerifier(),
+        )
+    )
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_DEADLINE"
+    execute_phase = next(
+        row for row in RunPhaseRepository(connection).for_run(run_id) if row.phase == "execute"
+    )
+    assert execute_phase.state is PhaseState.TIMED_OUT
+    assert execute_phase.detail["detail"] == "deadline"
+
+
+def test_cleanup_failure_logs_warning_and_recovery_continues(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "fail")
+    registry = PluginRegistry()
+    registry.register(
+        PluginCapabilities(
+            plugin_id="fake",
+            environment=_FailingCleanupProvider(),
+            script=FakeScriptAdapter(),
+            verifier=FakeVerifier(),
+        )
+    )
+    logger = _RecordingLogger()
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root, log=logger).execute(
+        run_id
+    )
+    assert result.state is RunState.RECOVERING
+    assert result.error_code == "E_SCRIPT_TASK_FAILED"
+    assert any(
+        level == "WARNING" and fields.get("event") == "executor.cleanup_failed"
+        for level, fields in logger.entries
+    )
