@@ -5,17 +5,17 @@
 
 ## 背景
 
-插件代码会挂起、崩溃、写坏标准输出，也会被结束；内核不能因此丢状态或停止服务。[05](05-插件与适配器.md) 要求插件不进入内核进程、内核与 worker 只交换 JSON 消息；[ADR 0007](0007-worker执行器与阶段边界.md) 把一次运行拆成四阶段并约定换通道时不改阶段方法与 `RunScope`。执行器与状态机已经在核心进程跑通，缺的是把插件调用移出内核进程。
+插件代码会挂起、崩溃、写坏标准输出，也会被结束；内核不能因此丢状态或停止服务。[05](../05-插件与适配器.md) 要求插件不进入内核进程、内核与 worker 只交换 JSON 消息；[ADR 0007](0007-worker执行器与阶段边界.md) 把一次运行拆成四阶段并约定换通道时不改阶段方法与 `RunScope`。执行器与状态机已经在核心进程跑通，缺的是把插件调用移出内核进程。
 
 ## 决策
 
 1. 进程布局：阶段编排留在 `core/worker/executor.py`；插件在 `core/plugins/worker.py` 启动的子进程里运行，按插件拉起、按需常驻，内核进程不导入插件模块。加载只发生在 worker，入口是 `plugins/<id>/plugin.py` 导出的 `PLUGIN`。
-2. 协议：stdin/stdout 上行分隔 UTF-8 JSON，一行一条消息。核心→worker 用 `call`、`cancel`、`callback_result`、`shutdown`；worker→核心用 `ready`、`result`、`callback`、`notify`、`fault`。协议独占 stdout，插件打印被重定向到 stderr。
+2. 协议：stdin/stdout 上行分隔 UTF-8 JSON，一行一条消息。核心→worker 用 `call`、`cancel`、`callback_result`、`shutdown`；worker→核心用 `ready`、`result`、`callback`、`notify`、`fault`。协议独占复制出的 stdin/stdout；worker 的 fd 0 改为 devnull、fd 1 改为 stderr，插件与其拉起的子进程既读不到协议输入，也写不进协议输出。
 3. 上下文：`RunContext` 的可序列化字段（`run_id`、`attempt`、`template_id`、`plugin_id`、`environment_id`、`config`、`work_dir`、`evidence_dir`、`deadline_at`、`secrets`）随 `call` 下发；`cancel`、`clock`、`log`、`emit`、`record_evidence` 在 worker 侧重建。`emit` 与 `record_evidence` 是同步回调，内核在等待调用结果时处理并把事件、证据写入数据库；插件拿不到数据库句柄。
 4. 校验：内核不信任 worker 返回的 JSON。解码按 `contracts` 的类型逐字段校验，非法载荷、未知枚举、naive 时刻都按 `WorkerPayloadError` 失败，不进入领域对象。
-5. 超时与强杀：每次调用的上限来自 `config/defaults.toml` 的 `worker.call_timeout_seconds`，等待与强杀用真实单调时间；到点先结束进程再按 `E_DEADLINE` 收尾。虚拟时钟不跨进程（[08](08-宿主与运维.md)），调度与业务截止仍由核心按注入的 `Clock` 判定。
-6. 取消：核心在等待调用结果时轮询 `ctx.cancel`；置位后发 `cancel`，等 `worker.cancel_grace_seconds`，仍未返回则强杀进程；运行按 `cancelled` 收尾。
-7. 崩溃与降级：worker 退出或写坏协议 → `WorkerCrashError`，执行器按 `E_PLUGIN_CRASH` 进入恢复；同一插件连续 `worker.max_restarts` 次失败后 channel 标记 `degraded`，后续调用直接失败，直到内核重启。
+5. 超时与强杀：每次调用的上限来自 `config/defaults.toml` 的 `worker.call_timeout_seconds`，等待与强杀用真实单调时间；到点结束整棵进程树再按 `E_DEADLINE` 收尾。虚拟时钟不跨进程（[08](../08-宿主与运维.md)），调度与业务截止仍由核心按注入的 `Clock` 判定。
+6. 取消：核心在等待调用结果时轮询 `ctx.cancel`；置位后按调用 id 发 `cancel`，等 `worker.cancel_grace_seconds`，仍未返回则结束整棵进程树；运行按 `cancelled` 收尾，取消不计入降级预算。
+7. 崩溃与降级：worker 退出或写坏协议 → `WorkerCrashError`，执行器按 `E_PLUGIN_CRASH` 进入恢复；同一插件连续 `worker.max_restarts` 次崩溃、超时或启动失败后 channel 标记 `degraded`，后续调用直接失败，直到内核重启。插件方法抛异常按 `E_PLUGIN` 失败，与进程崩溃区分。
 8. 覆盖范围：environment、script、verifier 三种能力走 RPC；config_projection、notifier、advisor 复用同一协议，在接入对应路由时补调用表与编码。
 
 ## 后果

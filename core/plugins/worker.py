@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import os
 import queue
 import sys
 import threading
@@ -38,13 +39,16 @@ class _ProcessClock:
 
 
 class _CancelFlag:
-    """由 cancel 消息置位的取消标记；插件只能查询。"""
+    """按调用 id 记录的取消标记；插件只能查询。"""
 
-    def __init__(self, event: threading.Event) -> None:
-        self._event = event
+    def __init__(self, call_id: int, cancelled: set[int], lock: threading.Lock) -> None:
+        self._call_id = call_id
+        self._cancelled = cancelled
+        self._lock = lock
 
     def is_cancelled(self) -> bool:
-        return self._event.is_set()
+        with self._lock:
+            return self._call_id in self._cancelled
 
 
 class _ProtocolWriter:
@@ -96,13 +100,15 @@ class _Reader(threading.Thread):
         *,
         calls: queue.Queue[dict[str, Any] | None],
         callbacks: queue.Queue[dict[str, Any]],
-        cancel: threading.Event,
+        cancelled: set[int],
+        lock: threading.Lock,
     ) -> None:
         super().__init__(name="worker-reader", daemon=True)
         self._stream = stream
         self._calls = calls
         self._callbacks = callbacks
-        self._cancel = cancel
+        self._cancelled = cancelled
+        self._lock = lock
 
     def run(self) -> None:
         try:
@@ -120,7 +126,10 @@ class _Reader(threading.Thread):
                 elif kind == rpc.CALLBACK_RESULT:
                     self._callbacks.put(message)
                 elif kind == rpc.CANCEL:
-                    self._cancel.set()
+                    cancelled_id = message.get("id")
+                    if isinstance(cancelled_id, int):
+                        with self._lock:
+                            self._cancelled.add(cancelled_id)
                 elif kind == rpc.SHUTDOWN:
                     return
         finally:
@@ -130,20 +139,29 @@ class _Reader(threading.Thread):
 class _Server:
     """一次 worker 会话：声明能力、响应调用、转发插件副作用。"""
 
-    def __init__(self, plugin: object, writer: _ProtocolWriter, *, plugin_id: str) -> None:
+    def __init__(
+        self,
+        plugin: object,
+        writer: _ProtocolWriter,
+        *,
+        plugin_id: str,
+        incoming: BinaryIO,
+    ) -> None:
         self._plugin = plugin
         self._plugin_id = plugin_id
         self._writer = writer
         self._calls: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._callbacks: queue.Queue[dict[str, Any]] = queue.Queue()
-        self._cancel = threading.Event()
+        self._cancelled: set[int] = set()
+        self._cancel_lock = threading.Lock()
         self._callback_ids = itertools.count(1)
         self._clock = _ProcessClock()
         self._reader = _Reader(
-            sys.stdin.buffer,
+            incoming,
             calls=self._calls,
             callbacks=self._callbacks,
-            cancel=self._cancel,
+            cancelled=self._cancelled,
+            lock=self._cancel_lock,
         )
 
     def run(self) -> int:
@@ -224,7 +242,7 @@ class _Server:
             work_dir=payload.work_dir,
             evidence_dir=payload.evidence_dir,
             deadline_at=payload.deadline_at,
-            cancel=_CancelFlag(self._cancel),
+            cancel=_CancelFlag(call_id, self._cancelled, self._cancel_lock),
             clock=self._clock,
             secrets=payload.secrets,
             log=_RemoteLogger(self._writer, call_id),
@@ -380,16 +398,28 @@ def _parse_arguments(argv: Sequence[str]) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """进程入口：协议走原始 stdout，插件打印改道 stderr。"""
+    """进程入口：协议独占复制出的 stdin/stdout，fd 0/1 改道 devnull 与 stderr。
+
+    插件拉起的子进程继承的是 devnull 与 stderr，既读不到协议，也写不进协议。
+    """
     arguments = _parse_arguments(sys.argv[1:] if argv is None else argv)
-    writer = _ProtocolWriter(sys.stdout.buffer)
+    protocol = os.fdopen(os.dup(1), "wb", buffering=0)
+    incoming = os.fdopen(os.dup(0), "rb", buffering=0)
+    os.dup2(2, 1)
+    os.dup2(os.open(os.devnull, os.O_RDONLY), 0)
+    writer = _ProtocolWriter(protocol)
     sys.stdout = sys.stderr
     try:
         plugin = load_plugin(Path(arguments.plugins_root), str(arguments.plugin_id))
     except PluginError as error:
         writer.send({"kind": rpc.FAULT, "message": str(error)})
         return 2
-    return _Server(plugin, writer, plugin_id=str(arguments.plugin_id)).run()
+    return _Server(
+        plugin,
+        writer,
+        plugin_id=str(arguments.plugin_id),
+        incoming=incoming,
+    ).run()
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 """worker 执行器：把排队运行推过 prepare → execute → verify → cleanup。
 
-执行器跑在 worker 侧；本实现先在处理进程内同步调用插件，超时与取消靠注入的时钟
-和阶段边界检查，后续换成子进程 RPC 时生命周期不变。
+阶段编排在核心进程，插件能力调用经 core/plugins 的 worker 子进程通道（ADR 0010）；
+调用超时、取消、插件异常与崩溃都转成运行状态，不把异常抛给 supervisor。
 """
 
 from __future__ import annotations
@@ -41,7 +41,7 @@ from core.events.verdicts import VerdictError, VerdictService
 from core.jobs.phases import PhaseTracker
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
-from core.plugins.errors import WorkerCancelledError, WorkerTimeoutError
+from core.plugins.errors import PluginError, WorkerCancelledError, WorkerTimeoutError
 from core.plugins.registry import PluginRegistry
 from core.recovery.policy import RecoveryPolicy
 from core.resources.service import LeaseService
@@ -171,6 +171,16 @@ class WorkerExecutor:
                 {"event": "executor.worker_timeout", "run_id": scope.run_id, "error": str(error)}
             )
             return self._recover(scope, "E_DEADLINE", "worker_timeout")
+        except PluginError as error:
+            self._log.error(
+                {
+                    "event": "executor.plugin_error",
+                    "run_id": scope.run_id,
+                    "error_code": error.code,
+                    "error": str(error),
+                }
+            )
+            return self._recover(scope, error.code, str(error))
         except Exception as error:  # 插件异常不能拖垮内核：按崩溃收尾
             self._log.error(
                 {"event": "executor.error", "run_id": scope.run_id, "error": str(error)}
