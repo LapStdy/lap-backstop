@@ -39,6 +39,12 @@ class WorkerTimeoutError(WorkerError):
     code = "E_DEADLINE"
 
 
+class WorkerCallError(WorkerError):
+    """插件能力方法抛出异常，worker 把类型与消息回传给内核。"""
+
+    code = "E_PLUGIN"
+
+
 class WorkerCrashError(WorkerError):
     """worker 进程在调用中退出或被信号终止。"""
 
