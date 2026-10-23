@@ -20,7 +20,7 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 "scripts/*.py" = ["E501", "E702", "SIM105", "UP009", "B007"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["contracts", "core", "plugins", "storage", "web"]
+known-first-party = ["contracts", "core", "plugins", "storage", "web", "tests"]
 
 [tool.mypy]
 python_version = "3.12"

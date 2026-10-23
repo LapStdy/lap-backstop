@@ -1,4 +1,4 @@
-"""环境状态机的显式边与「任意状态」边。"""
+"""环境状态机与 docs/02 的 Environment 表逐条对应。"""
 
 from __future__ import annotations
 
@@ -12,60 +12,46 @@ from core.environments.state_machine import (
     can_transition,
     require_transition,
 )
+from tests.state_tables import environment_table
 
-DOCUMENTED_EDGES = {
-    EnvironmentState.UNKNOWN: {
-        EnvironmentState.OFF,
-        EnvironmentState.BOOTING,
-        EnvironmentState.FAILED,
-    },
-    EnvironmentState.OFF: {EnvironmentState.BOOTING},
-    EnvironmentState.BOOTING: {EnvironmentState.READY, EnvironmentState.FAILED},
-    EnvironmentState.READY: {
-        EnvironmentState.BUSY,
-        EnvironmentState.DEGRADED,
-        EnvironmentState.OFF,
-        EnvironmentState.FAILED,
-    },
-    EnvironmentState.BUSY: {
-        EnvironmentState.READY,
-        EnvironmentState.DEGRADED,
-        EnvironmentState.FAILED,
-    },
-    EnvironmentState.DEGRADED: {EnvironmentState.READY, EnvironmentState.FAILED},
-    EnvironmentState.FAILED: {EnvironmentState.BOOTING, EnvironmentState.OFF},
-}
-
-ANY_STATE_TARGETS = {EnvironmentState.UNKNOWN, EnvironmentState.BOOTING}
+TABLE = environment_table()
 
 
-def expected_targets(state: EnvironmentState) -> set[EnvironmentState]:
-    return (DOCUMENTED_EDGES[state] | ANY_STATE_TARGETS) - {state}
+def test_code_table_declares_every_documented_state() -> None:
+    assert set(EnvironmentState) == set(TABLE.edges)
+    assert set(EXPLICIT_TRANSITIONS) == set(TABLE.edges)
 
 
-def test_transition_table_matches_docs() -> None:
-    assert {state: set(targets) for state, targets in EXPLICIT_TRANSITIONS.items()} == (
-        DOCUMENTED_EDGES
-    )
+def test_code_explicit_edges_match_docs() -> None:
+    assert {state: set(targets) for state, targets in EXPLICIT_TRANSITIONS.items()} == {
+        state: set(TABLE.edges[state]) for state in TABLE.states
+    }
 
 
 @pytest.mark.parametrize("state", list(EnvironmentState))
-def test_allowed_targets_add_any_state_edges(state: EnvironmentState) -> None:
-    assert allowed_targets(state) == expected_targets(state)
+def test_allowed_targets_follow_documented_edges(state: EnvironmentState) -> None:
+    assert allowed_targets(state) == TABLE.targets(state)
 
 
-@pytest.mark.parametrize("source", list(EnvironmentState))
-def test_every_other_pair_is_rejected(source: EnvironmentState) -> None:
-    for target in EnvironmentState:
-        if target in expected_targets(source):
-            assert can_transition(source, target)
-            require_transition(source, target)
-        else:
-            assert not can_transition(source, target)
-            with pytest.raises(EnvironmentStateError):
-                require_transition(source, target)
+@pytest.mark.parametrize(("source", "target"), TABLE.legal_edges())
+def test_documented_edge_is_allowed(source: EnvironmentState, target: EnvironmentState) -> None:
+    assert can_transition(source, target)
+    assert target in allowed_targets(source)
+    require_transition(source, target)
+
+
+@pytest.mark.parametrize(("source", "target"), TABLE.rejected_edges())
+def test_undocumented_edge_is_rejected(
+    source: EnvironmentState,
+    target: EnvironmentState,
+) -> None:
+    assert not can_transition(source, target)
+    with pytest.raises(EnvironmentStateError):
+        require_transition(source, target)
 
 
 @pytest.mark.parametrize("state", list(EnvironmentState))
-def test_self_transition_is_rejected(state: EnvironmentState) -> None:
+def test_self_transition_is_not_a_transition(state: EnvironmentState) -> None:
     assert not can_transition(state, state)
+    with pytest.raises(EnvironmentStateError):
+        require_transition(state, state)

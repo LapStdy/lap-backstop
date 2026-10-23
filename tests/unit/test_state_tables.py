@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import pytest
+
+from contracts import EnvironmentState, RunState
 from tests.state_tables import (
     DocumentTableError,
     environment_table,
     run_table,
 )
-
-from contracts import EnvironmentState, RunState
 
 SAMPLE = """\
 # 02 · 架构
