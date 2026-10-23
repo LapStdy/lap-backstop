@@ -27,6 +27,7 @@ from core.plugins import rpc_types
 from core.plugins.channel import WorkerChannel
 from core.plugins.errors import WorkerError
 from core.plugins.registry import PluginCapabilities, PluginRegistry
+from core.plugins.worker_options import WorkerConfig
 
 
 class EnvironmentProxy:
@@ -138,7 +139,7 @@ class RpcPluginHost:
         self._channels: dict[str, WorkerChannel] = {}
         self._rejected: list[str] = []
         for plugin_id in plugin_ids:
-            channel = WorkerChannel(plugin_id, plugins_root=plugins_root, log=log)
+            channel = WorkerChannel(plugin_id, WorkerConfig(plugins_root=plugins_root, log=log))
             try:
                 channel.start()
             except WorkerError as error:
@@ -165,6 +166,15 @@ class RpcPluginHost:
     def channels(self) -> Mapping[str, WorkerChannel]:
         """已启动的 worker 通道。"""
         return dict(self._channels)
+
+    @property
+    def degraded_plugin_ids(self) -> tuple[str, ...]:
+        """处于降级期的插件；路由接入多插件后据此跳过。"""
+        return tuple(
+            sorted(
+                plugin_id for plugin_id, channel in self._channels.items() if channel.is_degraded
+            )
+        )
 
     def close(self) -> None:
         """结束全部 worker 进程。"""

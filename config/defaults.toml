@@ -8,6 +8,7 @@ call_timeout_seconds = 300
 start_timeout_seconds = 15
 cancel_grace_seconds = 5
 max_restarts = 3
+degraded_retry_seconds = 300
 
 [recovery]
 max_attempts = 3

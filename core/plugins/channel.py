@@ -13,11 +13,11 @@ import sys
 import threading
 import time
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
 
-from contracts import Logger, RunContext
+from contracts import PLUGIN_EVENTS, EventType, Logger, RunContext
 from core.logging import NullLogger
 from core.plugins import rpc
 from core.plugins.errors import (
@@ -28,42 +28,28 @@ from core.plugins.errors import (
     WorkerPayloadError,
     WorkerTimeoutError,
 )
-from storage.defaults import default
+from core.plugins.worker_options import WorkerConfig
+from core.plugins.worker_process import close_streams, terminate_tree
 
 _POLL_SECONDS: Final = 0.05
 _STDERR_LINES: Final = 20
 _MAX_LINE_CHARS: Final = 8 * 1024 * 1024
-_KILL_TIMEOUT_SECONDS: Final = 10
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
+_PENDING: Final = object()
 
 
 class WorkerChannel:
     """一个插件的 worker 子进程；同一时刻只执行一个能力调用。"""
 
-    def __init__(
-        self,
-        plugin_id: str,
-        *,
-        plugins_root: Path,
-        log: Logger | None = None,
-        command: Sequence[str] | None = None,
-        call_timeout_seconds: float | None = None,
-        start_timeout_seconds: float | None = None,
-        cancel_grace_seconds: float | None = None,
-        max_restarts: int | None = None,
-    ) -> None:
+    def __init__(self, plugin_id: str, config: WorkerConfig) -> None:
         self.plugin_id = plugin_id
-        self._plugins_root = plugins_root
-        self._log: Logger = NullLogger() if log is None else log
+        self._config = config
+        self._log: Logger = NullLogger() if config.log is None else config.log
         self._command = (
-            list(command)
-            if command is not None
+            list(config.command)
+            if config.command is not None
             else [sys.executable, "-u", "-m", "core.plugins.worker"]
         )
-        self._call_timeout = _seconds("call_timeout_seconds", call_timeout_seconds)
-        self._start_timeout = _seconds("start_timeout_seconds", start_timeout_seconds)
-        self._cancel_grace = _seconds("cancel_grace_seconds", cancel_grace_seconds)
-        self._max_restarts = _count("max_restarts", max_restarts)
         self._process: subprocess.Popen[str] | None = None
         self._reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
@@ -71,7 +57,7 @@ class WorkerChannel:
         self._stderr: deque[str] = deque(maxlen=_STDERR_LINES)
         self._call_id = 0
         self._restart_failures = 0
-        self._degraded = False
+        self._degraded_until: float | None = None
         self._capabilities: frozenset[str] = frozenset()
 
     @property
@@ -81,8 +67,10 @@ class WorkerChannel:
 
     @property
     def is_degraded(self) -> bool:
-        """连续重启失败后为 True，后续调用直接失败。"""
-        return self._degraded
+        """连续失败后处于降级期；到期后允许再试。"""
+        if self._degraded_until is None:
+            return False
+        return time.monotonic() < self._degraded_until
 
     @property
     def capabilities(self) -> frozenset[str]:
@@ -100,8 +88,6 @@ class WorkerChannel:
         method: str,
         args: Mapping[str, Any],
         ctx: RunContext,
-        *,
-        timeout_seconds: float | None = None,
     ) -> object:
         """执行一次能力调用，返回 worker 的原始结果值。
 
@@ -110,34 +96,22 @@ class WorkerChannel:
             method: 能力方法名。
             args: 方法参数，JSON 可序列化。
             ctx: 本次运行上下文。
-            timeout_seconds: 覆盖默认调用超时。
 
         Returns:
-            worker 返回的 JSON 取值；由调用方按契约类型解码。
+            worker 返回的 JSON 取值；由代理按契约类型解码。
 
         Raises:
-            PluginDegradedError: 插件已因连续失败降级。
-            WorkerTimeoutError: 调用超过超时，进程已结束。
+            PluginDegradedError: 插件处于降级期。
+            WorkerTimeoutError: 调用超过超时，进程树已结束。
             WorkerCancelledError: 取消宽限期到期仍未返回。
             WorkerCrashError: 进程退出、写坏协议或启动失败。
             WorkerCallError: 插件方法抛出异常或返回失败结果。
-            WorkerPayloadError: 协议载荷不符合契约。
+            WorkerPayloadError: 协议载荷或插件事件不符合契约。
         """
-        limit = self._call_timeout if timeout_seconds is None else timeout_seconds
         self._ensure_started()
-        self._call_id += 1
-        call_id = self._call_id
-        self._send(
-            {
-                "kind": rpc.CALL,
-                "id": call_id,
-                "capability": capability,
-                "method": method,
-                "args": dict(args),
-                "context": rpc.encode_context(ctx),
-            }
-        )
-        return self._await_result(capability, method, call_id, ctx, limit)
+        call_id = self._next_call_id()
+        self._send_call(call_id, capability, method, args, ctx)
+        return self._await_result(call_id, capability, method, ctx)
 
     def close(self) -> None:
         """发送 shutdown 并结束进程树；已退出的通道重复关闭无副作用。"""
@@ -149,26 +123,49 @@ class WorkerChannel:
                 process.stdin.write(rpc.encode_line({"kind": rpc.SHUTDOWN}) + "\n")
                 process.stdin.flush()
                 process.wait(timeout=2)
-        _terminate_tree(process)
-        _close_streams(process)
+        terminate_tree(process)
+        close_streams(process)
         self._join_threads()
+
+    def _next_call_id(self) -> int:
+        self._call_id += 1
+        return self._call_id
+
+    def _send_call(
+        self,
+        call_id: int,
+        capability: str,
+        method: str,
+        args: Mapping[str, Any],
+        ctx: RunContext,
+    ) -> None:
+        self._send(
+            {
+                "kind": rpc.CALL,
+                "id": call_id,
+                "capability": capability,
+                "method": method,
+                "args": dict(args),
+                "context": rpc.encode_context(ctx),
+            }
+        )
 
     def _await_result(
         self,
+        call_id: int,
         capability: str,
         method: str,
-        call_id: int,
         ctx: RunContext,
-        limit: float,
     ) -> object:
         """等待本条调用的结果，期间处理日志与回调，超时或取消时结束进程。"""
-        deadline = time.monotonic() + limit
+        limits = self._config.limits
+        deadline = time.monotonic() + limits.call_timeout_seconds
         cancel_deadline: float | None = None
         while True:
             now = time.monotonic()
             if cancel_deadline is None and ctx.cancel.is_cancelled():
-                self._send_cancel(call_id)
-                cancel_deadline = now + self._cancel_grace
+                self._send({"kind": rpc.CANCEL, "id": call_id}, counts_as_failure=False)
+                cancel_deadline = now + limits.cancel_grace_seconds
             if cancel_deadline is not None and now >= cancel_deadline:
                 self._fail_process(counts_as_failure=False)
                 raise WorkerCancelledError(
@@ -177,26 +174,17 @@ class WorkerChannel:
             if now >= deadline:
                 self._fail_process()
                 raise WorkerTimeoutError(
-                    f"{capability}.{method} 超过调用超时 {limit:.1f} 秒，worker 已结束"
+                    f"{capability}.{method} 超过调用超时 {limits.call_timeout_seconds:.1f} 秒，"
+                    "worker 已结束"
                 )
-            reply = self._next_reply(deadline, now)
+            reply = self._receive(deadline, now)
             if reply is None:
                 continue
-            kind = reply.get("kind")
-            if kind == rpc.RESULT:
-                return self._result_value(reply, capability, method, call_id)
-            if kind == rpc.FAULT:
-                self._fail_process()
-                raise WorkerCrashError(f"worker 在调用中报故障：{reply.get('message')}")
-            if kind == rpc.NOTIFY:
-                self._handle_notify(reply, ctx)
-            elif kind == rpc.CALLBACK:
-                self._handle_callback(reply, ctx)
-            else:
-                self._fail_process()
-                raise WorkerPayloadError(f"未知协议消息：{kind!r}")
+            outcome = self._dispatch(reply, call_id, capability, method, ctx)
+            if outcome is not _PENDING:
+                return outcome
 
-    def _next_reply(self, deadline: float, now: float) -> Mapping[str, Any] | None:
+    def _receive(self, deadline: float, now: float) -> Mapping[str, Any] | None:
         """取一条 worker 消息；队列空或进程退出时给出对应结论。"""
         wait = min(_POLL_SECONDS, max(deadline - now, 0.0) or _POLL_SECONDS)
         try:
@@ -209,32 +197,53 @@ class WorkerChannel:
             raise WorkerCrashError(f"worker 在调用中退出：{tail}")
         return reply
 
-    def _result_value(
+    def _dispatch(
         self,
         reply: Mapping[str, Any],
+        call_id: int,
         capability: str,
         method: str,
-        call_id: int,
+        ctx: RunContext,
     ) -> object:
-        """校验结果消息并返回取值；协议不匹配按载荷错误失败。"""
-        if reply.get("id") != call_id:
-            self._fail_process()
-            raise WorkerPayloadError(f"{capability}.{method} 收到错配的结果 id：{reply.get('id')}")
-        if reply.get("ok") is True:
+        """分派一条消息：结果、日志、回调或协议错误。"""
+        kind = reply.get("kind")
+        if kind == rpc.RESULT:
+            if reply.get("id") != call_id:
+                self._fail_process()
+                raise WorkerPayloadError(
+                    f"{capability}.{method} 收到错配的结果 id：{reply.get('id')}"
+                )
+            if reply.get("ok") is not True:
+                raise WorkerCallError(_describe_failure(reply, capability, method))
             self._restart_failures = 0
+            self._degraded_until = None
             return reply.get("value")
-        raise WorkerCallError(_describe_failure(reply, capability, method))
+        if kind == rpc.FAULT:
+            self._fail_process()
+            raise WorkerCrashError(f"worker 在调用中报故障：{reply.get('message')}")
+        if kind == rpc.NOTIFY:
+            self._handle_notify(reply, ctx)
+            return _PENDING
+        if kind == rpc.CALLBACK:
+            self._handle_callback(reply, ctx)
+            return _PENDING
+        self._fail_process()
+        raise WorkerPayloadError(f"未知协议消息：{kind!r}")
 
     def _ensure_started(self) -> None:
-        if self._degraded:
-            raise PluginDegradedError(f"插件 {self.plugin_id} 已降级，停止接收调用")
+        if self.is_degraded:
+            raise PluginDegradedError(f"插件 {self.plugin_id} 处于降级期，停止接收调用")
+        if self._degraded_until is not None:
+            self._degraded_until = None
+            self._restart_failures = 0
+            self._log.info({"event": "plugin.recovered", "plugin_id": self.plugin_id})
         if self._process is not None and self._process.poll() is None:
             return
         self._start()
 
     def _start(self) -> None:
         self._discard_process()
-        command = [*self._command, self.plugin_id, "--plugins-root", str(self._plugins_root)]
+        command = [*self._command, self.plugin_id, "--plugins-root", str(self._config.plugins_root)]
         process = subprocess.Popen(
             command,
             cwd=_REPO_ROOT,
@@ -265,7 +274,7 @@ class WorkerChannel:
         self._await_ready(messages)
 
     def _await_ready(self, messages: queue.Queue[dict[str, Any] | None]) -> None:
-        deadline = time.monotonic() + self._start_timeout
+        deadline = time.monotonic() + self._config.limits.start_timeout_seconds
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -380,11 +389,12 @@ class WorkerChannel:
 
     def _run_callback(self, op: object, args: Mapping[str, Any], ctx: RunContext) -> object:
         if op == "emit":
-            event = _text(args, "event")
+            event = _plugin_event(_text(args, "event"))
             payload = args.get("payload")
             if not isinstance(payload, Mapping):
                 raise WorkerPayloadError("emit 的 payload 应为对象")
-            ctx.emit(event, payload)
+            _check_plugin_payload(event, payload)
+            ctx.emit(event.value, payload)
             return None
         if op == "record_evidence":
             return ctx.record_evidence(
@@ -393,9 +403,6 @@ class WorkerChannel:
                 _text(args, "summary"),
             )
         raise WorkerPayloadError(f"未知回调：{op!r}")
-
-    def _send_cancel(self, call_id: int) -> None:
-        self._send({"kind": rpc.CANCEL, "id": call_id}, counts_as_failure=False)
 
     def _send(self, message: Mapping[str, Any], *, counts_as_failure: bool = True) -> None:
         process = self._process
@@ -414,22 +421,24 @@ class WorkerChannel:
         if not counts_as_failure:
             return
         self._restart_failures += 1
-        if self._restart_failures >= self._max_restarts:
-            self._degraded = True
-            self._log.error(
-                {
-                    "event": "plugin.degraded",
-                    "plugin_id": self.plugin_id,
-                    "failures": self._restart_failures,
-                }
-            )
+        if self._restart_failures < self._config.limits.max_restarts:
+            return
+        self._degraded_until = time.monotonic() + self._config.limits.degraded_retry_seconds
+        self._log.error(
+            {
+                "event": "plugin.degraded",
+                "plugin_id": self.plugin_id,
+                "failures": self._restart_failures,
+                "retry_after_seconds": self._config.limits.degraded_retry_seconds,
+            }
+        )
 
     def _discard_process(self) -> None:
         process, self._process = self._process, None
         if process is None:
             return
-        _terminate_tree(process)
-        _close_streams(process)
+        terminate_tree(process)
+        close_streams(process)
         self._join_threads()
 
     def _join_threads(self) -> None:
@@ -452,29 +461,26 @@ class WorkerChannel:
         return " | ".join(line for line in self._stderr if line)[-800:]
 
 
-def _terminate_tree(process: subprocess.Popen[str]) -> None:
-    """结束进程及其子进程；Windows 用 taskkill /T，避免插件拉起的脚本变成孤儿。"""
-    if process.poll() is not None:
+def _plugin_event(name: str) -> EventType:
+    """插件只能写 PLUGIN_EVENTS 里的事件；其余事件由内核写。"""
+    try:
+        event = EventType(name)
+    except ValueError as error:
+        raise WorkerPayloadError(f"未知事件类型：{name}") from error
+    if event not in PLUGIN_EVENTS:
+        raise WorkerPayloadError(f"插件不能写内核事件：{name}")
+    return event
+
+
+def _check_plugin_payload(event: EventType, payload: Mapping[str, Any]) -> None:
+    if event is not EventType.RUN_SIGNAL:
         return
-    if sys.platform == "win32":
-        with contextlib.suppress(OSError, subprocess.SubprocessError):
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                capture_output=True,
-                timeout=_KILL_TIMEOUT_SECONDS,
-                check=False,
-            )
-    if process.poll() is None:
-        process.kill()
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        process.wait(timeout=_KILL_TIMEOUT_SECONDS)
-
-
-def _close_streams(process: subprocess.Popen[str]) -> None:
-    for stream in (process.stdin, process.stdout, process.stderr):
-        if stream is not None:
-            with contextlib.suppress(OSError, ValueError):
-                stream.close()
+    kind = payload.get("kind")
+    if not isinstance(kind, str) or not kind:
+        raise WorkerPayloadError("run.signal 的 kind 必须是非空字符串")
+    signal_payload = payload.get("payload", {})
+    if not isinstance(signal_payload, Mapping):
+        raise WorkerPayloadError("run.signal 的 payload 必须是对象")
 
 
 def _describe_failure(reply: Mapping[str, Any], capability: str, method: str) -> str:
@@ -491,17 +497,3 @@ def _text(data: Mapping[str, Any], key: str) -> str:
     if not isinstance(value, str):
         raise WorkerPayloadError(f"{key} 应为字符串")
     return value
-
-
-def _seconds(key: str, value: float | None) -> float:
-    result = float(default("worker", key)) if value is None else value
-    if result <= 0:
-        raise ValueError(f"worker.{key} 必须大于 0")
-    return result
-
-
-def _count(key: str, value: int | None) -> int:
-    result = int(default("worker", key)) if value is None else value
-    if result <= 0:
-        raise ValueError(f"worker.{key} 必须大于 0")
-    return result
