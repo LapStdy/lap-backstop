@@ -1,0 +1,28 @@
+# 内核默认值：唯一真源（docs/11 配置一节）。
+# 业务配置（调度、模板、插件配置、通知）存数据库 settings 表；这里是代码内置默认值与范围的基线。
+
+[worker]
+deadline_minutes = 30
+max_observations = 10
+
+[recovery]
+max_attempts = 3
+backoff_seconds = [30, 120, 300]
+
+[leases]
+default_ttl_seconds = 600
+renew_interval_seconds = 60
+recover_delay_seconds = 60
+
+[storage]
+busy_timeout_ms = 5000
+
+[scheduler]
+timezone = "Asia/Shanghai"
+catch_up = "run_once"
+window_minutes = 120
+coalesce = true
+priority = 0
+deadline_minutes = 180
+preheat_minutes = 0
+keep_warm_minutes = 0

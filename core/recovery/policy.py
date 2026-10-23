@@ -12,9 +12,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from contracts import ErrorCode, RecoveryAction, default_recovery
+from storage.defaults import default
 
-DEFAULT_MAX_ATTEMPTS = 3
-DEFAULT_BACKOFF_SECONDS: tuple[int, ...] = (30, 120, 300)
+DEFAULT_MAX_ATTEMPTS = int(default("recovery", "max_attempts"))
+DEFAULT_BACKOFF_SECONDS: tuple[int, ...] = tuple(
+    int(seconds) for seconds in default("recovery", "backoff_seconds")
+)
 
 
 class RecoveryPolicyError(ValueError):

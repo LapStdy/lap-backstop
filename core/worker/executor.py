@@ -44,13 +44,14 @@ from core.logging import NullLogger
 from core.plugins.registry import PluginRegistry
 from core.recovery.policy import RecoveryPolicy
 from core.resources.service import LeaseService
+from storage.defaults import default
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
 from storage.repositories.job_templates import JobTemplateRepository, JobTemplateRow
 from storage.repositories.resources import ResourceRepository
 
-_MAX_OBSERVATIONS = 10
-_DEFAULT_DEADLINE = timedelta(minutes=30)
+_MAX_OBSERVATIONS = int(default("worker", "max_observations"))
+_DEFAULT_DEADLINE = timedelta(minutes=int(default("worker", "deadline_minutes")))
 _TERMINAL_BY_VERDICT: Mapping[VerdictStatus, RunState] = {
     VerdictStatus.COMPLETED: RunState.SUCCEEDED,
     VerdictStatus.FAILED: RunState.FAILED,

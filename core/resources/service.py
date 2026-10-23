@@ -12,13 +12,14 @@ from contracts import Clock, EventType
 from core.jobs.errors import RunNotFoundError
 from core.resources.errors import ResourceBusyError, ResourceNotFoundError
 from storage.db.transaction import transaction
+from storage.defaults import default
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRepository
 from storage.repositories.leases import LeaseRepository, LeaseRow, NewLease
 from storage.repositories.resources import ResourceRepository
 
 OWNER = "supervisor"
-DEFAULT_TTL = timedelta(minutes=10)
+DEFAULT_TTL = timedelta(seconds=int(default("leases", "default_ttl_seconds")))
 
 
 class LeaseService:

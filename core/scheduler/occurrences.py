@@ -12,6 +12,7 @@ from enum import StrEnum
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from core.scheduler.cron import CronSpec, CronSyntaxError, parse_cron
+from storage.defaults import default
 
 _ONE_MINUTE = timedelta(minutes=1)
 _ONE_DAY = timedelta(days=1)
@@ -30,6 +31,16 @@ class CatchUp(StrEnum):
     WINDOW = "window"
 
 
+_DEFAULT_TIMEZONE = str(default("scheduler", "timezone"))
+_DEFAULT_CATCH_UP = CatchUp(str(default("scheduler", "catch_up")))
+_DEFAULT_WINDOW_MINUTES = int(default("scheduler", "window_minutes"))
+_DEFAULT_COALESCE = bool(default("scheduler", "coalesce"))
+_DEFAULT_PRIORITY = int(default("scheduler", "priority"))
+_DEFAULT_DEADLINE_MINUTES = int(default("scheduler", "deadline_minutes"))
+_DEFAULT_PREHEAT_MINUTES = int(default("scheduler", "preheat_minutes"))
+_DEFAULT_KEEP_WARM_MINUTES = int(default("scheduler", "keep_warm_minutes"))
+
+
 class ScheduleError(ValueError):
     """调度配置不合法，对应错误码 E_CONFIG。"""
 
@@ -40,14 +51,14 @@ class ScheduleSpec:
 
     id: str
     kind: ScheduleKind
-    timezone: str
-    catch_up: CatchUp = CatchUp.RUN_ONCE
-    window_minutes: int = 120
-    coalesce: bool = True
-    priority: int = 0
-    deadline_minutes: int = 180
-    preheat_minutes: int = 0
-    keep_warm_minutes: int = 0
+    timezone: str = _DEFAULT_TIMEZONE
+    catch_up: CatchUp = _DEFAULT_CATCH_UP
+    window_minutes: int = _DEFAULT_WINDOW_MINUTES
+    coalesce: bool = _DEFAULT_COALESCE
+    priority: int = _DEFAULT_PRIORITY
+    deadline_minutes: int = _DEFAULT_DEADLINE_MINUTES
+    preheat_minutes: int = _DEFAULT_PREHEAT_MINUTES
+    keep_warm_minutes: int = _DEFAULT_KEEP_WARM_MINUTES
     expr: str | None = None
     at: datetime | None = None
     every_minutes: int | None = None

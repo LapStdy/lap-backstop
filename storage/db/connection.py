@@ -9,7 +9,9 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-BUSY_TIMEOUT_MS = 5000
+from storage.defaults import default
+
+BUSY_TIMEOUT_MS = int(default("storage", "busy_timeout_ms"))
 
 
 def open_database(path: Path) -> sqlite3.Connection:

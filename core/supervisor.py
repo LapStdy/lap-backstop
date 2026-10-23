@@ -23,6 +23,7 @@ from core.resources.errors import ResourceBusyError
 from core.resources.service import LeaseService
 from core.scheduler.scan import ScheduleScanner
 from core.worker.executor import CancelFlag, WorkerExecutor
+from storage.defaults import default
 from storage.repositories.environments import EnvironmentRow
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
@@ -30,8 +31,8 @@ from storage.repositories.job_templates import JobTemplateRepository
 from storage.repositories.leases import LeaseRow
 from storage.repositories.schedules import ScheduleRepository
 
-_RENEW_INTERVAL = timedelta(seconds=60)
-_LEASE_RECOVER_DELAY = timedelta(seconds=60)
+_RENEW_INTERVAL = timedelta(seconds=int(default("leases", "renew_interval_seconds")))
+_LEASE_RECOVER_DELAY = timedelta(seconds=int(default("leases", "recover_delay_seconds")))
 _HOLDING_LEASE_STATES = frozenset(
     {
         RunState.PREPARING,
