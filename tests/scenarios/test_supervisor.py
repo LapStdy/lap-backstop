@@ -24,6 +24,7 @@ from core.clock import VirtualClock
 from core.environments.service import EnvironmentService
 from core.jobs.run_service import JobRunService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
+from core.plugins.rpc_host import RpcPluginHost
 from core.resources.service import LeaseService
 from core.supervisor import Supervisor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
@@ -259,3 +260,19 @@ def test_cancel_during_execute_stops_script_gracefully(
     assert EnvironmentService(connection, clock).get(ENV_ID).state is EnvironmentState.OFF
     interrupted = [event for event in runs.events(run_id) if event.type == "run.interrupted"]
     assert len(interrupted) == 1
+
+
+def test_dispatch_uses_rpc_registry(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """supervisor 拿到 RPC 能力表时，一次 tick 就能把运行推到终态。"""
+    connection, clock, runs, data_root = env
+    insert_template(connection)
+    run_id = prepare_run(connection, runs)
+    runs.enqueue(run_id)
+    plugins_root = Path(__file__).resolve().parents[2] / "plugins"
+    with RpcPluginHost(plugins_root, ["fake"]) as host:
+        supervisor = Supervisor(connection, clock, host.registry, data_root=data_root)
+        supervisor.tick()
+        assert runs.get(run_id).state is RunState.SUCCEEDED
+        assert host.channels["fake"].pid is not None
