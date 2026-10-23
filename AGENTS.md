@@ -27,6 +27,7 @@ python scripts/check_artifacts.py .
 
 ## 项目状态
 
-项目定位与内核/插件契约见 README「项目定义」与 [docs/02-架构.md](docs/02-架构.md)；没做的事记在 `TASKS.md`。代码未开始；目录结构见 [ADR 0001](docs/adr/0001-分层与目录结构.md)。
+项目定位与内核/插件契约见 README「项目定义」与 [docs/02-架构.md](docs/02-架构.md)；没做的事记在 `TASKS.md`。
+代码在 `contracts/`、`storage/`、`core/` 与 `plugins/fake/`；测试与门禁见 [docs/12](docs/12-测试与质量门禁.md)，目录结构见 [ADR 0001](docs/adr/0001-分层与目录结构.md)。
 写代码前先读 `docs/10-工程宪法.md`、`docs/11-代码规约.md` 与 `docs/05-插件与适配器.md`；交付前过 [12 的门禁](docs/12-测试与质量门禁.md)。
 `scripts/check_artifacts.py` 是本项目第一个工具，不属于应用结构。
