@@ -17,7 +17,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Final
 
-from contracts import Clock, Logger, RunContext
+from contracts import Logger, RunContext
 from core.logging import NullLogger
 from core.plugins import rpc
 from core.plugins.errors import (
@@ -43,7 +43,6 @@ class WorkerChannel:
         plugin_id: str,
         *,
         plugins_root: Path,
-        clock: Clock | None = None,
         log: Logger | None = None,
         command: Sequence[str] | None = None,
         call_timeout_seconds: float | None = None,

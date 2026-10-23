@@ -28,6 +28,7 @@ from contracts import (
 from core.clock import VirtualClock
 from core.environments.service import EnvironmentService
 from core.jobs.run_service import JobRunService
+from core.plugins.errors import WorkerCancelledError, WorkerTimeoutError
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
 from core.worker.executor import CancelFlag, WorkerExecutor
@@ -386,3 +387,49 @@ def test_cleanup_failure_logs_warning_and_recovery_continues(
         level == "WARNING" and fields.get("event") == "executor.cleanup_failed"
         for level, fields in logger.entries
     )
+
+
+class _RaisingVerifier:
+    """验证阶段抛出指定异常，用来覆盖跨进程错误到运行终态的映射。"""
+
+    def __init__(self, error: WorkerTimeoutError | WorkerCancelledError) -> None:
+        self._error = error
+
+    def verify(self, ctx: RunContext) -> Verdict:
+        raise self._error
+
+
+def _registry_with_verifier(verifier: Any) -> PluginRegistry:
+    registry = PluginRegistry()
+    registry.register(
+        PluginCapabilities(
+            plugin_id="fake",
+            environment=FakeEnvironmentProvider(),
+            script=FakeScriptAdapter(),
+            verifier=verifier,
+        )
+    )
+    return registry
+
+
+def test_worker_timeout_ends_with_deadline(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    registry = _registry_with_verifier(_RaisingVerifier(WorkerTimeoutError("调用超时")))
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_DEADLINE"
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()
+
+
+def test_worker_cancel_ends_run_cancelled(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    registry = _registry_with_verifier(_RaisingVerifier(WorkerCancelledError("已叫停")))
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    assert result.state is RunState.CANCELLED
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()

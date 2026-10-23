@@ -41,6 +41,7 @@ from core.events.verdicts import VerdictError, VerdictService
 from core.jobs.phases import PhaseTracker
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
+from core.plugins.errors import WorkerCancelledError, WorkerTimeoutError
 from core.plugins.registry import PluginRegistry
 from core.recovery.policy import RecoveryPolicy
 from core.resources.service import LeaseService
@@ -162,6 +163,14 @@ class WorkerExecutor:
                 or self._verify(scope)
                 or self._clean(scope)
             )
+        except WorkerCancelledError:
+            self._log.info({"event": "executor.worker_cancelled", "run_id": scope.run_id})
+            return self._cancel_run(scope, started=True)
+        except WorkerTimeoutError as error:
+            self._log.warn(
+                {"event": "executor.worker_timeout", "run_id": scope.run_id, "error": str(error)}
+            )
+            return self._recover(scope, "E_DEADLINE", "worker_timeout")
         except Exception as error:  # 插件异常不能拖垮内核：按崩溃收尾
             self._log.error(
                 {"event": "executor.error", "run_id": scope.run_id, "error": str(error)}
