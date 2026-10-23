@@ -16,6 +16,7 @@ from core.plugins import rpc
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGINS_ROOT = REPO_ROOT / "plugins"
+FIXTURE_PLUGINS = Path(__file__).resolve().parents[1] / "fixtures" / "plugins"
 
 
 class WorkerProcess:
@@ -64,11 +65,12 @@ class WorkerProcess:
         *,
         config: Mapping[str, Any] | None = None,
         on_callback: Callable[[dict[str, Any]], Any] | None = None,
+        call_id: int = 1,
     ) -> dict[str, Any]:
         assert self._process.stdin is not None
         message = {
             "kind": rpc.CALL,
-            "id": 1,
+            "id": call_id,
             "capability": capability,
             "method": method,
             "args": dict(args),
@@ -86,6 +88,11 @@ class WorkerProcess:
                 return reply
             else:
                 raise AssertionError(f"意外消息：{reply}")
+
+    def send(self, message: Mapping[str, Any]) -> None:
+        assert self._process.stdin is not None
+        self._process.stdin.write(json.dumps(dict(message)) + "\n")
+        self._process.stdin.flush()
 
     def close(self) -> int:
         assert self._process.stdin is not None
@@ -205,11 +212,15 @@ def test_plugin_stdout_stays_out_of_protocol(tmp_path: Path) -> None:
     package = plugin_root / "printy"
     package.mkdir(parents=True)
     (package / "plugin.py").write_text(
+        "import subprocess\n"
+        "import sys\n"
+        "\n"
         "from contracts import EnvironmentProbe, EnvironmentState\n"
         "\n"
         "class Environment:\n"
         "    def probe(self, env, ctx):\n"
         "        print('插件打印不应该进协议')\n"
+        "        subprocess.run([sys.executable, '-c', \"print('child pollution')\"], check=True)\n"
         "        return EnvironmentProbe(state=EnvironmentState.READY, detail='打印过了')\n"
         "\n"
         "class Plugin:\n"
@@ -227,5 +238,19 @@ def test_plugin_stdout_stays_out_of_protocol(tmp_path: Path) -> None:
         )
         assert reply["ok"] is True
         assert reply["value"]["detail"] == "打印过了"
+    finally:
+        session.close()
+
+
+def test_cancel_is_scoped_to_one_call(tmp_path: Path) -> None:
+    """取消按调用 id 生效：一次调用的取消不能让同一 worker 的后续调用都被标记。"""
+    session = WorkerProcess(tmp_path, "cancel_probe", plugins_root=FIXTURE_PLUGINS)
+    args = {"env": {"id": "env-1", "provider_id": "cancel_probe", "config": {}}}
+    try:
+        first = session.call("environment", "probe", args, call_id=1)
+        assert first["value"]["detail"] == "cancelled=False"
+        session.send({"kind": rpc.CANCEL, "id": 1})
+        second = session.call("environment", "probe", args, call_id=2)
+        assert second["value"]["detail"] == "cancelled=False"
     finally:
         session.close()

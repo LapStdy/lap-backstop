@@ -28,7 +28,12 @@ from contracts import (
 from core.clock import VirtualClock
 from core.environments.service import EnvironmentService
 from core.jobs.run_service import JobRunService
-from core.plugins.errors import WorkerCancelledError, WorkerTimeoutError
+from core.plugins.errors import (
+    WorkerCallError,
+    WorkerCancelledError,
+    WorkerCrashError,
+    WorkerTimeoutError,
+)
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
 from core.worker.executor import CancelFlag, WorkerExecutor
@@ -392,7 +397,10 @@ def test_cleanup_failure_logs_warning_and_recovery_continues(
 class _RaisingVerifier:
     """验证阶段抛出指定异常，用来覆盖跨进程错误到运行终态的映射。"""
 
-    def __init__(self, error: WorkerTimeoutError | WorkerCancelledError) -> None:
+    def __init__(
+        self,
+        error: WorkerTimeoutError | WorkerCancelledError | WorkerCrashError | WorkerCallError,
+    ) -> None:
         self._error = error
 
     def verify(self, ctx: RunContext) -> Verdict:
@@ -433,3 +441,25 @@ def test_worker_cancel_ends_run_cancelled(
     result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
+
+
+def test_worker_crash_keeps_plugin_crash_code(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    registry = _registry_with_verifier(_RaisingVerifier(WorkerCrashError("进程退出")))
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    assert result.state is RunState.RECOVERING
+    assert result.error_code == "E_PLUGIN_CRASH"
+
+
+def test_worker_call_error_keeps_plugin_code(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    registry = _registry_with_verifier(_RaisingVerifier(WorkerCallError("插件方法抛异常")))
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_PLUGIN"

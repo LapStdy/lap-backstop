@@ -30,6 +30,7 @@ from core.plugins.errors import (
 
 NOW = datetime(2026, 10, 24, 2, 0, tzinfo=UTC)
 STUB = Path(__file__).resolve().parents[1] / "fixtures" / "worker_stub.py"
+PLUGIN_FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "plugins"
 CALL_TIMEOUT_SECONDS = 0.2
 START_TIMEOUT_SECONDS = 0.5
 CANCEL_GRACE_SECONDS = 0.2
@@ -201,7 +202,7 @@ def test_start_declares_capabilities(channels: _ChannelFactory) -> None:
     assert capabilities == frozenset({"environment"})
     assert channel.pid is not None
     assert channel.pid != os.getpid()
-    assert channel.degraded is False
+    assert channel.is_degraded is False
 
 
 def test_call_returns_worker_value(channels: _ChannelFactory) -> None:
@@ -209,7 +210,7 @@ def test_call_returns_worker_value(channels: _ChannelFactory) -> None:
     value = channel.call("environment", "probe", {}, _context(channels.tmp_path))
     assert value == OK_VALUE
     assert channel.pid is not None
-    assert channel.degraded is False
+    assert channel.is_degraded is False
 
 
 def test_call_timeout_kills_worker(channels: _ChannelFactory) -> None:
@@ -222,7 +223,7 @@ def test_call_timeout_kills_worker(channels: _ChannelFactory) -> None:
         channel.call("environment", "probe", {}, _context(channels.tmp_path))
     assert time.monotonic() - started >= CALL_TIMEOUT_SECONDS
     assert channel.pid is None
-    assert channel.degraded is False
+    assert channel.is_degraded is False
     assert _process_ended(pid) is True
 
 
@@ -236,12 +237,12 @@ def test_crash_then_next_call_restarts_worker(channels: _ChannelFactory) -> None
         channel.call("environment", "probe", {}, _context(channels.tmp_path))
     assert channel.pid is None
     assert _process_ended(first_pid) is True
-    assert channel.degraded is False
+    assert channel.is_degraded is False
     value = channel.call("environment", "probe", {}, _context(channels.tmp_path))
     assert value == OK_VALUE
     assert channel.pid is not None
     assert channel.pid != first_pid
-    assert channel.degraded is False
+    assert channel.is_degraded is False
 
 
 def test_repeated_failures_degrade_channel(channels: _ChannelFactory) -> None:
@@ -252,13 +253,13 @@ def test_repeated_failures_degrade_channel(channels: _ChannelFactory) -> None:
         with pytest.raises(WorkerCrashError):
             channel.call("environment", "probe", {}, _context(channels.tmp_path))
         assert channel.pid is None
-    assert channel.degraded is True
+    assert channel.is_degraded is True
     degraded = [fields for level, fields in log.entries if fields.get("event") == "plugin.degraded"]
     assert degraded == [{"event": "plugin.degraded", "plugin_id": "stub", "failures": 2}]
     with pytest.raises(PluginDegradedError):
         channel.call("environment", "probe", {}, _context(channels.tmp_path))
     assert channel.pid is None
-    assert channel.degraded is True
+    assert channel.is_degraded is True
 
 
 def test_success_resets_failure_counter(channels: _ChannelFactory) -> None:
@@ -266,12 +267,12 @@ def test_success_resets_failure_counter(channels: _ChannelFactory) -> None:
     channel = channels("sequence", control=control)
     with pytest.raises(WorkerCrashError):
         channel.call("environment", "probe", {}, _context(channels.tmp_path))
-    assert channel.degraded is False
+    assert channel.is_degraded is False
     assert channel.call("environment", "probe", {}, _context(channels.tmp_path)) == OK_VALUE
     for _ in range(2):
         with pytest.raises(WorkerCrashError):
             channel.call("environment", "probe", {}, _context(channels.tmp_path))
-    assert channel.degraded is False
+    assert channel.is_degraded is False
 
 
 def test_cancel_grace_kills_worker(channels: _ChannelFactory) -> None:
@@ -296,7 +297,7 @@ def test_cancel_grace_kills_worker(channels: _ChannelFactory) -> None:
         timer.cancel()
     assert time.monotonic() - started >= CANCEL_GRACE_SECONDS
     assert channel.pid is None
-    assert channel.degraded is False
+    assert channel.is_degraded is False
     assert _process_ended(pid) is True
 
 
@@ -317,7 +318,7 @@ def test_cancel_does_not_count_as_restart_failure(channels: _ChannelFactory) -> 
             )
     finally:
         timer.cancel()
-    assert channel.degraded is False
+    assert channel.is_degraded is False
 
 
 @pytest.mark.parametrize(
@@ -333,7 +334,7 @@ def test_start_failure_raises_crash(
     with pytest.raises(WorkerCrashError, match=reason):
         channel.start()
     assert channel.pid is None
-    assert channel.degraded is False
+    assert channel.is_degraded is False
 
 
 def test_callback_result_is_applied_by_context(channels: _ChannelFactory) -> None:
@@ -370,7 +371,7 @@ def test_bad_json_counts_as_crash(channels: _ChannelFactory) -> None:
     with pytest.raises(WorkerCrashError):
         channel.call("environment", "probe", {}, _context(channels.tmp_path))
     assert channel.pid is None
-    assert channel.degraded is False
+    assert channel.is_degraded is False
     assert _process_ended(pid) is True
 
 
@@ -382,3 +383,25 @@ def test_close_ends_worker(channels: _ChannelFactory) -> None:
     channel.close()
     assert channel.pid is None
     assert _process_ended(pid) is True
+
+
+def test_timeout_kills_process_tree(tmp_path: Path) -> None:
+    """超时强杀要连插件拉起的子进程一起结束，不能留下孤儿。"""
+    channel = WorkerChannel(
+        "child",
+        plugins_root=PLUGIN_FIXTURES,
+        call_timeout_seconds=0.8,
+        start_timeout_seconds=5.0,
+    )
+    try:
+        with pytest.raises(WorkerTimeoutError):
+            channel.call(
+                "environment",
+                "probe",
+                {"env": {"id": "env-1", "provider_id": "child", "config": {}}},
+                _context(tmp_path),
+            )
+        child_pid = int((tmp_path / "work" / "child.pid").read_text(encoding="utf-8"))
+        assert _process_ended(child_pid) is True
+    finally:
+        channel.close()

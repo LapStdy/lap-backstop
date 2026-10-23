@@ -146,15 +146,15 @@ def test_plugin_runs_in_a_separate_process(
     assert channel.pid != os.getpid()
 
 
-def test_crash_scenario_enters_recovery_with_plugin_crash(
+def test_plugin_exception_fails_with_plugin_error(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
     host: RpcPluginHost,
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "crash")
     result = executor_for(connection, clock, data_root, host).execute(run_id)
-    assert result.state is RunState.RECOVERING
-    assert result.error_code == "E_PLUGIN_CRASH"
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_PLUGIN"
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
 
 
