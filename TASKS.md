@@ -16,8 +16,6 @@
 
 ## P0 修复：质量审查发现（2026-10-24）
 
-- [ ] 规范卫生：`JsonLineLogger` 补 at/event 字段；默认值集中 `config/defaults.toml`；`Capability`/`PhaseName` 用 StrEnum；`core/worker`、`core/clock`、`core/logging` 补 ADR；`_optional_str`/`placeholders` 收敛；`gate.py` 加超时；fake 插件公开方法补 docstring；后续提交 ≤400 行
-  验收：六条门禁全绿，ADR 落盘。
 - [ ] 测试改进：状态机用例由 docs/02 迁移表生成，避免测试与文档各抄一份（docs/12:38）
 
 ## P1：MAA 插件与方舟环境
