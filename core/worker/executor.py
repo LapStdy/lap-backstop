@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -74,6 +75,26 @@ class CancelFlag:
         return self._cancelled
 
 
+@dataclass(slots=True)
+class RunScope:
+    """一次执行共享的状态：阶段方法只拿这一份，不再传宽参数表。"""
+
+    run: JobRunRecord
+    template: JobTemplateRow
+    call: EnvironmentCall
+    script: ScriptAdapter
+    verifier: Verifier
+    context: RunContext
+    handle: ScriptHandle | None = None
+    verdict: Verdict | None = None
+    verify_error: str | None = None
+
+    @property
+    def run_id(self) -> str:
+        """运行 id 的短别名；日志与事件用。"""
+        return self.run.id
+
+
 class WorkerExecutor:
     """一次 JobRun 的四阶段执行。"""
 
@@ -115,37 +136,16 @@ class WorkerExecutor:
         template = self._templates.get(run.template_id)
         if template is None:
             return self._fail_missing_template(run)
-        provider = self._registry.environment(template.plugin_id)
-        script = self._registry.script(template.plugin_id)
-        verifier = self._registry.verifier(template.plugin_id)
-        environment_id = template.environment_id
-        self._resources.ensure(
-            environment_id,
-            resource_type="environment",
-            name=environment_id,
-        )
-        self._environments.register(
-            environment_id,
-            provider_id=template.plugin_id,
-            name=environment_id,
-        )
+        scope = self._begin(run, template)
         if self._cancel.is_cancelled():
-            return self._cancel_run(run.id)
-        if run.state is RunState.QUEUED:
-            self._leases.acquire(run.id, (environment_id,))
-            run = self._runs.transition(run.id, RunState.PREPARING)
-        context = self._build_context(run, template)
-        call = EnvironmentCall(
-            environment_id=environment_id,
-            provider=provider,
-            ref=EnvironmentRef(id=environment_id, provider_id=template.plugin_id),
-            ctx=context,
-        )
-        handle: ScriptHandle | None = None
+            return self._cancel_run(scope, started=False)
+        if scope.run.state is RunState.QUEUED:
+            self._leases.acquire(scope.run_id, (scope.call.environment_id,))
+            scope.run = self._runs.transition(scope.run.id, RunState.PREPARING)
         try:
-            if run.state is RunState.PREPARING:
-                phase = self._phases.start(run.id, "prepare", attempt=run.attempt)
-                prepared = self._environments.prepare(call)
+            if scope.run.state is RunState.PREPARING:
+                phase = self._phases.start(scope.run.id, "prepare", attempt=scope.run.attempt)
+                prepared = self._environments.prepare(scope.call)
                 self._phases.finish(
                     phase,
                     state=PhaseState.OK if prepared.ok else PhaseState.FAILED,
@@ -153,62 +153,43 @@ class WorkerExecutor:
                 )
                 if not prepared.ok:
                     return self._recover(
-                        run.id,
-                        call,
-                        script,
-                        handle,
-                        context,
-                        template,
+                        scope,
                         prepared.error_code or "E_ENV_WAKE_TIMEOUT",
                         "prepare",
                     )
-                run = self._runs.transition(run.id, RunState.WAITING)
+                scope.run = self._runs.transition(scope.run.id, RunState.WAITING)
             if self._cancel.is_cancelled():
-                return self._cancel_run(run.id, call, script, handle, context)
+                return self._cancel_run(scope, started=True)
             now = self._clock.utc_now()
-            if run.scheduled_at is not None and now < run.scheduled_at:
-                return run
-            if run.deadline_at is not None and now >= run.deadline_at:
-                return self._recover(
-                    run.id,
-                    call,
-                    script,
-                    handle,
-                    context,
-                    template,
-                    "E_DEADLINE",
-                    "deadline",
-                )
-            run = self._runs.transition(run.id, RunState.EXECUTING)
-            self._environments.mark_busy(call)
-            phase = self._phases.start(run.id, "execute", attempt=run.attempt)
-            handle = script.launch(
+            if scope.run.scheduled_at is not None and now < scope.run.scheduled_at:
+                return scope.run
+            if scope.run.deadline_at is not None and now >= scope.run.deadline_at:
+                return self._recover(scope, "E_DEADLINE", "deadline")
+            scope.run = self._runs.transition(scope.run.id, RunState.EXECUTING)
+            self._environments.mark_busy(scope.call)
+            phase = self._phases.start(scope.run.id, "execute", attempt=scope.run.attempt)
+            scope.handle = scope.script.launch(
                 ScriptRef(
-                    id=template.id,
-                    plugin_id=template.plugin_id,
-                    config=dict(template.config),
+                    id=scope.template.id,
+                    plugin_id=scope.template.plugin_id,
+                    config=dict(scope.template.config),
                 ),
-                context,
+                scope.context,
             )
-            observation = self._wait_for_script(script, handle, context)
+            observation = self._wait_for_script(scope.script, scope.handle, scope.context)
             if observation is None:
                 self._phases.finish(phase, state=PhaseState.TIMED_OUT, detail="deadline")
-                self._stop_script(script, handle, context)
-                return self._recover(
-                    run.id,
-                    call,
-                    script,
-                    None,
-                    context,
-                    template,
-                    "E_DEADLINE",
-                    "deadline",
-                )
+                self._stop_script(scope)
+                return self._recover(scope, "E_DEADLINE", "deadline")
             for signal in observation.signals:
                 self._events.append_run(
-                    run.id,
+                    scope.run.id,
                     EventType.RUN_SIGNAL,
-                    {"run_id": run.id, "kind": signal.kind, "payload": dict(signal.payload)},
+                    {
+                        "run_id": scope.run.id,
+                        "kind": signal.kind,
+                        "payload": dict(signal.payload),
+                    },
                     at=self._clock.utc_now(),
                 )
             hung = observation.state is ScriptState.HUNG
@@ -228,35 +209,24 @@ class WorkerExecutor:
                 detail=observation.state.value,
             )
             if hung:
-                self._stop_script(script, handle, context)
-                handle = None
+                self._stop_script(scope)
             if script_failed:
-                return self._recover(
-                    run.id,
-                    call,
-                    script,
-                    handle,
-                    context,
-                    template,
-                    "E_SCRIPT_TASK_FAILED",
-                    "script",
-                )
+                return self._recover(scope, "E_SCRIPT_TASK_FAILED", "script")
             if self._cancel.is_cancelled():
-                return self._cancel_run(run.id, call, script, handle, context)
-            run = self._runs.transition(run.id, RunState.VERIFYING)
-            phase = self._phases.start(run.id, "verify", attempt=run.attempt)
-            verdict, error_code = self._verify(run.id, verifier, context)
+                return self._cancel_run(scope, started=True)
+            scope.run = self._runs.transition(scope.run.id, RunState.VERIFYING)
+            phase = self._phases.start(scope.run.id, "verify", attempt=scope.run.attempt)
+            verdict, error_code = self._verify(scope.run.id, scope.verifier, scope.context)
             self._phases.finish(
                 phase,
                 state=PhaseState.FAILED if error_code is not None else PhaseState.OK,
                 detail=error_code or "",
             )
-            run = self._runs.transition(run.id, RunState.CLEANING)
-            phase = self._phases.start(run.id, "cleanup", attempt=run.attempt)
-            if handle is not None:
-                self._stop_script(script, handle, context)
+            scope.run = self._runs.transition(scope.run.id, RunState.CLEANING)
+            phase = self._phases.start(scope.run.id, "cleanup", attempt=scope.run.attempt)
+            self._stop_script(scope)
             cleaned = self._environments.cleanup(
-                call,
+                scope.call,
                 keep_warm=self._keep_warm_minutes > 0,
                 warm_minutes=self._keep_warm_minutes,
             )
@@ -265,38 +235,55 @@ class WorkerExecutor:
                 state=PhaseState.OK if cleaned.ok else PhaseState.FAILED,
                 detail=cleaned.detail,
             )
-            self._leases.release(run.id, reason="cleanup")
+            self._leases.release(scope.run.id, reason="cleanup")
             if not cleaned.ok:
-                return self._fail(
-                    run.id,
-                    call,
-                    script,
-                    None,
-                    context,
-                    cleaned.error_code or "E_ENV_UNREACHABLE",
-                    "cleanup",
-                )
+                return self._fail(scope, cleaned.error_code or "E_ENV_UNREACHABLE", "cleanup")
             if error_code is not None:
                 return self._runs.transition(
-                    run.id,
+                    scope.run.id,
                     RunState.UNKNOWN,
                     reason="verify_no_evidence",
                     error_code=error_code,
                 )
             target = RunState.UNKNOWN if verdict is None else _TERMINAL_BY_VERDICT[verdict.status]
-            return self._runs.transition(run.id, target, reason="verdict")
+            return self._runs.transition(scope.run.id, target, reason="verdict")
         except Exception as error:  # 插件异常不能拖垮内核：按崩溃收尾
-            self._log.error({"event": "executor.error", "run_id": run.id, "error": str(error)})
-            return self._recover(
-                run.id,
-                call,
-                script,
-                handle,
-                context,
-                template,
-                "E_PLUGIN_CRASH",
-                str(error),
+            self._log.error(
+                {"event": "executor.error", "run_id": scope.run_id, "error": str(error)}
             )
+            return self._recover(scope, "E_PLUGIN_CRASH", str(error))
+
+    def _begin(self, run: JobRunRecord, template: JobTemplateRow) -> RunScope:
+        """组装一次执行用的插件、环境引用与运行上下文。"""
+        provider = self._registry.environment(template.plugin_id)
+        script = self._registry.script(template.plugin_id)
+        verifier = self._registry.verifier(template.plugin_id)
+        environment_id = template.environment_id
+        self._resources.ensure(
+            environment_id,
+            resource_type="environment",
+            name=environment_id,
+        )
+        self._environments.register(
+            environment_id,
+            provider_id=template.plugin_id,
+            name=environment_id,
+        )
+        context = self._build_context(run, template)
+        call = EnvironmentCall(
+            environment_id=environment_id,
+            provider=provider,
+            ref=EnvironmentRef(id=environment_id, provider_id=template.plugin_id),
+            ctx=context,
+        )
+        return RunScope(
+            run=run,
+            template=template,
+            call=call,
+            script=script,
+            verifier=verifier,
+            context=context,
+        )
 
     def _wait_for_script(
         self,
@@ -358,30 +345,20 @@ class WorkerExecutor:
             error_code="E_CONFIG",
         )
 
-    def _recover(
-        self,
-        run_id: str,
-        call: EnvironmentCall,
-        script: ScriptAdapter,
-        handle: ScriptHandle | None,
-        context: RunContext,
-        template: JobTemplateRow,
-        error_code: str,
-        reason: str,
-    ) -> JobRunRecord:
+    def _recover(self, scope: RunScope, error_code: str, reason: str) -> JobRunRecord:
         """按模板策略决定恢复动作；退避等待由 resume 按 retry_at 控制。"""
         try:
-            policy = RecoveryPolicy.from_mapping(template.recovery_policy)
+            policy = RecoveryPolicy.from_mapping(scope.template.recovery_policy)
         except ValueError:
-            return self._fail(run_id, call, script, handle, context, "E_CONFIG", reason)
-        run = self._runs.get(run_id)
+            return self._fail(scope, "E_CONFIG", reason)
+        run = self._runs.get(scope.run_id)
         decision = policy.decide(error_code=error_code, attempt=run.attempt)
         now = self._clock.utc_now()
         self._events.append_run(
-            run_id,
+            scope.run_id,
             EventType.RECOVERY_STARTED,
             {
-                "run_id": run_id,
+                "run_id": scope.run_id,
                 "action": decision.action.value,
                 "attempt": decision.next_attempt,
             },
@@ -392,164 +369,112 @@ class WorkerExecutor:
             or decision.action is RecoveryAction.ABORT
             or run.state is RunState.CLEANING
         ):
-            return self._abort_recovery(
-                run_id,
-                call,
-                script,
-                handle,
-                context,
-                error_code,
-                decision.exhausted,
-                now,
-            )
-        applied = self._apply_action(decision.action, call, script, handle, context)
+            return self._abort_recovery(scope, error_code, exhausted=decision.exhausted)
+        applied = self._apply_action(scope, decision.action)
         self._events.append_run(
-            run_id,
+            scope.run_id,
             EventType.RECOVERY_FINISHED,
             {
-                "run_id": run_id,
+                "run_id": scope.run_id,
                 "action": decision.action.value,
                 "result": "ok" if applied else "failed",
             },
             at=now,
         )
         if not applied:
-            return self._abort_recovery(
-                run_id,
-                call,
-                script,
-                handle,
-                context,
-                error_code,
-                False,
-                now,
-            )
-        if handle is not None:
-            self._stop_script(script, handle, context)
+            return self._abort_recovery(scope, error_code, exhausted=False)
+        self._stop_script(scope)
         if decision.action is not RecoveryAction.RESET_ENVIRONMENT:
-            self._safe_cleanup(call, run_id=run_id, reason="recovering")
-        self._safe_release(run_id, reason="recovering")
+            self._safe_cleanup(scope.call, run_id=scope.run_id, reason="recovering")
+        self._safe_release(scope.run_id, reason="recovering")
         retry_at = now + timedelta(seconds=decision.delay_seconds)
         return self._runs.mark_recovering(
-            run_id,
+            scope.run_id,
             next_attempt=decision.next_attempt,
             retry_at=retry_at,
             error_code=error_code,
         )
 
-    def _abort_recovery(
-        self,
-        run_id: str,
-        call: EnvironmentCall,
-        script: ScriptAdapter,
-        handle: ScriptHandle | None,
-        context: RunContext,
-        error_code: str,
-        exhausted: bool,
-        now: datetime,
-    ) -> JobRunRecord:
-        if handle is not None:
-            self._stop_script(script, handle, context)
-        self._safe_cleanup(call, run_id=run_id, reason="recovery")
-        self._safe_release(run_id, reason="recovery")
-        current = self._runs.get(run_id)
+    def _abort_recovery(self, scope: RunScope, error_code: str, *, exhausted: bool) -> JobRunRecord:
+        """停手：停脚本、清理、释放租约，把运行记成 failed。"""
+        self._stop_script(scope)
+        self._safe_cleanup(scope.call, run_id=scope.run_id, reason="recovery")
+        self._safe_release(scope.run_id, reason="recovery")
+        current = self._runs.get(scope.run_id)
         if current.state in (RunState.EXECUTING, RunState.VERIFYING):
-            current = self._runs.transition(run_id, RunState.CLEANING, reason="recovery")
+            current = self._runs.transition(scope.run_id, RunState.CLEANING, reason="recovery")
         result = "exhausted" if exhausted else "aborted"
         code = "E_RECOVERY_EXHAUSTED" if exhausted else error_code
         finished = self._runs.transition(
-            run_id,
+            scope.run_id,
             RunState.FAILED,
             reason=result,
             error_code=code,
         )
         self._events.append_run(
-            run_id,
+            scope.run_id,
             EventType.RECOVERY_FINISHED,
             {
-                "run_id": run_id,
+                "run_id": scope.run_id,
                 "action": RecoveryAction.ABORT.value,
                 "result": result,
             },
-            at=now,
+            at=self._clock.utc_now(),
         )
         return finished
 
-    def _apply_action(
-        self,
-        action: RecoveryAction,
-        call: EnvironmentCall,
-        script: ScriptAdapter,
-        handle: ScriptHandle | None,
-        context: RunContext,
-    ) -> bool:
+    def _apply_action(self, scope: RunScope, action: RecoveryAction) -> bool:
+        """执行恢复动作；插件异常只算动作失败，由调用方转停手。"""
         try:
             if action is RecoveryAction.RESET_ENVIRONMENT:
-                return self._environments.reset(call).ok
+                return self._environments.reset(scope.call).ok
             if action is RecoveryAction.RESTART_SCRIPT:
-                if handle is None:
+                if scope.handle is None:
                     return True
-                return script.recover(handle, context, action).ok
+                return scope.script.recover(scope.handle, scope.context, action).ok
             return True
         except Exception:
             return False
 
-    def _cancel_run(
-        self,
-        run_id: str,
-        call: EnvironmentCall | None = None,
-        script: ScriptAdapter | None = None,
-        handle: ScriptHandle | None = None,
-        context: RunContext | None = None,
-    ) -> JobRunRecord:
-        if handle is not None and script is not None and context is not None:
-            self._stop_script(script, handle, context)
-        if call is not None:
-            self._safe_cleanup(call, run_id=run_id, reason="cancelled")
-        self._safe_release(run_id, reason="cancelled")
-        current = self._runs.get(run_id)
+    def _cancel_run(self, scope: RunScope, *, started: bool) -> JobRunRecord:
+        """取消运行；已开始的先停脚本与清环境，再记 cancelled。"""
+        if started:
+            self._stop_script(scope)
+            self._safe_cleanup(scope.call, run_id=scope.run_id, reason="cancelled")
+        self._safe_release(scope.run_id, reason="cancelled")
+        current = self._runs.get(scope.run_id)
         if current.state in (RunState.EXECUTING, RunState.VERIFYING):
-            current = self._runs.transition(run_id, RunState.CLEANING, reason="cancelled")
-        return self._runs.transition(run_id, RunState.CANCELLED, reason="cancelled")
+            current = self._runs.transition(scope.run_id, RunState.CLEANING, reason="cancelled")
+        return self._runs.transition(scope.run_id, RunState.CANCELLED, reason="cancelled")
 
-    def _fail(
-        self,
-        run_id: str,
-        call: EnvironmentCall,
-        script: ScriptAdapter,
-        handle: ScriptHandle | None,
-        context: RunContext,
-        error_code: str,
-        reason: str,
-    ) -> JobRunRecord:
-        if handle is not None:
-            self._stop_script(script, handle, context)
-        self._safe_cleanup(call, run_id=run_id, reason=reason)
-        self._safe_release(run_id, reason=reason)
-        current = self._runs.get(run_id)
+    def _fail(self, scope: RunScope, error_code: str, reason: str) -> JobRunRecord:
+        """收尾失败：停脚本、清理、释放租约，把运行记成 failed。"""
+        self._stop_script(scope)
+        self._safe_cleanup(scope.call, run_id=scope.run_id, reason=reason)
+        self._safe_release(scope.run_id, reason=reason)
+        current = self._runs.get(scope.run_id)
         if current.state in (RunState.EXECUTING, RunState.VERIFYING):
-            current = self._runs.transition(run_id, RunState.CLEANING, reason=reason)
+            current = self._runs.transition(scope.run_id, RunState.CLEANING, reason=reason)
         return self._runs.transition(
-            run_id,
+            scope.run_id,
             RunState.FAILED,
             reason=reason,
             error_code=error_code,
         )
 
-    def _stop_script(
-        self,
-        script: ScriptAdapter,
-        handle: ScriptHandle,
-        context: RunContext,
-    ) -> None:
-        """停止脚本；失败只记 WARN，收尾不能因为插件拒绝而卡住。"""
+    def _stop_script(self, scope: RunScope) -> None:
+        """停止脚本并清空句柄；失败只记 WARN，收尾不能因为插件拒绝而卡住。"""
+        handle = scope.handle
+        if handle is None:
+            return
+        scope.handle = None
         try:
-            script.stop(handle, context, StopMode.FORCE)
+            scope.script.stop(handle, scope.context, StopMode.FORCE)
         except Exception as error:
             self._log.warn(
                 {
                     "event": "executor.script_stop_failed",
-                    "run_id": context.run_id,
+                    "run_id": scope.run_id,
                     "error": str(error),
                 }
             )
@@ -631,7 +556,7 @@ class WorkerExecutor:
         return record
 
 
-__all__ = ["CancelFlag", "WorkerExecutor"]
+__all__ = ["CancelFlag", "RunScope", "WorkerExecutor"]
 
 
 def _retry_at(detail: Mapping[str, Any]) -> datetime | None:
