@@ -14,6 +14,21 @@
 
 验收：fake 插件在虚拟时钟下跑通 30 天调度；崩溃恢复后状态一致；场景测试全绿。
 
+## P0 修复：质量审查发现（2026-10-24）
+
+- [ ] 行为缺陷：模板缺失转 FAILED / E_CONFIG 并写事件；`_wait_for_script` 不再伪造 HUNG（无结论返回 None，按 E_DEADLINE 处理）；清理/停止/释放失败记 WARN（core/worker/executor.py:116、295、465）
+  验收：三条回归测试，既有 234 条保持绿。
+- [ ] 执行器结构：抽 `RunScope` 收敛私有方法参数；`execute` 拆成 prepare/execute/verify/cleanup；补齐 `execute`、`transition` 的 Args/Returns/Raises（core/worker/executor.py、core/jobs/run_service.py）
+  验收：`execute` ≤50 行、私有方法参数 ≤4、docstring 含三节。
+- [ ] 结论校验：`VerdictService` 改用 `EvidenceRepository.known_ids`；核对模板 `required_evidence` 与 `checks[].evidence_ids`；`policy_id` 回填模板 id
+  验收：缺证据、缺证据种类、引用不存在证据各一条回归测试。
+- [ ] 监督接线：启动扫描非终态；调度每秒 tick；逾期扫描；保温到期关闭；租约 60 秒续租、过期转 recovering；`keep_warm_minutes` 由 schedule 传入执行器；请求取消接入执行器（graceful→force）
+  验收：租约过期、保温到期、执行中取消各一条场景测试。
+- [ ] 口径裁决（先问，再改）：重复迁移 E_CONFLICT 与 docs/02:131 幂等二选一；`run.state.changed` 载荷 from/to 与 from_state/to_state 二选一；提交 400 行是否含测试
+- [ ] 规范卫生：`JsonLineLogger` 补 at/event 字段；默认值集中 `config/defaults.toml`；`Capability`/`PhaseName` 用 StrEnum；`core/worker`、`core/clock`、`core/logging` 补 ADR；`_optional_str`/`placeholders` 收敛；`gate.py` 加超时；fake 插件公开方法补 docstring；后续提交 ≤400 行
+  验收：六条门禁全绿，ADR 落盘。
+- [ ] 测试改进：状态机用例由 docs/02 迁移表生成，避免测试与文档各抄一份（docs/12:38）
+
 ## P1：MAA 插件与方舟环境
 
 - [ ] 冷启动采样：开机到模拟器可用、到游戏主界面，至少 10 次，记录 P50/P95。
