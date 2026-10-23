@@ -16,8 +16,6 @@
 
 ## P0 修复：质量审查发现（2026-10-24）
 
-- [ ] 执行器结构：抽 `RunScope` 收敛私有方法参数；`execute` 拆成 prepare/execute/verify/cleanup；补齐 `execute`、`transition` 的 Args/Returns/Raises（core/worker/executor.py、core/jobs/run_service.py）
-  验收：`execute` ≤50 行、私有方法参数 ≤4、docstring 含三节。
 - [ ] 结论校验：`VerdictService` 改用 `EvidenceRepository.known_ids`；核对模板 `required_evidence` 与 `checks[].evidence_ids`；`policy_id` 回填模板 id
   验收：缺证据、缺证据种类、引用不存在证据各一条回归测试。
 - [ ] 监督接线：启动扫描非终态；调度每秒 tick；逾期扫描；保温到期关闭；租约 60 秒续租、过期转 recovering；`keep_warm_minutes` 由 schedule 传入执行器；请求取消接入执行器（graceful→force）

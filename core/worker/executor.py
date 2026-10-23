@@ -127,7 +127,18 @@ class WorkerExecutor:
         self._events = EventLog(connection)
 
     def execute(self, run_id: str) -> JobRunRecord:
-        """推进一步；未到 scheduled_at 时停在 waiting，其余状态原样返回。"""
+        """推进一步：恢复等待、准备、执行、验证、清理，直到终态或等待时机。
+
+        Args:
+            run_id: 要推进的运行 id。
+
+        Returns:
+            推进后的运行记录；未到 scheduled_at 或不在可推进状态时原样返回。
+
+        Raises:
+            RunNotFoundError: 运行不存在。
+            PluginError: 模板声明的插件或能力没有注册。
+        """
         run = self._runs.get(run_id)
         if run.state is RunState.RECOVERING:
             run = self.resume(run_id)
@@ -143,110 +154,12 @@ class WorkerExecutor:
             self._leases.acquire(scope.run_id, (scope.call.environment_id,))
             scope.run = self._runs.transition(scope.run.id, RunState.PREPARING)
         try:
-            if scope.run.state is RunState.PREPARING:
-                phase = self._phases.start(scope.run.id, "prepare", attempt=scope.run.attempt)
-                prepared = self._environments.prepare(scope.call)
-                self._phases.finish(
-                    phase,
-                    state=PhaseState.OK if prepared.ok else PhaseState.FAILED,
-                    detail=prepared.detail,
-                )
-                if not prepared.ok:
-                    return self._recover(
-                        scope,
-                        prepared.error_code or "E_ENV_WAKE_TIMEOUT",
-                        "prepare",
-                    )
-                scope.run = self._runs.transition(scope.run.id, RunState.WAITING)
-            if self._cancel.is_cancelled():
-                return self._cancel_run(scope, started=True)
-            now = self._clock.utc_now()
-            if scope.run.scheduled_at is not None and now < scope.run.scheduled_at:
-                return scope.run
-            if scope.run.deadline_at is not None and now >= scope.run.deadline_at:
-                return self._recover(scope, "E_DEADLINE", "deadline")
-            scope.run = self._runs.transition(scope.run.id, RunState.EXECUTING)
-            self._environments.mark_busy(scope.call)
-            phase = self._phases.start(scope.run.id, "execute", attempt=scope.run.attempt)
-            scope.handle = scope.script.launch(
-                ScriptRef(
-                    id=scope.template.id,
-                    plugin_id=scope.template.plugin_id,
-                    config=dict(scope.template.config),
-                ),
-                scope.context,
+            return (
+                self._prepare(scope)
+                or self._run_script(scope)
+                or self._verify(scope)
+                or self._clean(scope)
             )
-            observation = self._wait_for_script(scope.script, scope.handle, scope.context)
-            if observation is None:
-                self._phases.finish(phase, state=PhaseState.TIMED_OUT, detail="deadline")
-                self._stop_script(scope)
-                return self._recover(scope, "E_DEADLINE", "deadline")
-            for signal in observation.signals:
-                self._events.append_run(
-                    scope.run.id,
-                    EventType.RUN_SIGNAL,
-                    {
-                        "run_id": scope.run.id,
-                        "kind": signal.kind,
-                        "payload": dict(signal.payload),
-                    },
-                    at=self._clock.utc_now(),
-                )
-            hung = observation.state is ScriptState.HUNG
-            script_failed = (
-                observation.last_signal is not None
-                and observation.last_signal.kind == "task_failed"
-            )
-            self._phases.finish(
-                phase,
-                state=(
-                    PhaseState.TIMED_OUT
-                    if hung
-                    else PhaseState.FAILED
-                    if script_failed
-                    else PhaseState.OK
-                ),
-                detail=observation.state.value,
-            )
-            if hung:
-                self._stop_script(scope)
-            if script_failed:
-                return self._recover(scope, "E_SCRIPT_TASK_FAILED", "script")
-            if self._cancel.is_cancelled():
-                return self._cancel_run(scope, started=True)
-            scope.run = self._runs.transition(scope.run.id, RunState.VERIFYING)
-            phase = self._phases.start(scope.run.id, "verify", attempt=scope.run.attempt)
-            verdict, error_code = self._verify(scope.run.id, scope.verifier, scope.context)
-            self._phases.finish(
-                phase,
-                state=PhaseState.FAILED if error_code is not None else PhaseState.OK,
-                detail=error_code or "",
-            )
-            scope.run = self._runs.transition(scope.run.id, RunState.CLEANING)
-            phase = self._phases.start(scope.run.id, "cleanup", attempt=scope.run.attempt)
-            self._stop_script(scope)
-            cleaned = self._environments.cleanup(
-                scope.call,
-                keep_warm=self._keep_warm_minutes > 0,
-                warm_minutes=self._keep_warm_minutes,
-            )
-            self._phases.finish(
-                phase,
-                state=PhaseState.OK if cleaned.ok else PhaseState.FAILED,
-                detail=cleaned.detail,
-            )
-            self._leases.release(scope.run.id, reason="cleanup")
-            if not cleaned.ok:
-                return self._fail(scope, cleaned.error_code or "E_ENV_UNREACHABLE", "cleanup")
-            if error_code is not None:
-                return self._runs.transition(
-                    scope.run.id,
-                    RunState.UNKNOWN,
-                    reason="verify_no_evidence",
-                    error_code=error_code,
-                )
-            target = RunState.UNKNOWN if verdict is None else _TERMINAL_BY_VERDICT[verdict.status]
-            return self._runs.transition(scope.run.id, target, reason="verdict")
         except Exception as error:  # 插件异常不能拖垮内核：按崩溃收尾
             self._log.error(
                 {"event": "executor.error", "run_id": scope.run_id, "error": str(error)}
@@ -285,6 +198,130 @@ class WorkerExecutor:
             context=context,
         )
 
+    def _prepare(self, scope: RunScope) -> JobRunRecord | None:
+        """准备阶段：让插件把环境带到 ready，失败按恢复策略收尾。"""
+        if scope.run.state is not RunState.PREPARING:
+            return None
+        phase = self._phases.start(scope.run.id, "prepare", attempt=scope.run.attempt)
+        prepared = self._environments.prepare(scope.call)
+        self._phases.finish(
+            phase,
+            state=PhaseState.OK if prepared.ok else PhaseState.FAILED,
+            detail=prepared.detail,
+        )
+        if not prepared.ok:
+            return self._recover(scope, prepared.error_code or "E_ENV_WAKE_TIMEOUT", "prepare")
+        scope.run = self._runs.transition(scope.run.id, RunState.WAITING)
+        return None
+
+    def _run_script(self, scope: RunScope) -> JobRunRecord | None:
+        """执行阶段：到点后启动脚本、采集信号，超时与失败按错误码收尾。"""
+        if self._cancel.is_cancelled():
+            return self._cancel_run(scope, started=True)
+        now = self._clock.utc_now()
+        if scope.run.scheduled_at is not None and now < scope.run.scheduled_at:
+            return scope.run
+        if scope.run.deadline_at is not None and now >= scope.run.deadline_at:
+            return self._recover(scope, "E_DEADLINE", "deadline")
+        scope.run = self._runs.transition(scope.run.id, RunState.EXECUTING)
+        self._environments.mark_busy(scope.call)
+        phase = self._phases.start(scope.run.id, "execute", attempt=scope.run.attempt)
+        handle = scope.script.launch(
+            ScriptRef(
+                id=scope.template.id,
+                plugin_id=scope.template.plugin_id,
+                config=dict(scope.template.config),
+            ),
+            scope.context,
+        )
+        scope.handle = handle
+        observation = self._wait_for_script(scope.script, handle, scope.context)
+        if observation is None:
+            self._phases.finish(phase, state=PhaseState.TIMED_OUT, detail="deadline")
+            self._stop_script(scope)
+            return self._recover(scope, "E_DEADLINE", "deadline")
+        for signal in observation.signals:
+            self._events.append_run(
+                scope.run.id,
+                EventType.RUN_SIGNAL,
+                {"run_id": scope.run.id, "kind": signal.kind, "payload": dict(signal.payload)},
+                at=self._clock.utc_now(),
+            )
+        hung = observation.state is ScriptState.HUNG
+        script_failed = (
+            observation.last_signal is not None and observation.last_signal.kind == "task_failed"
+        )
+        self._phases.finish(
+            phase,
+            state=(
+                PhaseState.TIMED_OUT
+                if hung
+                else PhaseState.FAILED
+                if script_failed
+                else PhaseState.OK
+            ),
+            detail=observation.state.value,
+        )
+        if hung:
+            self._stop_script(scope)
+        if script_failed:
+            return self._recover(scope, "E_SCRIPT_TASK_FAILED", "script")
+        if self._cancel.is_cancelled():
+            return self._cancel_run(scope, started=True)
+        return None
+
+    def _verify(self, scope: RunScope) -> JobRunRecord | None:
+        """验证阶段：插件结论先与证据核对再落库，缺证据留给清理阶段收尾。"""
+        scope.run = self._runs.transition(scope.run.id, RunState.VERIFYING)
+        phase = self._phases.start(scope.run.id, "verify", attempt=scope.run.attempt)
+        verdict = scope.verifier.verify(scope.context)
+        if not isinstance(verdict, Verdict):
+            raise TypeError("验证器返回的不是 Verdict")
+        try:
+            self._verdicts.record(scope.run.id, verdict)
+        except MissingEvidenceError:
+            scope.verify_error = "E_VERIFY_NO_EVIDENCE"
+        else:
+            scope.verdict = verdict
+        self._phases.finish(
+            phase,
+            state=PhaseState.FAILED if scope.verify_error is not None else PhaseState.OK,
+            detail=scope.verify_error or "",
+        )
+        return None
+
+    def _clean(self, scope: RunScope) -> JobRunRecord:
+        """清理阶段：停脚本、清环境、释放租约，再按结论落终态。"""
+        scope.run = self._runs.transition(scope.run.id, RunState.CLEANING)
+        phase = self._phases.start(scope.run.id, "cleanup", attempt=scope.run.attempt)
+        self._stop_script(scope)
+        cleaned = self._environments.cleanup(
+            scope.call,
+            keep_warm=self._keep_warm_minutes > 0,
+            warm_minutes=self._keep_warm_minutes,
+        )
+        self._phases.finish(
+            phase,
+            state=PhaseState.OK if cleaned.ok else PhaseState.FAILED,
+            detail=cleaned.detail,
+        )
+        self._leases.release(scope.run.id, reason="cleanup")
+        if not cleaned.ok:
+            return self._fail(scope, cleaned.error_code or "E_ENV_UNREACHABLE", "cleanup")
+        if scope.verify_error is not None:
+            return self._runs.transition(
+                scope.run.id,
+                RunState.UNKNOWN,
+                reason="verify_no_evidence",
+                error_code=scope.verify_error,
+            )
+        target = (
+            RunState.UNKNOWN
+            if scope.verdict is None
+            else _TERMINAL_BY_VERDICT[scope.verdict.status]
+        )
+        return self._runs.transition(scope.run.id, target, reason="verdict")
+
     def _wait_for_script(
         self,
         script: ScriptAdapter,
@@ -299,21 +336,6 @@ class WorkerExecutor:
             if self._clock.utc_now() >= context.deadline_at:
                 return None
         return None
-
-    def _verify(
-        self,
-        run_id: str,
-        verifier: Verifier,
-        context: RunContext,
-    ) -> tuple[Verdict | None, str | None]:
-        verdict = verifier.verify(context)
-        if not isinstance(verdict, Verdict):
-            raise TypeError("验证器返回的不是 Verdict")
-        try:
-            self._verdicts.record(run_id, verdict)
-        except MissingEvidenceError:
-            return None, "E_VERIFY_NO_EVIDENCE"
-        return verdict, None
 
     def resume(self, run_id: str) -> JobRunRecord:
         """恢复等待到点时把运行放回队列；未到点或不在 recovering 时原样返回。"""
