@@ -123,7 +123,7 @@ class WorkerChannel:
                 self._write({"kind": rpc.CANCEL, "id": call_id})
                 cancel_deadline = now + self._cancel_grace
             if cancel_deadline is not None and now >= cancel_deadline:
-                self._fail_process()
+                self._fail_process(counts_as_failure=False)
                 raise WorkerCancelledError(
                     f"{capability}.{method} 在取消宽限期内未返回，worker 已结束"
                 )
@@ -338,8 +338,11 @@ class WorkerChannel:
             self._fail_process()
             raise WorkerCrashError(f"写入 worker 失败：{error}") from error
 
-    def _fail_process(self) -> None:
+    def _fail_process(self, *, counts_as_failure: bool = True) -> None:
+        """结束进程并计数；用户取消不是重启失败，不计入降级预算。"""
         self._discard_process()
+        if not counts_as_failure:
+            return
         self._restart_failures += 1
         if self._restart_failures >= self._max_restarts:
             self._degraded = True
