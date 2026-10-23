@@ -1,7 +1,7 @@
 """内核侧的 worker 通道：拉起子进程、等待调用结果、超时强杀与崩溃降级。
 
 一次调用一条 JSON 消息（ADR 0010）；等待与强杀用真实单调时间，业务截止仍由核心按
-注入的 Clock 判定。插件崩溃、超时或连续失败只影响当前调用与后续调用，不接触内核状态。
+注入的 Clock 判定。杀进程时结束整棵进程树，避免插件拉起的脚本在后台继续跑。
 """
 
 from __future__ import annotations
@@ -32,6 +32,8 @@ from storage.defaults import default
 
 _POLL_SECONDS: Final = 0.05
 _STDERR_LINES: Final = 20
+_MAX_LINE_CHARS: Final = 8 * 1024 * 1024
+_KILL_TIMEOUT_SECONDS: Final = 10
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 
 
@@ -78,7 +80,7 @@ class WorkerChannel:
         return None if self._process is None else self._process.pid
 
     @property
-    def degraded(self) -> bool:
+    def is_degraded(self) -> bool:
         """连续重启失败后为 True，后续调用直接失败。"""
         return self._degraded
 
@@ -100,27 +102,72 @@ class WorkerChannel:
         ctx: RunContext,
         *,
         timeout_seconds: float | None = None,
-    ) -> Any:
-        """执行一次能力调用；插件异常、超时、崩溃与取消都转成对应错误。"""
+    ) -> object:
+        """执行一次能力调用，返回 worker 的原始结果值。
+
+        Args:
+            capability: 能力名，如 environment、script、verifier。
+            method: 能力方法名。
+            args: 方法参数，JSON 可序列化。
+            ctx: 本次运行上下文。
+            timeout_seconds: 覆盖默认调用超时。
+
+        Returns:
+            worker 返回的 JSON 取值；由调用方按契约类型解码。
+
+        Raises:
+            PluginDegradedError: 插件已因连续失败降级。
+            WorkerTimeoutError: 调用超过超时，进程已结束。
+            WorkerCancelledError: 取消宽限期到期仍未返回。
+            WorkerCrashError: 进程退出、写坏协议或启动失败。
+            WorkerCallError: 插件方法抛出异常或返回失败结果。
+            WorkerPayloadError: 协议载荷不符合契约。
+        """
         limit = self._call_timeout if timeout_seconds is None else timeout_seconds
         self._ensure_started()
         self._call_id += 1
         call_id = self._call_id
-        message = {
-            "kind": rpc.CALL,
-            "id": call_id,
-            "capability": capability,
-            "method": method,
-            "args": dict(args),
-            "context": rpc.encode_context(ctx),
-        }
-        self._write(message)
+        self._send(
+            {
+                "kind": rpc.CALL,
+                "id": call_id,
+                "capability": capability,
+                "method": method,
+                "args": dict(args),
+                "context": rpc.encode_context(ctx),
+            }
+        )
+        return self._await_result(capability, method, call_id, ctx, limit)
+
+    def close(self) -> None:
+        """发送 shutdown 并结束进程树；已退出的通道重复关闭无副作用。"""
+        process, self._process = self._process, None
+        if process is None:
+            return
+        if process.poll() is None and process.stdin is not None:
+            with contextlib.suppress(OSError):
+                process.stdin.write(rpc.encode_line({"kind": rpc.SHUTDOWN}) + "\n")
+                process.stdin.flush()
+                process.wait(timeout=2)
+        _terminate_tree(process)
+        _close_streams(process)
+        self._join_threads()
+
+    def _await_result(
+        self,
+        capability: str,
+        method: str,
+        call_id: int,
+        ctx: RunContext,
+        limit: float,
+    ) -> object:
+        """等待本条调用的结果，期间处理日志与回调，超时或取消时结束进程。"""
         deadline = time.monotonic() + limit
         cancel_deadline: float | None = None
         while True:
             now = time.monotonic()
             if cancel_deadline is None and ctx.cancel.is_cancelled():
-                self._write({"kind": rpc.CANCEL, "id": call_id})
+                self._send_cancel(call_id)
                 cancel_deadline = now + self._cancel_grace
             if cancel_deadline is not None and now >= cancel_deadline:
                 self._fail_process(counts_as_failure=False)
@@ -132,44 +179,51 @@ class WorkerChannel:
                 raise WorkerTimeoutError(
                     f"{capability}.{method} 超过调用超时 {limit:.1f} 秒，worker 已结束"
                 )
-            wait = min(_POLL_SECONDS, max(deadline - now, 0.0) or _POLL_SECONDS)
-            try:
-                reply = self._messages.get(timeout=wait)
-            except queue.Empty:
-                continue
+            reply = self._next_reply(deadline, now)
             if reply is None:
-                tail = self._stderr_tail()
-                self._fail_process()
-                raise WorkerCrashError(f"worker 在 {capability}.{method} 中退出：{tail}")
+                continue
             kind = reply.get("kind")
             if kind == rpc.RESULT:
-                if reply.get("id") != call_id:
-                    continue
-                if reply.get("ok") is True:
-                    self._restart_failures = 0
-                    return reply.get("value")
-                raise WorkerCallError(_describe_failure(reply, capability, method))
+                return self._result_value(reply, capability, method, call_id)
+            if kind == rpc.FAULT:
+                self._fail_process()
+                raise WorkerCrashError(f"worker 在调用中报故障：{reply.get('message')}")
             if kind == rpc.NOTIFY:
                 self._handle_notify(reply, ctx)
             elif kind == rpc.CALLBACK:
                 self._handle_callback(reply, ctx)
+            else:
+                self._fail_process()
+                raise WorkerPayloadError(f"未知协议消息：{kind!r}")
 
-    def close(self) -> None:
-        """发送 shutdown 并结束进程；已退出的通道重复关闭无副作用。"""
-        process, self._process = self._process, None
-        if process is None:
-            return
+    def _next_reply(self, deadline: float, now: float) -> Mapping[str, Any] | None:
+        """取一条 worker 消息；队列空或进程退出时给出对应结论。"""
+        wait = min(_POLL_SECONDS, max(deadline - now, 0.0) or _POLL_SECONDS)
         try:
-            if process.poll() is None and process.stdin is not None:
-                process.stdin.write(rpc.encode_line({"kind": rpc.SHUTDOWN}) + "\n")
-                process.stdin.flush()
-                process.wait(timeout=2)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        if process.poll() is None:
-            process.kill()
-            process.wait(timeout=5)
-        self._join_threads()
+            reply = self._messages.get(timeout=wait)
+        except queue.Empty:
+            return None
+        if reply is None:
+            tail = self._stderr_tail()
+            self._fail_process()
+            raise WorkerCrashError(f"worker 在调用中退出：{tail}")
+        return reply
+
+    def _result_value(
+        self,
+        reply: Mapping[str, Any],
+        capability: str,
+        method: str,
+        call_id: int,
+    ) -> object:
+        """校验结果消息并返回取值；协议不匹配按载荷错误失败。"""
+        if reply.get("id") != call_id:
+            self._fail_process()
+            raise WorkerPayloadError(f"{capability}.{method} 收到错配的结果 id：{reply.get('id')}")
+        if reply.get("ok") is True:
+            self._restart_failures = 0
+            return reply.get("value")
+        raise WorkerCallError(_describe_failure(reply, capability, method))
 
     def _ensure_started(self) -> None:
         if self._degraded:
@@ -191,11 +245,12 @@ class WorkerChannel:
             encoding="utf-8",
             bufsize=1,
         )
+        messages: queue.Queue[dict[str, Any] | None] = queue.Queue()
         self._process = process
-        self._messages = queue.Queue()
+        self._messages = messages
         self._reader = threading.Thread(
             target=self._read_stdout,
-            args=(process,),
+            args=(process, messages),
             name=f"worker-{self.plugin_id}",
             daemon=True,
         )
@@ -207,9 +262,9 @@ class WorkerChannel:
             daemon=True,
         )
         self._stderr_reader.start()
-        self._await_ready()
+        self._await_ready(messages)
 
-    def _await_ready(self) -> None:
+    def _await_ready(self, messages: queue.Queue[dict[str, Any] | None]) -> None:
         deadline = time.monotonic() + self._start_timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -217,7 +272,7 @@ class WorkerChannel:
                 self._fail_process()
                 raise WorkerCrashError(f"插件 {self.plugin_id} 启动超时")
             try:
-                message = self._messages.get(timeout=min(remaining, _POLL_SECONDS))
+                message = messages.get(timeout=min(remaining, _POLL_SECONDS))
             except queue.Empty:
                 continue
             if message is None:
@@ -235,39 +290,51 @@ class WorkerChannel:
                 raise WorkerCrashError(
                     f"插件 {self.plugin_id} 的协议版本不匹配：{message.get('protocol')}"
                 )
-            capabilities = message.get("capabilities")
+            raw = message.get("capabilities")
             self._capabilities = (
-                frozenset(item for item in capabilities if isinstance(item, str))
-                if isinstance(capabilities, list)
+                frozenset(item for item in raw if isinstance(item, str))
+                if isinstance(raw, list)
                 else frozenset()
             )
             return
 
-    def _read_stdout(self, process: subprocess.Popen[str]) -> None:
+    def _read_stdout(
+        self,
+        process: subprocess.Popen[str],
+        messages: queue.Queue[dict[str, Any] | None],
+    ) -> None:
+        """只把本世代进程的消息写进本世代队列，旧线程不会污染新会话。"""
         stream = process.stdout
         if stream is None:
-            self._messages.put(None)
+            messages.put(None)
             return
         try:
             for line in stream:
                 text = line.strip()
                 if not text:
                     continue
-                try:
-                    message = rpc.decode_line(text)
-                except WorkerPayloadError:
-                    self._messages.put(None)
+                if len(text) > _MAX_LINE_CHARS:
+                    messages.put(None)
                     return
-                self._messages.put(message)
+                try:
+                    messages.put(rpc.decode_line(text))
+                except WorkerPayloadError:
+                    messages.put(None)
+                    return
+        except (OSError, ValueError):
+            pass
         finally:
-            self._messages.put(None)
+            messages.put(None)
 
     def _read_stderr(self, process: subprocess.Popen[str]) -> None:
         stream = process.stderr
         if stream is None:
             return
-        for line in stream:
-            self._stderr.append(line.rstrip())
+        try:
+            for line in stream:
+                self._stderr.append(line.rstrip())
+        except (OSError, ValueError):
+            pass
 
     def _handle_notify(self, message: Mapping[str, Any], ctx: RunContext) -> None:
         if message.get("op") != "log":
@@ -293,7 +360,7 @@ class WorkerChannel:
                 raise WorkerPayloadError("回调参数应为对象")
             value = self._run_callback(message.get("op"), args, ctx)
         except Exception as error:
-            self._write(
+            self._send(
                 {
                     "kind": rpc.CALLBACK_RESULT,
                     "callback_id": callback_id,
@@ -302,7 +369,7 @@ class WorkerChannel:
                 }
             )
             return
-        self._write(
+        self._send(
             {
                 "kind": rpc.CALLBACK_RESULT,
                 "callback_id": callback_id,
@@ -327,7 +394,10 @@ class WorkerChannel:
             )
         raise WorkerPayloadError(f"未知回调：{op!r}")
 
-    def _write(self, message: Mapping[str, Any]) -> None:
+    def _send_cancel(self, call_id: int) -> None:
+        self._send({"kind": rpc.CANCEL, "id": call_id}, counts_as_failure=False)
+
+    def _send(self, message: Mapping[str, Any], *, counts_as_failure: bool = True) -> None:
         process = self._process
         if process is None or process.stdin is None:
             raise WorkerCrashError(f"插件 {self.plugin_id} 的 worker 未启动")
@@ -335,11 +405,11 @@ class WorkerChannel:
             process.stdin.write(rpc.encode_line(message) + "\n")
             process.stdin.flush()
         except OSError as error:
-            self._fail_process()
+            self._fail_process(counts_as_failure=counts_as_failure)
             raise WorkerCrashError(f"写入 worker 失败：{error}") from error
 
     def _fail_process(self, *, counts_as_failure: bool = True) -> None:
-        """结束进程并计数；用户取消不是重启失败，不计入降级预算。"""
+        """结束整棵进程树并计数；用户取消不是重启失败，不计入降级预算。"""
         self._discard_process()
         if not counts_as_failure:
             return
@@ -358,24 +428,53 @@ class WorkerChannel:
         process, self._process = self._process, None
         if process is None:
             return
-        if process.poll() is None:
-            process.kill()
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            process.wait(timeout=5)
-        self._messages.put(None)
+        _terminate_tree(process)
+        _close_streams(process)
         self._join_threads()
 
     def _join_threads(self) -> None:
         for thread in (self._reader, self._stderr_reader):
-            if (
-                thread is not None
-                and thread.is_alive()
-                and thread is not threading.current_thread()
-            ):
-                thread.join(timeout=2)
+            if thread is None or thread is threading.current_thread():
+                continue
+            if not thread.is_alive():
+                continue
+            thread.join(timeout=2)
+            if thread.is_alive():
+                self._log.warn(
+                    {
+                        "event": "worker.reader_leak",
+                        "plugin_id": self.plugin_id,
+                        "thread": thread.name,
+                    }
+                )
 
     def _stderr_tail(self) -> str:
         return " | ".join(line for line in self._stderr if line)[-800:]
+
+
+def _terminate_tree(process: subprocess.Popen[str]) -> None:
+    """结束进程及其子进程；Windows 用 taskkill /T，避免插件拉起的脚本变成孤儿。"""
+    if process.poll() is not None:
+        return
+    if sys.platform == "win32":
+        with contextlib.suppress(OSError, subprocess.SubprocessError):
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                timeout=_KILL_TIMEOUT_SECONDS,
+                check=False,
+            )
+    if process.poll() is None:
+        process.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=_KILL_TIMEOUT_SECONDS)
+
+
+def _close_streams(process: subprocess.Popen[str]) -> None:
+    for stream in (process.stdin, process.stdout, process.stderr):
+        if stream is not None:
+            with contextlib.suppress(OSError, ValueError):
+                stream.close()
 
 
 def _describe_failure(reply: Mapping[str, Any], capability: str, method: str) -> str:
@@ -395,8 +494,14 @@ def _text(data: Mapping[str, Any], key: str) -> str:
 
 
 def _seconds(key: str, value: float | None) -> float:
-    return float(default("worker", key)) if value is None else value
+    result = float(default("worker", key)) if value is None else value
+    if result <= 0:
+        raise ValueError(f"worker.{key} 必须大于 0")
+    return result
 
 
 def _count(key: str, value: int | None) -> int:
-    return int(default("worker", key)) if value is None else value
+    result = int(default("worker", key)) if value is None else value
+    if result <= 0:
+        raise ValueError(f"worker.{key} 必须大于 0")
+    return result
