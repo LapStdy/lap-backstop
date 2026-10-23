@@ -6,16 +6,14 @@
 
 - [ ] 契约单一真源校验：docs/05 与 contracts/ 一份定义，02/03/09 只引用。
 - [ ] pre-commit 钩子跑 `scripts/gate.py`，钩子失败不允许提交。
-- [ ] core/scheduler：持久化 next_run、cron/at/interval、补跑、合并、优先级、deadline。
-- [ ] core/jobs：JobRun 状态机、队列、attempt、取消、幂等键。
 - [ ] core/environments：环境状态机、probe、prepare、reset、cleanup、保温。
 - [ ] core/resources：租约、TTL、续租、排队。
-- [ ] core/events：append-only 事件、证据、快照、回放。
+- [ ] core/events：证据落盘与引用、快照、回放。
 - [ ] core/recovery：重试、退避、升级、停手。
 - [ ] worker 进程：执行阶段、超时、取消、崩溃恢复。
-- [ ] 数据库：SQLite WAL、迁移、备份恢复。
+- [ ] 数据库备份与恢复：快照、导出、迁移前快照。
 - [ ] fake 插件：瞬时/慢/永不就绪；成功/失败/挂起/部分完成。
-- [ ] 虚拟时钟 + 场景测试：补跑、崩溃、租约、重试预算、DST。
+- [ ] 场景测试：崩溃、租约、重试预算、取消、证据缺失。
 - [ ] 看门狗、单实例、doctor 自检、磁盘水位。
 
 验收：fake 插件在虚拟时钟下跑通 30 天调度；崩溃恢复后状态一致；场景测试全绿。
