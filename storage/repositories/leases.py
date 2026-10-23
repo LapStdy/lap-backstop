@@ -75,6 +75,16 @@ class LeaseRepository:
         ).fetchall()
         return tuple(_row_to_row(row) for row in rows)
 
+    def active(self) -> tuple[LeaseRow, ...]:
+        """全部活跃租约，按过期时间排序；启动清理与续租扫描用。"""
+        placeholders = ", ".join("?" for _ in _ACTIVE_STATES)
+        rows = self._connection.execute(
+            f"SELECT {_COLUMNS} FROM resource_leases "
+            f"WHERE state IN ({placeholders}) ORDER BY expires_at",
+            (*_ACTIVE_STATES,),
+        ).fetchall()
+        return tuple(_row_to_row(row) for row in rows)
+
     def insert(self, lease: NewLease) -> LeaseRow:
         """写入一条 leased 租约。"""
         lease_id = uuid4().hex

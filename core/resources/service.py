@@ -167,3 +167,7 @@ class LeaseService:
     def active_for_run(self, run_id: str) -> tuple[LeaseRow, ...]:
         """运行当前持有的租约。"""
         return self._leases.active_for_run(run_id)
+
+    def active(self) -> tuple[LeaseRow, ...]:
+        """全部活跃租约；启动清理孤儿租约与续租扫描用。"""
+        return self._leases.active()
