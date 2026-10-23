@@ -1,6 +1,8 @@
 [importlinter]
 root_packages =
     contracts
+    core
+    storage
 include_external_packages = true
 
 [importlinter:contract:contracts-isolation]
@@ -13,3 +15,11 @@ forbidden_modules =
     plugins
     web
     storage
+
+[importlinter:contract:layers]
+name = 分层单向：core → storage → contracts
+type = layers
+layers =
+    core
+    storage
+    contracts

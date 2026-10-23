@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+
 from contracts.errors import (
     ContractError,
     ErrorCode,

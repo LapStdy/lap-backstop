@@ -13,6 +13,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except (AttributeError, OSError):
+    pass
+
 LINT_IMPORTS_FALLBACK = "from importlinter.cli import lint_imports_command; lint_imports_command()"
 
 

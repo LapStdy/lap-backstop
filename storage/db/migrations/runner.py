@@ -1,0 +1,116 @@
+"""只前滚迁移的执行器。
+
+回滚走快照而不是反向迁移：反向迁移本身容易写错，恢复路径必须简单（docs/03）。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Callable, Sequence
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import cast
+
+UpFunction = Callable[[sqlite3.Connection], None]
+
+
+class MigrationError(RuntimeError):
+    """迁移链不连续、清单非法或读取版本失败。"""
+
+
+@dataclass(frozen=True, slots=True)
+class Migration:
+    """一份迁移：版本号从 1 起连续递增，``up`` 在事务内执行。"""
+
+    version: int
+    name: str
+    up: UpFunction
+
+
+def current_version(connection: sqlite3.Connection) -> int:
+    """读取数据库当前版本，对应 SQLite 的 ``user_version``。"""
+    row = connection.execute("PRAGMA user_version").fetchone()
+    if row is None:
+        raise MigrationError("无法读取 user_version")
+    return int(row[0])
+
+
+def execute_statements(connection: sqlite3.Connection, script: str) -> None:
+    """按分号拆分 SQL 并逐条执行。
+
+    ``executescript`` 会先提交调用方已开启的事务，迁移中途断开会留下半套结构；
+    这里保持单事务，失败可整体回滚。
+    """
+    for statement in script.split(";"):
+        if statement.strip():
+            connection.execute(statement)
+
+
+def migrate(
+    connection: sqlite3.Connection,
+    migrations: Sequence[Migration] | None = None,
+) -> int:
+    """把数据库前滚到最新版本，返回最终版本号。
+
+    Args:
+        connection: 已打开并设好 PRAGMA 的连接。
+        migrations: 迁移清单；省略时用仓库内置清单。
+
+    Raises:
+        MigrationError: 版本不连续，或数据库版本高于代码支持的版本。
+        sqlite3.Error: 某份迁移的 SQL 执行失败；该份迁移整体回滚。
+    """
+    if migrations is None:
+        from storage.db.migrations import MIGRATIONS
+
+        ordered = MIGRATIONS
+    else:
+        ordered = tuple(migrations)
+    ordered = tuple(sorted(ordered, key=lambda entry: entry.version))
+    _require_contiguous(ordered)
+
+    applied = current_version(connection)
+    if applied > ordered[-1].version:
+        raise MigrationError(f"数据库版本 {applied} 高于代码支持的最高版本 {ordered[-1].version}")
+    for entry in ordered:
+        if entry.version <= applied:
+            continue
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            entry.up(connection)
+            connection.execute(f"PRAGMA user_version = {entry.version}")
+        except BaseException:
+            with suppress(sqlite3.Error):
+                connection.execute("ROLLBACK")
+            raise
+        connection.execute("COMMIT")
+        applied = entry.version
+    return applied
+
+
+def verify_integrity(connection: sqlite3.Connection) -> None:
+    """跑 ``PRAGMA integrity_check``，结果不是 ``ok`` 时抛错。"""
+    rows = connection.execute("PRAGMA integrity_check").fetchall()
+    results = [str(row[0]) for row in rows]
+    if results != ["ok"]:
+        raise sqlite3.DatabaseError("integrity_check 未通过：" + "；".join(results))
+
+
+def _require_contiguous(migrations: Sequence[Migration]) -> None:
+    if not migrations:
+        raise MigrationError("迁移清单为空")
+    expected = 1
+    for entry in migrations:
+        if entry.version != expected:
+            raise MigrationError(
+                f"迁移版本应从 {expected} 开始且连续，实际是 {entry.version}（{entry.name}）"
+            )
+        expected += 1
+
+
+def load_up(module: object) -> UpFunction:
+    """取出迁移模块的 ``up`` 函数并收窄类型。"""
+    up = getattr(module, "up", None)
+    if not callable(up):
+        raise MigrationError("迁移模块缺少可调用的 up 函数")
+    return cast(UpFunction, up)
