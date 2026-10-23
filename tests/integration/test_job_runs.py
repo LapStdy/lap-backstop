@@ -124,6 +124,21 @@ def test_illegal_transition_writes_rejected_event(
     assert rejected.payload["reason"] == "illegal_transition"
 
 
+def test_repeat_transition_to_current_state_is_idempotent(
+    service: JobRunService,
+    connection: sqlite3.Connection,
+) -> None:
+    record, _ = service.create_scheduled(make_run())
+    service.enqueue(record.id)
+    again = service.transition(record.id, RunState.QUEUED)
+    assert again.state is RunState.QUEUED
+    assert event_types(connection, record.id) == [
+        "run.created",
+        "run.state.changed",
+        "run.queued",
+    ]
+
+
 def test_event_ids_are_run_scoped_and_monotonic(
     service: JobRunService,
     connection: sqlite3.Connection,

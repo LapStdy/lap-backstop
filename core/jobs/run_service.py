@@ -75,7 +75,7 @@ class JobRunService:
         reason: str = "",
         error_code: str | None = None,
     ) -> JobRunRecord:
-        """按状态机迁移一次。
+        """按状态机迁移一次；已在目标状态的重复迁移幂等，不写事件。
 
         Args:
             run_id: 要迁移的运行 id。
@@ -91,6 +91,8 @@ class JobRunService:
             IllegalRunTransitionError: 状态机拒绝本次迁移，或并发修改导致迁移未生效。
         """
         record = self.get(run_id)
+        if record.state is target:
+            return record
         now = self._clock.utc_now()
         if not can_transition(record.state, target):
             self._reject(record, target, reason, now)
