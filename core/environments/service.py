@@ -163,6 +163,16 @@ class EnvironmentService:
         moment = self._clock.utc_now() if now is None else now
         return self._environments.warm_expired(moment)
 
+    def mark_busy(self, call: EnvironmentCall) -> EnvironmentRow:
+        """脚本开始执行：环境从 ready 进入 busy。"""
+        row = self.get(call.environment_id)
+        return self._apply(
+            row,
+            EnvironmentState.BUSY,
+            at=self._clock.utc_now(),
+            detail={"action": "execute"},
+        )
+
     def _finish_action(
         self,
         call: EnvironmentCall,

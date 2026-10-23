@@ -1,0 +1,394 @@
+"""worker 执行器：把排队运行推过 prepare → execute → verify → cleanup。
+
+执行器跑在 worker 侧；本实现先在处理进程内同步调用插件，超时与取消靠注入的时钟
+和阶段边界检查，后续换成子进程 RPC 时生命周期不变。
+"""
+
+from __future__ import annotations
+
+import sqlite3
+from collections.abc import Callable, Mapping
+from contextlib import suppress
+from datetime import timedelta
+from pathlib import Path
+from typing import Any
+
+from contracts import (
+    CancelToken,
+    Clock,
+    EnvironmentRef,
+    EventType,
+    EvidenceKind,
+    Logger,
+    PhaseState,
+    RunContext,
+    RunState,
+    ScriptAdapter,
+    ScriptHandle,
+    ScriptObservation,
+    ScriptRef,
+    ScriptState,
+    StopMode,
+    Verdict,
+    VerdictStatus,
+    Verifier,
+)
+from core.environments.service import EnvironmentCall, EnvironmentService
+from core.events.evidence import EvidenceService
+from core.events.verdicts import MissingEvidenceError, VerdictService
+from core.jobs.phases import PhaseTracker
+from core.jobs.run_service import JobRunService
+from core.logging import NullLogger
+from core.plugins.registry import PluginRegistry
+from core.resources.service import LeaseService
+from storage.repositories.events import EventLog
+from storage.repositories.job_runs import JobRunRecord
+from storage.repositories.job_templates import JobTemplateRepository, JobTemplateRow
+from storage.repositories.resources import ResourceRepository
+
+_MAX_OBSERVATIONS = 10
+_DEFAULT_DEADLINE = timedelta(minutes=30)
+_TERMINAL_BY_VERDICT: Mapping[VerdictStatus, RunState] = {
+    VerdictStatus.COMPLETED: RunState.SUCCEEDED,
+    VerdictStatus.FAILED: RunState.FAILED,
+    VerdictStatus.UNKNOWN: RunState.UNKNOWN,
+}
+
+Emit = Callable[[str, Mapping[str, Any]], None]
+RecordEvidence = Callable[[str, Path, str], str]
+
+
+class CancelFlag:
+    """内核持有的取消标记；worker 在阶段边界检查。"""
+
+    def __init__(self) -> None:
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        """置位取消标记。"""
+        self._cancelled = True
+
+    def is_cancelled(self) -> bool:
+        """是否已请求取消。"""
+        return self._cancelled
+
+
+class WorkerExecutor:
+    """一次 JobRun 的四阶段执行。"""
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        clock: Clock,
+        registry: PluginRegistry,
+        *,
+        data_root: Path,
+        log: Logger | None = None,
+        keep_warm_minutes: int = 0,
+        cancel: CancelToken | None = None,
+    ) -> None:
+        self._connection = connection
+        self._clock = clock
+        self._registry = registry
+        self._data_root = data_root
+        self._keep_warm_minutes = keep_warm_minutes
+        self._cancel: CancelToken = CancelFlag() if cancel is None else cancel
+        self._log: Logger = NullLogger() if log is None else log
+        self._runs = JobRunService(connection, clock)
+        self._templates = JobTemplateRepository(connection)
+        self._environments = EnvironmentService(connection, clock)
+        self._resources = ResourceRepository(connection)
+        self._leases = LeaseService(connection, clock)
+        self._phases = PhaseTracker(connection, clock)
+        self._evidence = EvidenceService(connection, data_root / "evidence", clock)
+        self._verdicts = VerdictService(connection, clock)
+        self._events = EventLog(connection)
+
+    def execute(self, run_id: str) -> JobRunRecord:
+        """推进一步；未到 scheduled_at 时停在 waiting，其余状态原样返回。"""
+        run = self._runs.get(run_id)
+        if run.state not in (RunState.QUEUED, RunState.WAITING):
+            return run
+        template = self._templates.get(run.template_id)
+        if template is None:
+            raise ValueError(f"作业模板不存在：{run.template_id}")
+        provider = self._registry.environment(template.plugin_id)
+        script = self._registry.script(template.plugin_id)
+        verifier = self._registry.verifier(template.plugin_id)
+        environment_id = template.environment_id
+        self._resources.ensure(
+            environment_id,
+            resource_type="environment",
+            name=environment_id,
+        )
+        self._environments.register(
+            environment_id,
+            provider_id=template.plugin_id,
+            name=environment_id,
+        )
+        if self._cancel.is_cancelled():
+            return self._cancel_run(run.id)
+        if run.state is RunState.QUEUED:
+            self._leases.acquire(run.id, (environment_id,))
+            run = self._runs.transition(run.id, RunState.PREPARING)
+        context = self._build_context(run, template)
+        call = EnvironmentCall(
+            environment_id=environment_id,
+            provider=provider,
+            ref=EnvironmentRef(id=environment_id, provider_id=template.plugin_id),
+            ctx=context,
+        )
+        handle: ScriptHandle | None = None
+        try:
+            if run.state is RunState.PREPARING:
+                phase = self._phases.start(run.id, "prepare", attempt=run.attempt)
+                prepared = self._environments.prepare(call)
+                self._phases.finish(
+                    phase,
+                    state=PhaseState.OK if prepared.ok else PhaseState.FAILED,
+                    detail=prepared.detail,
+                )
+                if not prepared.ok:
+                    return self._fail(
+                        run.id,
+                        call,
+                        script,
+                        handle,
+                        context,
+                        prepared.error_code or "E_ENV_WAKE_TIMEOUT",
+                        "prepare",
+                    )
+                run = self._runs.transition(run.id, RunState.WAITING)
+            if self._cancel.is_cancelled():
+                return self._cancel_run(run.id, call, script, handle, context)
+            now = self._clock.utc_now()
+            if run.scheduled_at is not None and now < run.scheduled_at:
+                return run
+            if run.deadline_at is not None and now >= run.deadline_at:
+                return self._fail(
+                    run.id,
+                    call,
+                    script,
+                    handle,
+                    context,
+                    "E_DEADLINE",
+                    "deadline",
+                )
+            run = self._runs.transition(run.id, RunState.EXECUTING)
+            self._environments.mark_busy(call)
+            phase = self._phases.start(run.id, "execute", attempt=run.attempt)
+            handle = script.launch(
+                ScriptRef(
+                    id=template.id,
+                    plugin_id=template.plugin_id,
+                    config=dict(template.config),
+                ),
+                context,
+            )
+            observation = self._wait_for_script(script, handle, context)
+            for signal in observation.signals:
+                self._events.append_run(
+                    run.id,
+                    EventType.RUN_SIGNAL,
+                    {"run_id": run.id, "kind": signal.kind, "payload": dict(signal.payload)},
+                    at=self._clock.utc_now(),
+                )
+            hung = observation.state is ScriptState.HUNG
+            self._phases.finish(
+                phase,
+                state=PhaseState.TIMED_OUT if hung else PhaseState.OK,
+                detail=observation.state.value,
+            )
+            if hung:
+                self._stop_script(script, handle, context)
+                handle = None
+            if self._cancel.is_cancelled():
+                return self._cancel_run(run.id, call, script, handle, context)
+            run = self._runs.transition(run.id, RunState.VERIFYING)
+            phase = self._phases.start(run.id, "verify", attempt=run.attempt)
+            verdict, error_code = self._verify(run.id, verifier, context)
+            self._phases.finish(
+                phase,
+                state=PhaseState.FAILED if error_code is not None else PhaseState.OK,
+                detail=error_code or "",
+            )
+            run = self._runs.transition(run.id, RunState.CLEANING)
+            phase = self._phases.start(run.id, "cleanup", attempt=run.attempt)
+            if handle is not None:
+                self._stop_script(script, handle, context)
+            cleaned = self._environments.cleanup(
+                call,
+                keep_warm=self._keep_warm_minutes > 0,
+                warm_minutes=self._keep_warm_minutes,
+            )
+            self._phases.finish(
+                phase,
+                state=PhaseState.OK if cleaned.ok else PhaseState.FAILED,
+                detail=cleaned.detail,
+            )
+            self._leases.release(run.id, reason="cleanup")
+            if not cleaned.ok:
+                return self._fail(
+                    run.id,
+                    call,
+                    script,
+                    None,
+                    context,
+                    cleaned.error_code or "E_ENV_UNREACHABLE",
+                    "cleanup",
+                )
+            if error_code is not None:
+                return self._runs.transition(
+                    run.id,
+                    RunState.UNKNOWN,
+                    reason="verify_no_evidence",
+                    error_code=error_code,
+                )
+            target = RunState.UNKNOWN if verdict is None else _TERMINAL_BY_VERDICT[verdict.status]
+            return self._runs.transition(run.id, target, reason="verdict")
+        except Exception as error:  # 插件异常不能拖垮内核：按崩溃收尾
+            self._log.error({"event": "executor.error", "run_id": run.id, "error": str(error)})
+            return self._fail(
+                run.id,
+                call,
+                script,
+                handle,
+                context,
+                "E_PLUGIN_CRASH",
+                str(error),
+            )
+
+    def _wait_for_script(
+        self,
+        script: ScriptAdapter,
+        handle: ScriptHandle,
+        context: RunContext,
+    ) -> ScriptObservation:
+        for _ in range(_MAX_OBSERVATIONS):
+            observation = script.observe(handle, context)
+            if observation.state is not ScriptState.RUNNING:
+                return observation
+            if self._clock.utc_now() >= context.deadline_at:
+                break
+        return ScriptObservation(state=ScriptState.HUNG, since=self._clock.utc_now())
+
+    def _verify(
+        self,
+        run_id: str,
+        verifier: Verifier,
+        context: RunContext,
+    ) -> tuple[Verdict | None, str | None]:
+        verdict = verifier.verify(context)
+        if not isinstance(verdict, Verdict):
+            raise TypeError("验证器返回的不是 Verdict")
+        try:
+            self._verdicts.record(run_id, verdict)
+        except MissingEvidenceError:
+            return None, "E_VERIFY_NO_EVIDENCE"
+        return verdict, None
+
+    def _cancel_run(
+        self,
+        run_id: str,
+        call: EnvironmentCall | None = None,
+        script: ScriptAdapter | None = None,
+        handle: ScriptHandle | None = None,
+        context: RunContext | None = None,
+    ) -> JobRunRecord:
+        if handle is not None and script is not None and context is not None:
+            self._stop_script(script, handle, context)
+        if call is not None:
+            with suppress(Exception):
+                self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
+        with suppress(Exception):
+            self._leases.release(run_id, reason="cancelled")
+        current = self._runs.get(run_id)
+        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
+            current = self._runs.transition(run_id, RunState.CLEANING, reason="cancelled")
+        return self._runs.transition(run_id, RunState.CANCELLED, reason="cancelled")
+
+    def _fail(
+        self,
+        run_id: str,
+        call: EnvironmentCall,
+        script: ScriptAdapter,
+        handle: ScriptHandle | None,
+        context: RunContext,
+        error_code: str,
+        reason: str,
+    ) -> JobRunRecord:
+        if handle is not None:
+            self._stop_script(script, handle, context)
+        with suppress(Exception):
+            self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
+        with suppress(Exception):
+            self._leases.release(run_id, reason=reason)
+        current = self._runs.get(run_id)
+        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
+            current = self._runs.transition(run_id, RunState.CLEANING, reason=reason)
+        return self._runs.transition(
+            run_id,
+            RunState.FAILED,
+            reason=reason,
+            error_code=error_code,
+        )
+
+    def _stop_script(
+        self,
+        script: ScriptAdapter,
+        handle: ScriptHandle,
+        context: RunContext,
+    ) -> None:
+        with suppress(Exception):
+            script.stop(handle, context, StopMode.FORCE)
+
+    def _build_context(self, run: JobRunRecord, template: JobTemplateRow) -> RunContext:
+        work_dir = self._data_root / "work" / run.id
+        evidence_dir = self._data_root / "evidence" / run.id
+        work_dir.mkdir(parents=True, exist_ok=True)
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        now = self._clock.utc_now()
+        deadline = run.deadline_at if run.deadline_at is not None else now + _DEFAULT_DEADLINE
+        return RunContext(
+            run_id=run.id,
+            attempt=run.attempt,
+            template_id=template.id,
+            plugin_id=template.plugin_id,
+            environment_id=template.environment_id,
+            config=dict(template.config),
+            work_dir=work_dir,
+            evidence_dir=evidence_dir,
+            deadline_at=deadline,
+            cancel=self._cancel,
+            clock=self._clock,
+            secrets={},
+            log=self._log,
+            emit=self._emitter(run.id),
+            record_evidence=self._evidence_recorder(run.id, evidence_dir),
+        )
+
+    def _emitter(self, run_id: str) -> Emit:
+        def emit(event: str, payload: Mapping[str, Any]) -> None:
+            self._events.append_run(
+                run_id,
+                EventType(event),
+                dict(payload),
+                at=self._clock.utc_now(),
+            )
+
+        return emit
+
+    def _evidence_recorder(self, run_id: str, evidence_dir: Path) -> RecordEvidence:
+        def record(kind: str, path: Path, summary: str) -> str:
+            target = path if path.is_absolute() else evidence_dir / path
+            return self._evidence.record(
+                run_id,
+                kind=EvidenceKind(kind),
+                path=target,
+                summary=summary,
+            )
+
+        return record
+
+
+__all__ = ["CancelFlag", "WorkerExecutor"]

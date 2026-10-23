@@ -184,6 +184,13 @@ class JobRunRepository:
         ).fetchall()
         return tuple(_row_to_record(row) for row in rows)
 
+    def set_verdict(self, run_id: str, verdict_id: str) -> None:
+        """把结论 id 回填到运行。"""
+        self._connection.execute(
+            "UPDATE job_runs SET verdict_id = ? WHERE id = ?",
+            (verdict_id, run_id),
+        )
+
 
 def _row_to_record(row: sqlite3.Row) -> JobRunRecord:
     return JobRunRecord(

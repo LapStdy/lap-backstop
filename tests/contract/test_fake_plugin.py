@@ -15,11 +15,13 @@ from contracts import (
     EnvironmentProvider,
     EnvironmentRef,
     EnvironmentState,
+    RecoveryAction,
     RunContext,
     ScriptAdapter,
     ScriptObservation,
     ScriptRef,
     ScriptState,
+    StopMode,
     VerdictStatus,
     Verifier,
 )
@@ -54,7 +56,10 @@ class _Logger:
         return None
 
 
-def make_context(config: Mapping[str, Any] | None = None) -> RunContext:
+def make_context(
+    config: Mapping[str, Any] | None = None,
+    evidence_dir: Path | None = None,
+) -> RunContext:
     return RunContext(
         run_id="run-1",
         attempt=1,
@@ -63,7 +68,7 @@ def make_context(config: Mapping[str, Any] | None = None) -> RunContext:
         environment_id="env-1",
         config={} if config is None else dict(config),
         work_dir=Path("."),
-        evidence_dir=Path("."),
+        evidence_dir=Path(".") if evidence_dir is None else evidence_dir,
         deadline_at=NOW + timedelta(minutes=5),
         cancel=_CancelFlag(),
         clock=_Clock(),
@@ -164,14 +169,15 @@ def test_script_crash_raises() -> None:
         )
 
 
-def test_verifier_returns_three_states() -> None:
+def test_verifier_returns_three_states(tmp_path: Path) -> None:
     expected = {
         "instant": VerdictStatus.COMPLETED,
         "fail": VerdictStatus.FAILED,
         "partial": VerdictStatus.UNKNOWN,
+        "hang": VerdictStatus.UNKNOWN,
     }
     for scenario, status in expected.items():
-        verdict = FakeVerifier().verify(make_context({"scenario": scenario}))
+        verdict = FakeVerifier().verify(make_context({"scenario": scenario}, evidence_dir=tmp_path))
         assert verdict.status is status
         assert verdict.evidence_ids == ("evidence-1",)
 
@@ -180,8 +186,6 @@ def test_stop_and_recover_are_idempotent() -> None:
     ctx = make_context()
     adapter = FakeScriptAdapter()
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="fake"), ctx)
-    from contracts import RecoveryAction, StopMode
-
     assert adapter.stop(handle, ctx, StopMode.GRACEFUL).ok
     assert adapter.recover(handle, ctx, RecoveryAction.RETRY).ok
 

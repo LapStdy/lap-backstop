@@ -129,15 +129,18 @@ class FakeScriptAdapter:
 
 
 class FakeVerifier:
-    """按 scenario 返回三态结论；partial 形态给 unknown。"""
+    """按 scenario 返回三态结论；partial 与 hang 形态给 unknown。"""
 
     def verify(self, ctx: RunContext) -> Verdict:
         scenario = _scenario(ctx.config)
         now = ctx.clock.utc_now()
-        evidence_id = ctx.record_evidence("log", Path("fake.log"), "fake 验证证据")
-        if scenario == "partial":
+        evidence_dir = Path(ctx.evidence_dir)
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "fake.log").write_text(f"fake {scenario}\n", encoding="utf-8")
+        evidence_id = ctx.record_evidence("log", Path("fake.log"), f"fake {scenario}")
+        if scenario in {"partial", "hang"}:
             status = VerdictStatus.UNKNOWN
-            reason = "部分任务完成"
+            reason = "部分任务完成" if scenario == "partial" else "脚本挂起"
             check_status = CheckStatus.UNKNOWN
         elif scenario == "fail":
             status = VerdictStatus.FAILED
@@ -150,7 +153,7 @@ class FakeVerifier:
         return Verdict(
             status=status,
             policy_id=_policy_id(ctx.config),
-            confidence=0.5 if scenario == "partial" else 1.0,
+            confidence=0.5 if scenario in {"partial", "hang"} else 1.0,
             reason=reason,
             checks=(
                 CheckResult(
