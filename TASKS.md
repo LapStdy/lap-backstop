@@ -15,9 +15,7 @@
 
 ## P0 修复：worker RPC 审查发现（2026-10-24）
 
-- [ ] 插件 emit 白名单：禁止插件伪造 `run.*`、`recovery.*`、`resource.*` 内核生命周期事件，payload 按事件 schema 校验。
-- [ ] WorkerChannel 拆分与配置校验：`call` 拆成发送、等待、回调处理三段，参数收敛到配置对象，返回 `object` 后由代理收窄。
-- [ ] degraded 恢复通道：成功探针或 TTL 让降级插件恢复；多插件路由时跳过降级插件。
+- [ ] 多插件路由接入时按 `channel.is_degraded` 跳过降级插件（单插件模板下不适用）。
 
 ## P1：MAA 插件与方舟环境
 
