@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plugin://fake/config/1",
+  "x-schema-version": 1,
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "scenario": {
+      "type": "string",
+      "title": "行为形态",
+      "enum": ["instant", "slow", "never-ready", "fail", "hang", "partial", "crash"],
+      "default": "instant"
+    },
+    "slow_probes": {
+      "type": "integer",
+      "title": "slow 形态的就绪探测次数",
+      "minimum": 1,
+      "default": 3
+    },
+    "policy_id": {
+      "type": "string",
+      "title": "验证策略 id",
+      "default": "fake-policy"
+    }
+  }
+}

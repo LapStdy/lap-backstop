@@ -2,6 +2,7 @@
 root_packages =
     contracts
     core
+    plugins
     storage
 include_external_packages = true
 
@@ -23,3 +24,13 @@ layers =
     core
     storage
     contracts
+
+[importlinter:contract:plugins-isolation]
+name = 插件只依赖契约，不碰内核与存储
+type = forbidden
+source_modules =
+    plugins
+forbidden_modules =
+    core
+    storage
+    web

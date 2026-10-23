@@ -24,7 +24,7 @@ known-first-party = ["contracts", "core", "plugins", "storage", "web"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["contracts", "core", "storage", "tests"]
+files = ["contracts", "core", "plugins", "storage", "tests"]
 check_untyped_defs = true
 disallow_untyped_defs = true
 warn_unused_ignores = true
