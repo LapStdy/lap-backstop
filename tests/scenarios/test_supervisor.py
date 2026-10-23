@@ -10,7 +10,16 @@ from pathlib import Path
 
 import pytest
 
-from contracts import EnvironmentState, RunState
+from contracts import (
+    EnvironmentState,
+    RunContext,
+    RunState,
+    ScriptHandle,
+    ScriptObservation,
+    ScriptState,
+    StopMode,
+    StopResult,
+)
 from core.clock import VirtualClock
 from core.environments.service import EnvironmentService
 from core.jobs.run_service import JobRunService
@@ -74,6 +83,25 @@ def make_registry() -> PluginRegistry:
         )
     )
     return registry
+
+
+class _CancellingScriptAdapter(FakeScriptAdapter):
+    """首次观察时请求叫停，模拟用户在执行中按下停止。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.supervisor: Supervisor | None = None
+        self.run_id = ""
+        self.stop_modes: list[StopMode] = []
+
+    def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
+        assert self.supervisor is not None
+        self.supervisor.request_cancel(self.run_id, reason="user_stop")
+        return ScriptObservation(state=ScriptState.EXITED, since=ctx.clock.utc_now())
+
+    def stop(self, handle: ScriptHandle, ctx: RunContext, mode: StopMode) -> StopResult:
+        self.stop_modes.append(mode)
+        return super().stop(handle, ctx, mode)
 
 
 @pytest.fixture
@@ -202,3 +230,32 @@ def test_tick_fails_overdue_run(
     record = runs.get(run_id)
     assert record.state is RunState.FAILED
     assert record.error_code == "E_DEADLINE"
+
+
+def test_cancel_during_execute_stops_script_gracefully(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, data_root = env
+    insert_template(connection)
+    run_id = prepare_run(connection, runs)
+    runs.enqueue(run_id)
+    adapter = _CancellingScriptAdapter()
+    adapter.run_id = run_id
+    registry = PluginRegistry()
+    registry.register(
+        PluginCapabilities(
+            plugin_id="fake",
+            environment=FakeEnvironmentProvider(),
+            script=adapter,
+            verifier=FakeVerifier(),
+        )
+    )
+    supervisor = Supervisor(connection, clock, registry, data_root=data_root)
+    adapter.supervisor = supervisor
+    supervisor.tick()
+    assert runs.get(run_id).state is RunState.CANCELLED
+    assert adapter.stop_modes == [StopMode.GRACEFUL]
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()
+    assert EnvironmentService(connection, clock).get(ENV_ID).state is EnvironmentState.OFF
+    interrupted = [event for event in runs.events(run_id) if event.type == "run.interrupted"]
+    assert len(interrupted) == 1

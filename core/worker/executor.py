@@ -251,23 +251,24 @@ class WorkerExecutor:
         script_failed = (
             observation.last_signal is not None and observation.last_signal.kind == "task_failed"
         )
+        cancelled = self._cancel.is_cancelled()
+        state = PhaseState.FAILED if script_failed else PhaseState.OK
+        if hung:
+            state = PhaseState.TIMED_OUT
+        if cancelled:
+            state = PhaseState.FAILED
         self._phases.finish(
             phase,
-            state=(
-                PhaseState.TIMED_OUT
-                if hung
-                else PhaseState.FAILED
-                if script_failed
-                else PhaseState.OK
-            ),
-            detail=observation.state.value,
+            state=state,
+            detail="cancelled" if cancelled else observation.state.value,
         )
+        if cancelled:
+            self._stop_script(scope, graceful=True)
+            return self._cancel_run(scope, started=True)
         if hung:
             self._stop_script(scope)
         if script_failed:
             return self._recover(scope, "E_SCRIPT_TASK_FAILED", "script")
-        if self._cancel.is_cancelled():
-            return self._cancel_run(scope, started=True)
         return None
 
     def _verify(self, scope: RunScope) -> JobRunRecord | None:
@@ -332,6 +333,8 @@ class WorkerExecutor:
         for _ in range(_MAX_OBSERVATIONS):
             observation = script.observe(handle, context)
             if observation.state is not ScriptState.RUNNING:
+                return observation
+            if self._cancel.is_cancelled():
                 return observation
             if self._clock.utc_now() >= context.deadline_at:
                 return None
@@ -484,22 +487,40 @@ class WorkerExecutor:
             error_code=error_code,
         )
 
-    def _stop_script(self, scope: RunScope) -> None:
-        """停止脚本并清空句柄；失败只记 WARN，收尾不能因为插件拒绝而卡住。"""
+    def _stop_script(self, scope: RunScope, *, graceful: bool = False) -> None:
+        """停止脚本并清空句柄；取消时先 graceful，插件没接受再 force。失败只记 WARN。"""
         handle = scope.handle
         if handle is None:
             return
         scope.handle = None
+        if graceful and self._stop_attempt(scope, handle, StopMode.GRACEFUL):
+            return
+        self._stop_attempt(scope, handle, StopMode.FORCE)
+
+    def _stop_attempt(self, scope: RunScope, handle: ScriptHandle, mode: StopMode) -> bool:
         try:
-            scope.script.stop(handle, scope.context, StopMode.FORCE)
+            result = scope.script.stop(handle, scope.context, mode)
         except Exception as error:
             self._log.warn(
                 {
                     "event": "executor.script_stop_failed",
                     "run_id": scope.run_id,
+                    "mode": mode.value,
                     "error": str(error),
                 }
             )
+            return False
+        if result.ok:
+            return True
+        self._log.warn(
+            {
+                "event": "executor.script_stop_failed",
+                "run_id": scope.run_id,
+                "mode": mode.value,
+                "error_code": result.error_code or "",
+            }
+        )
+        return False
 
     def _safe_cleanup(self, call: EnvironmentCall, *, run_id: str, reason: str) -> None:
         """清理环境；失败只记 WARN，让已经确定的结局继续写入。"""

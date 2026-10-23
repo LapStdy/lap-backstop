@@ -16,8 +16,6 @@
 
 ## P0 修复：质量审查发现（2026-10-24）
 
-- [ ] 监督接线：启动扫描非终态；调度每秒 tick；逾期扫描；保温到期关闭；租约 60 秒续租、过期转 recovering；`keep_warm_minutes` 由 schedule 传入执行器；请求取消接入执行器（graceful→force）
-  验收：租约过期、保温到期、执行中取消各一条场景测试。
 - [ ] 口径落地：重复迁移同状态幂等、非法边仍 E_CONFLICT（docs/02:126 与 :131 并读）；`run.state.changed` 与 `env.state.changed` 载荷统一 `from_state`/`to_state`，同步 docs/03 事件表；提交含测试按 diff 增删计 ≤400 行
 - [ ] 规范卫生：`JsonLineLogger` 补 at/event 字段；默认值集中 `config/defaults.toml`；`Capability`/`PhaseName` 用 StrEnum；`core/worker`、`core/clock`、`core/logging` 补 ADR；`_optional_str`/`placeholders` 收敛；`gate.py` 加超时；fake 插件公开方法补 docstring；后续提交 ≤400 行
   验收：六条门禁全绿，ADR 落盘。
