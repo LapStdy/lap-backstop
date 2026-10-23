@@ -11,6 +11,7 @@ from typing import Any
 
 from contracts import EnvironmentState
 from storage.repositories.iso_time import format_at, parse_optional_at
+from storage.repositories.sql import optional_str
 
 _COLUMNS = "id, provider_id, name, state, last_probe_at, warm_until, detail"
 
@@ -126,14 +127,10 @@ def _row_to_row(row: sqlite3.Row) -> EnvironmentRow:
         provider_id=str(row["provider_id"]),
         name=str(row["name"]),
         state=EnvironmentState(str(row["state"])),
-        last_probe_at=parse_optional_at(_optional_str(row["last_probe_at"])),
-        warm_until=parse_optional_at(_optional_str(row["warm_until"])),
+        last_probe_at=parse_optional_at(optional_str(row["last_probe_at"])),
+        warm_until=parse_optional_at(optional_str(row["warm_until"])),
         detail=_load_detail(row["detail"]),
     )
-
-
-def _optional_str(value: object) -> str | None:
-    return None if value is None else str(value)
 
 
 def _dump(detail: Mapping[str, Any]) -> str:

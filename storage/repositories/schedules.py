@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from storage.repositories.iso_time import format_at, parse_at, parse_optional_at
+from storage.repositories.sql import optional_str
 
 _COLUMNS = (
     "id, name, kind, expr, at, timezone, catch_up, window_minutes, coalesce, "
@@ -83,8 +84,8 @@ def _row_to_row(row: sqlite3.Row) -> ScheduleRow:
         id=str(row["id"]),
         name=str(row["name"]),
         kind=str(row["kind"]),
-        expr=_optional_str(row["expr"]),
-        at=parse_optional_at(_optional_str(row["at"])),
+        expr=optional_str(row["expr"]),
+        at=parse_optional_at(optional_str(row["at"])),
         timezone=str(row["timezone"]),
         catch_up=str(row["catch_up"]),
         window_minutes=int(row["window_minutes"]),
@@ -95,10 +96,6 @@ def _row_to_row(row: sqlite3.Row) -> ScheduleRow:
         keep_warm_minutes=int(row["keep_warm_minutes"]),
         job_template_id=str(row["job_template_id"]),
         enabled=bool(row["enabled"]),
-        next_run_at=parse_optional_at(_optional_str(row["next_run_at"])),
+        next_run_at=parse_optional_at(optional_str(row["next_run_at"])),
         created_at=parse_at(str(row["created_at"])),
     )
-
-
-def _optional_str(value: object) -> str | None:
-    return None if value is None else str(value)

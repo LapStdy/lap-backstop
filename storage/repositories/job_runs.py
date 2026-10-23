@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from contracts import TERMINAL_RUN_STATES, RunState
 from storage.repositories.iso_time import format_at, parse_at, parse_optional_at
+from storage.repositories.sql import optional_str, placeholders
 
 _COLUMNS = (
     "id, template_id, schedule_id, scheduled_at, created_at, idempotency_key, "
@@ -166,10 +167,10 @@ class JobRunRepository:
 
     def overdue(self, now: datetime) -> tuple[JobRunRecord, ...]:
         """尚未进入 executing 且已过截止时间的运行。"""
-        placeholders = ", ".join("?" for _ in _OVERDUE_STATES)
+        marks = placeholders(_OVERDUE_STATES)
         rows = self._connection.execute(
             f"SELECT {_COLUMNS} FROM job_runs "
-            f"WHERE state IN ({placeholders}) AND deadline_at IS NOT NULL AND deadline_at <= ? "
+            f"WHERE state IN ({marks}) AND deadline_at IS NOT NULL AND deadline_at <= ? "
             "ORDER BY deadline_at",
             (*(state.value for state in _OVERDUE_STATES), format_at(now)),
         ).fetchall()
@@ -177,9 +178,9 @@ class JobRunRepository:
 
     def non_terminal(self) -> tuple[JobRunRecord, ...]:
         """所有非终态运行；启动恢复时按最后事件重建它们。"""
-        placeholders = ", ".join("?" for _ in _NON_TERMINAL_STATES)
+        marks = placeholders(_NON_TERMINAL_STATES)
         rows = self._connection.execute(
-            f"SELECT {_COLUMNS} FROM job_runs WHERE state IN ({placeholders}) ORDER BY created_at",
+            f"SELECT {_COLUMNS} FROM job_runs WHERE state IN ({marks}) ORDER BY created_at",
             tuple(state.value for state in _NON_TERMINAL_STATES),
         ).fetchall()
         return tuple(_row_to_record(row) for row in rows)
@@ -210,24 +211,20 @@ def _row_to_record(row: sqlite3.Row) -> JobRunRecord:
     return JobRunRecord(
         id=str(row["id"]),
         template_id=str(row["template_id"]),
-        schedule_id=_optional_str(row["schedule_id"]),
-        scheduled_at=parse_optional_at(_optional_str(row["scheduled_at"])),
+        schedule_id=optional_str(row["schedule_id"]),
+        scheduled_at=parse_optional_at(optional_str(row["scheduled_at"])),
         created_at=parse_at(str(row["created_at"])),
         idempotency_key=str(row["idempotency_key"]),
         state=RunState(str(row["state"])),
         attempt=int(row["attempt"]),
         priority=int(row["priority"]),
-        deadline_at=parse_optional_at(_optional_str(row["deadline_at"])),
-        started_at=parse_optional_at(_optional_str(row["started_at"])),
-        finished_at=parse_optional_at(_optional_str(row["finished_at"])),
-        verdict_id=_optional_str(row["verdict_id"]),
-        error_code=_optional_str(row["error_code"]),
+        deadline_at=parse_optional_at(optional_str(row["deadline_at"])),
+        started_at=parse_optional_at(optional_str(row["started_at"])),
+        finished_at=parse_optional_at(optional_str(row["finished_at"])),
+        verdict_id=optional_str(row["verdict_id"]),
+        error_code=optional_str(row["error_code"]),
         detail=_load_detail(row["detail"]),
     )
-
-
-def _optional_str(value: object) -> str | None:
-    return None if value is None else str(value)
 
 
 def _load_detail(value: object) -> Mapping[str, Any]:

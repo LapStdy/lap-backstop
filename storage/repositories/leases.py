@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from contracts import LeaseState
 from storage.repositories.iso_time import format_at, parse_at, parse_optional_at
+from storage.repositories.sql import optional_str, placeholders
 
 _COLUMNS = "id, resource_id, run_id, owner, state, acquired_at, expires_at, renewed_at"
 _ACTIVE_STATES = (LeaseState.LEASED.value, LeaseState.EXPIRING.value)
@@ -55,10 +56,10 @@ class LeaseRepository:
 
     def active_for(self, resource_id: str) -> tuple[LeaseRow, ...]:
         """某个资源当前持有的租约。"""
-        placeholders = ", ".join("?" for _ in _ACTIVE_STATES)
+        marks = placeholders(_ACTIVE_STATES)
         rows = self._connection.execute(
             f"SELECT {_COLUMNS} FROM resource_leases "
-            f"WHERE resource_id = ? AND state IN ({placeholders}) "
+            f"WHERE resource_id = ? AND state IN ({marks}) "
             "ORDER BY acquired_at",
             (resource_id, *_ACTIVE_STATES),
         ).fetchall()
@@ -66,10 +67,10 @@ class LeaseRepository:
 
     def active_for_run(self, run_id: str) -> tuple[LeaseRow, ...]:
         """某个运行当前持有的租约，按资源 id 排序。"""
-        placeholders = ", ".join("?" for _ in _ACTIVE_STATES)
+        marks = placeholders(_ACTIVE_STATES)
         rows = self._connection.execute(
             f"SELECT {_COLUMNS} FROM resource_leases "
-            f"WHERE run_id = ? AND state IN ({placeholders}) "
+            f"WHERE run_id = ? AND state IN ({marks}) "
             "ORDER BY resource_id",
             (run_id, *_ACTIVE_STATES),
         ).fetchall()
@@ -77,10 +78,9 @@ class LeaseRepository:
 
     def active(self) -> tuple[LeaseRow, ...]:
         """全部活跃租约，按过期时间排序；启动清理与续租扫描用。"""
-        placeholders = ", ".join("?" for _ in _ACTIVE_STATES)
+        marks = placeholders(_ACTIVE_STATES)
         rows = self._connection.execute(
-            f"SELECT {_COLUMNS} FROM resource_leases "
-            f"WHERE state IN ({placeholders}) ORDER BY expires_at",
+            f"SELECT {_COLUMNS} FROM resource_leases WHERE state IN ({marks}) ORDER BY expires_at",
             (*_ACTIVE_STATES,),
         ).fetchall()
         return tuple(_row_to_row(row) for row in rows)
@@ -109,19 +109,19 @@ class LeaseRepository:
 
     def renew(self, lease_id: str, *, expires_at: datetime, at: datetime) -> bool:
         """续租；租约已不在活跃状态时返回 False。"""
-        placeholders = ", ".join("?" for _ in _ACTIVE_STATES)
+        marks = placeholders(_ACTIVE_STATES)
         cursor = self._connection.execute(
             f"UPDATE resource_leases SET expires_at = ?, renewed_at = ? "
-            f"WHERE id = ? AND state IN ({placeholders})",
+            f"WHERE id = ? AND state IN ({marks})",
             (format_at(expires_at), format_at(at), lease_id, *_ACTIVE_STATES),
         )
         return cursor.rowcount == 1
 
     def release(self, lease_id: str) -> bool:
         """释放租约；已释放时返回 False。"""
-        placeholders = ", ".join("?" for _ in _ACTIVE_STATES)
+        marks = placeholders(_ACTIVE_STATES)
         cursor = self._connection.execute(
-            f"UPDATE resource_leases SET state = ? WHERE id = ? AND state IN ({placeholders})",
+            f"UPDATE resource_leases SET state = ? WHERE id = ? AND state IN ({marks})",
             (LeaseState.RELEASED.value, lease_id, *_ACTIVE_STATES),
         )
         return cursor.rowcount == 1
@@ -163,9 +163,5 @@ def _row_to_row(row: sqlite3.Row) -> LeaseRow:
         state=LeaseState(str(row["state"])),
         acquired_at=parse_at(str(row["acquired_at"])),
         expires_at=parse_at(str(row["expires_at"])),
-        renewed_at=parse_optional_at(_optional_str(row["renewed_at"])),
+        renewed_at=parse_optional_at(optional_str(row["renewed_at"])),
     )
-
-
-def _optional_str(value: object) -> str | None:
-    return None if value is None else str(value)

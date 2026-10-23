@@ -11,6 +11,7 @@ from typing import Any
 
 from contracts import PhaseState
 from storage.repositories.iso_time import format_at, parse_optional_at
+from storage.repositories.sql import optional_str
 
 _COLUMNS = "id, run_id, phase, attempt, state, started_at, finished_at, timeout_seconds, detail"
 
@@ -98,15 +99,11 @@ def _row_to_row(row: sqlite3.Row) -> RunPhaseRow:
         phase=str(row["phase"]),
         attempt=int(row["attempt"]),
         state=PhaseState(str(row["state"])),
-        started_at=parse_optional_at(_optional_str(row["started_at"])),
-        finished_at=parse_optional_at(_optional_str(row["finished_at"])),
+        started_at=parse_optional_at(optional_str(row["started_at"])),
+        finished_at=parse_optional_at(optional_str(row["finished_at"])),
         timeout_seconds=int(row["timeout_seconds"]),
         detail=_load_detail(row["detail"]),
     )
-
-
-def _optional_str(value: object) -> str | None:
-    return None if value is None else str(value)
 
 
 def _load_detail(value: object) -> Mapping[str, Any]:
