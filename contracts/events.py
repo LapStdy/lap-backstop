@@ -75,6 +75,9 @@ RUN_SCOPED_EVENTS: Final[frozenset[EventType]] = frozenset(
 
 GLOBAL_EVENTS: Final[frozenset[EventType]] = frozenset(EventType) - RUN_SCOPED_EVENTS
 
+# 插件经 RunContext.emit 只能写这些事件；内核生命周期事件一律由内核写（docs/03）。
+PLUGIN_EVENTS: Final[frozenset[EventType]] = frozenset({EventType.RUN_SIGNAL})
+
 RUN_EVENT_ID_PREFIX: Final[str] = "r"
 GLOBAL_EVENT_ID_PREFIX: Final[str] = "g"
 

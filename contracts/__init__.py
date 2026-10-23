@@ -26,6 +26,7 @@ from contracts.errors import (
 )
 from contracts.events import (
     GLOBAL_EVENTS,
+    PLUGIN_EVENTS,
     RUN_SCOPED_EVENTS,
     EventType,
     global_event_id,
@@ -87,6 +88,7 @@ __all__ = [
     "CAPABILITIES",
     "DEFAULT_RECOVERY",
     "GLOBAL_EVENTS",
+    "PLUGIN_EVENTS",
     "RUN_SCOPED_EVENTS",
     "SCENARIO_CODES",
     "TERMINAL_RUN_STATES",
