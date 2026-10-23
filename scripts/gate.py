@@ -19,6 +19,7 @@ except (AttributeError, OSError):
     pass
 
 LINT_IMPORTS_FALLBACK = "from importlinter.cli import lint_imports_command; lint_imports_command()"
+TIMEOUT_SECONDS = 600
 
 
 def _env() -> dict[str, str]:
@@ -48,7 +49,17 @@ def main() -> int:
     for command in commands():
         printable = " ".join(command)
         print(f"\n$ {printable}")
-        completed = subprocess.run(command, cwd=ROOT, check=False, env=_env())
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=ROOT,
+                check=False,
+                env=_env(),
+                timeout=TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"门禁超时（{TIMEOUT_SECONDS} 秒）：{printable}")
+            return 1
         if completed.returncode != 0:
             print(f"门禁失败：{printable}")
             return completed.returncode

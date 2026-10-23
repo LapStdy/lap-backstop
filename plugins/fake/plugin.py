@@ -53,6 +53,7 @@ class FakeEnvironmentProvider:
         self.calls: list[str] = []
 
     def probe(self, env: EnvironmentRef, ctx: RunContext) -> EnvironmentProbe:
+        """返回当前场景的探测结果；slow 形态按探测次数逐步就绪。"""
         self.calls.append("probe")
         scenario = _scenario(ctx.config)
         now = ctx.clock.utc_now()
@@ -68,6 +69,7 @@ class FakeEnvironmentProvider:
         return EnvironmentProbe(state=state, detail=f"fake:{scenario}", observed_at=now)
 
     def prepare(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
+        """按场景给出准备结果；never-ready 形态返回唤醒超时。"""
         self.calls.append("prepare")
         scenario = _scenario(ctx.config)
         now = ctx.clock.utc_now()
@@ -82,14 +84,17 @@ class FakeEnvironmentProvider:
         return PhaseResult(ok=True, detail="fake 准备完成", started_at=now, ended_at=now)
 
     def reset(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
+        """复位环境；fake 总是成功。"""
         self.calls.append("reset")
         return PhaseResult(ok=True, detail="fake 复位完成")
 
     def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
+        """清理环境；fake 总是成功并回显 keep_warm。"""
         self.calls.append("cleanup")
         return PhaseResult(ok=True, detail=f"fake 清理完成 keep_warm={keep_warm}")
 
     def warm(self, env: EnvironmentRef, ctx: RunContext, minutes: int) -> PhaseResult:
+        """维持保温；fake 总是成功并回显分钟数。"""
         self.calls.append("warm")
         return PhaseResult(ok=True, detail=f"fake 保温 {minutes} 分钟")
 
@@ -102,6 +107,7 @@ class FakeScriptAdapter:
         self._failures: dict[str, int] = {}
 
     def launch(self, script: ScriptRef, ctx: RunContext) -> ScriptHandle:
+        """启动脚本；crash 形态在这里抛异常。"""
         self.calls.append("launch")
         scenario = _scenario(ctx.config)
         if scenario == "crash":
@@ -109,6 +115,7 @@ class FakeScriptAdapter:
         return ScriptHandle(id=f"fake-{ctx.run_id}", meta={"scenario": scenario})
 
     def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
+        """上报脚本状态与信号；hang 形态只报挂起。"""
         self.calls.append("observe")
         scenario = _scenario(ctx.config)
         now = ctx.clock.utc_now()
@@ -126,6 +133,7 @@ class FakeScriptAdapter:
         )
 
     def stop(self, handle: ScriptHandle, ctx: RunContext, mode: StopMode) -> StopResult:
+        """停止脚本；fake 总是成功并回显停止方式。"""
         self.calls.append("stop")
         return StopResult(ok=True, detail=f"fake 停止 {mode.value}")
 
@@ -135,6 +143,7 @@ class FakeScriptAdapter:
         ctx: RunContext,
         action: RecoveryAction,
     ) -> RecoveryResult:
+        """执行恢复动作；fake 总是成功并回显动作。"""
         self.calls.append("recover")
         return RecoveryResult(ok=True, detail=f"fake 恢复 {action.value}")
 
@@ -143,6 +152,7 @@ class FakeVerifier:
     """按 scenario 返回三态结论；partial 与 hang 形态给 unknown。"""
 
     def verify(self, ctx: RunContext) -> Verdict:
+        """按场景生成结论与证据；partial 与 hang 给 unknown。"""
         scenario = _scenario(ctx.config)
         now = ctx.clock.utc_now()
         evidence_dir = Path(ctx.evidence_dir)
