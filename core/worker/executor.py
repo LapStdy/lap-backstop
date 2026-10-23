@@ -9,7 +9,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping
 from contextlib import suppress
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +21,7 @@ from contracts import (
     EvidenceKind,
     Logger,
     PhaseState,
+    RecoveryAction,
     RunContext,
     RunState,
     ScriptAdapter,
@@ -40,6 +41,7 @@ from core.jobs.phases import PhaseTracker
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
 from core.plugins.registry import PluginRegistry
+from core.recovery.policy import RecoveryPolicy
 from core.resources.service import LeaseService
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
@@ -107,6 +109,8 @@ class WorkerExecutor:
     def execute(self, run_id: str) -> JobRunRecord:
         """推进一步；未到 scheduled_at 时停在 waiting，其余状态原样返回。"""
         run = self._runs.get(run_id)
+        if run.state is RunState.RECOVERING:
+            run = self.resume(run_id)
         if run.state not in (RunState.QUEUED, RunState.WAITING):
             return run
         template = self._templates.get(run.template_id)
@@ -149,12 +153,13 @@ class WorkerExecutor:
                     detail=prepared.detail,
                 )
                 if not prepared.ok:
-                    return self._fail(
+                    return self._recover(
                         run.id,
                         call,
                         script,
                         handle,
                         context,
+                        template,
                         prepared.error_code or "E_ENV_WAKE_TIMEOUT",
                         "prepare",
                     )
@@ -165,12 +170,13 @@ class WorkerExecutor:
             if run.scheduled_at is not None and now < run.scheduled_at:
                 return run
             if run.deadline_at is not None and now >= run.deadline_at:
-                return self._fail(
+                return self._recover(
                     run.id,
                     call,
                     script,
                     handle,
                     context,
+                    template,
                     "E_DEADLINE",
                     "deadline",
                 )
@@ -194,14 +200,35 @@ class WorkerExecutor:
                     at=self._clock.utc_now(),
                 )
             hung = observation.state is ScriptState.HUNG
+            script_failed = (
+                observation.last_signal is not None
+                and observation.last_signal.kind == "task_failed"
+            )
             self._phases.finish(
                 phase,
-                state=PhaseState.TIMED_OUT if hung else PhaseState.OK,
+                state=(
+                    PhaseState.TIMED_OUT
+                    if hung
+                    else PhaseState.FAILED
+                    if script_failed
+                    else PhaseState.OK
+                ),
                 detail=observation.state.value,
             )
             if hung:
                 self._stop_script(script, handle, context)
                 handle = None
+            if script_failed:
+                return self._recover(
+                    run.id,
+                    call,
+                    script,
+                    handle,
+                    context,
+                    template,
+                    "E_SCRIPT_TASK_FAILED",
+                    "script",
+                )
             if self._cancel.is_cancelled():
                 return self._cancel_run(run.id, call, script, handle, context)
             run = self._runs.transition(run.id, RunState.VERIFYING)
@@ -248,12 +275,13 @@ class WorkerExecutor:
             return self._runs.transition(run.id, target, reason="verdict")
         except Exception as error:  # 插件异常不能拖垮内核：按崩溃收尾
             self._log.error({"event": "executor.error", "run_id": run.id, "error": str(error)})
-            return self._fail(
+            return self._recover(
                 run.id,
                 call,
                 script,
                 handle,
                 context,
+                template,
                 "E_PLUGIN_CRASH",
                 str(error),
             )
@@ -286,6 +314,156 @@ class WorkerExecutor:
         except MissingEvidenceError:
             return None, "E_VERIFY_NO_EVIDENCE"
         return verdict, None
+
+    def resume(self, run_id: str) -> JobRunRecord:
+        """恢复等待到点时把运行放回队列；未到点或不在 recovering 时原样返回。"""
+        run = self._runs.get(run_id)
+        if run.state is not RunState.RECOVERING:
+            return run
+        retry_at = _retry_at(run.detail)
+        if retry_at is not None and self._clock.utc_now() < retry_at:
+            return run
+        return self._runs.transition(run_id, RunState.QUEUED, reason="recovery")
+
+    def _recover(
+        self,
+        run_id: str,
+        call: EnvironmentCall,
+        script: ScriptAdapter,
+        handle: ScriptHandle | None,
+        context: RunContext,
+        template: JobTemplateRow,
+        error_code: str,
+        reason: str,
+    ) -> JobRunRecord:
+        """按模板策略决定恢复动作；退避等待由 resume 按 retry_at 控制。"""
+        try:
+            policy = RecoveryPolicy.from_mapping(template.recovery_policy)
+        except ValueError:
+            return self._fail(run_id, call, script, handle, context, "E_CONFIG", reason)
+        run = self._runs.get(run_id)
+        decision = policy.decide(error_code=error_code, attempt=run.attempt)
+        now = self._clock.utc_now()
+        self._events.append_run(
+            run_id,
+            EventType.RECOVERY_STARTED,
+            {
+                "run_id": run_id,
+                "action": decision.action.value,
+                "attempt": decision.next_attempt,
+            },
+            at=now,
+        )
+        if (
+            decision.exhausted
+            or decision.action is RecoveryAction.ABORT
+            or run.state is RunState.CLEANING
+        ):
+            return self._abort_recovery(
+                run_id,
+                call,
+                script,
+                handle,
+                context,
+                error_code,
+                decision.exhausted,
+                now,
+            )
+        applied = self._apply_action(decision.action, call, script, handle, context)
+        self._events.append_run(
+            run_id,
+            EventType.RECOVERY_FINISHED,
+            {
+                "run_id": run_id,
+                "action": decision.action.value,
+                "result": "ok" if applied else "failed",
+            },
+            at=now,
+        )
+        if not applied:
+            return self._abort_recovery(
+                run_id,
+                call,
+                script,
+                handle,
+                context,
+                error_code,
+                False,
+                now,
+            )
+        if handle is not None:
+            self._stop_script(script, handle, context)
+        if decision.action is not RecoveryAction.RESET_ENVIRONMENT:
+            with suppress(Exception):
+                self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
+        with suppress(Exception):
+            self._leases.release(run_id, reason="recovering")
+        retry_at = now + timedelta(seconds=decision.delay_seconds)
+        return self._runs.mark_recovering(
+            run_id,
+            next_attempt=decision.next_attempt,
+            retry_at=retry_at,
+            error_code=error_code,
+        )
+
+    def _abort_recovery(
+        self,
+        run_id: str,
+        call: EnvironmentCall,
+        script: ScriptAdapter,
+        handle: ScriptHandle | None,
+        context: RunContext,
+        error_code: str,
+        exhausted: bool,
+        now: datetime,
+    ) -> JobRunRecord:
+        if handle is not None:
+            self._stop_script(script, handle, context)
+        with suppress(Exception):
+            self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
+        with suppress(Exception):
+            self._leases.release(run_id, reason="recovery")
+        current = self._runs.get(run_id)
+        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
+            current = self._runs.transition(run_id, RunState.CLEANING, reason="recovery")
+        result = "exhausted" if exhausted else "aborted"
+        code = "E_RECOVERY_EXHAUSTED" if exhausted else error_code
+        finished = self._runs.transition(
+            run_id,
+            RunState.FAILED,
+            reason=result,
+            error_code=code,
+        )
+        self._events.append_run(
+            run_id,
+            EventType.RECOVERY_FINISHED,
+            {
+                "run_id": run_id,
+                "action": RecoveryAction.ABORT.value,
+                "result": result,
+            },
+            at=now,
+        )
+        return finished
+
+    def _apply_action(
+        self,
+        action: RecoveryAction,
+        call: EnvironmentCall,
+        script: ScriptAdapter,
+        handle: ScriptHandle | None,
+        context: RunContext,
+    ) -> bool:
+        try:
+            if action is RecoveryAction.RESET_ENVIRONMENT:
+                return self._environments.reset(call).ok
+            if action is RecoveryAction.RESTART_SCRIPT:
+                if handle is None:
+                    return True
+                return script.recover(handle, context, action).ok
+            return True
+        except Exception:
+            return False
 
     def _cancel_run(
         self,
@@ -392,3 +570,12 @@ class WorkerExecutor:
 
 
 __all__ = ["CancelFlag", "WorkerExecutor"]
+
+
+def _retry_at(detail: Mapping[str, Any]) -> datetime | None:
+    """从运行摘要里读出恢复重试时刻。"""
+    value = detail.get("retry_at")
+    if not isinstance(value, str):
+        return None
+    moment = datetime.fromisoformat(value)
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)

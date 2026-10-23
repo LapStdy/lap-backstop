@@ -191,6 +191,20 @@ class JobRunRepository:
             (verdict_id, run_id),
         )
 
+    def set_attempt(self, run_id: str, attempt: int) -> None:
+        """写入下一次尝试序号。"""
+        self._connection.execute(
+            "UPDATE job_runs SET attempt = ? WHERE id = ?",
+            (attempt, run_id),
+        )
+
+    def set_detail(self, run_id: str, detail: Mapping[str, Any]) -> None:
+        """覆盖运行摘要，供恢复等待等调度提示使用。"""
+        self._connection.execute(
+            "UPDATE job_runs SET detail = ? WHERE id = ?",
+            (json.dumps(dict(detail), ensure_ascii=False, sort_keys=True), run_id),
+        )
+
 
 def _row_to_record(row: sqlite3.Row) -> JobRunRecord:
     return JobRunRecord(

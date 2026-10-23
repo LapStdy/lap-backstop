@@ -50,8 +50,10 @@ class FakeEnvironmentProvider:
 
     def __init__(self) -> None:
         self._probes: dict[str, int] = {}
+        self.calls: list[str] = []
 
     def probe(self, env: EnvironmentRef, ctx: RunContext) -> EnvironmentProbe:
+        self.calls.append("probe")
         scenario = _scenario(ctx.config)
         now = ctx.clock.utc_now()
         if scenario == "never-ready":
@@ -66,6 +68,7 @@ class FakeEnvironmentProvider:
         return EnvironmentProbe(state=state, detail=f"fake:{scenario}", observed_at=now)
 
     def prepare(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
+        self.calls.append("prepare")
         scenario = _scenario(ctx.config)
         now = ctx.clock.utc_now()
         if scenario == "never-ready":
@@ -79,33 +82,39 @@ class FakeEnvironmentProvider:
         return PhaseResult(ok=True, detail="fake 准备完成", started_at=now, ended_at=now)
 
     def reset(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
+        self.calls.append("reset")
         return PhaseResult(ok=True, detail="fake 复位完成")
 
     def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
+        self.calls.append("cleanup")
         return PhaseResult(ok=True, detail=f"fake 清理完成 keep_warm={keep_warm}")
 
     def warm(self, env: EnvironmentRef, ctx: RunContext, minutes: int) -> PhaseResult:
+        self.calls.append("warm")
         return PhaseResult(ok=True, detail=f"fake 保温 {minutes} 分钟")
 
 
 class FakeScriptAdapter:
-    """按 scenario 返回脚本观察结果；crash 形态在启动时直接失败。"""
+    """按 scenario 返回脚本观察结果；fail 形态可按 fail_times 先失败若干次。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self._failures: dict[str, int] = {}
 
     def launch(self, script: ScriptRef, ctx: RunContext) -> ScriptHandle:
+        self.calls.append("launch")
         scenario = _scenario(ctx.config)
         if scenario == "crash":
             raise RuntimeError("fake 脚本启动即崩溃")
         return ScriptHandle(id=f"fake-{ctx.run_id}", meta={"scenario": scenario})
 
     def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
+        self.calls.append("observe")
         scenario = _scenario(ctx.config)
         now = ctx.clock.utc_now()
         if scenario == "hang":
             return ScriptObservation(state=ScriptState.HUNG, since=now)
-        kind = {
-            "fail": "task_failed",
-            "partial": "partial",
-        }.get(scenario, "completed")
+        kind = _signal_kind(scenario, ctx, self._failures)
         signal = Signal(kind=kind, payload={"scenario": scenario}, at=now)
         progress = 1.0 if scenario in {"instant", "fail"} else 0.5
         return ScriptObservation(
@@ -117,6 +126,7 @@ class FakeScriptAdapter:
         )
 
     def stop(self, handle: ScriptHandle, ctx: RunContext, mode: StopMode) -> StopResult:
+        self.calls.append("stop")
         return StopResult(ok=True, detail=f"fake 停止 {mode.value}")
 
     def recover(
@@ -125,6 +135,7 @@ class FakeScriptAdapter:
         ctx: RunContext,
         action: RecoveryAction,
     ) -> RecoveryResult:
+        self.calls.append("recover")
         return RecoveryResult(ok=True, detail=f"fake 恢复 {action.value}")
 
 
@@ -143,9 +154,14 @@ class FakeVerifier:
             reason = "部分任务完成" if scenario == "partial" else "脚本挂起"
             check_status = CheckStatus.UNKNOWN
         elif scenario == "fail":
-            status = VerdictStatus.FAILED
-            reason = "任务失败"
-            check_status = CheckStatus.FAILED
+            if _fail_times(ctx.config) > 0:
+                status = VerdictStatus.COMPLETED
+                reason = "重试后完成"
+                check_status = CheckStatus.OK
+            else:
+                status = VerdictStatus.FAILED
+                reason = "任务失败"
+                check_status = CheckStatus.FAILED
         else:
             status = VerdictStatus.COMPLETED
             reason = "任务完成"
@@ -200,6 +216,26 @@ def _slow_probes(config: Mapping[str, Any]) -> int:
     if isinstance(value, int) and not isinstance(value, bool) and value > 0:
         return value
     return DEFAULT_SLOW_PROBES
+
+
+def _fail_times(config: Mapping[str, Any]) -> int:
+    value = config.get("fail_times", 0)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return 0
+
+
+def _signal_kind(scenario: str, ctx: RunContext, failures: dict[str, int]) -> str:
+    if scenario == "partial":
+        return "partial"
+    if scenario != "fail":
+        return "completed"
+    fail_times = _fail_times(ctx.config)
+    if fail_times == 0:
+        return "task_failed"
+    count = failures.get(ctx.run_id, 0) + 1
+    failures[ctx.run_id] = count
+    return "task_failed" if count <= fail_times else "completed"
 
 
 def _policy_id(config: Mapping[str, Any]) -> str:

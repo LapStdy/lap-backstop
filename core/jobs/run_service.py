@@ -158,6 +158,24 @@ class JobRunService:
         """按出队顺序取排队运行。"""
         return self._runs.queue(limit)
 
+    def mark_recovering(
+        self,
+        run_id: str,
+        *,
+        next_attempt: int,
+        retry_at: datetime,
+        error_code: str,
+    ) -> JobRunRecord:
+        """进入 recovering：写下次 attempt 与重试时刻，交给调度方按时间恢复。"""
+        with transaction(self._connection):
+            self.transition(run_id, RunState.RECOVERING, reason=error_code, error_code=error_code)
+            self._runs.set_attempt(run_id, next_attempt)
+            self._runs.set_detail(
+                run_id,
+                {"retry_at": retry_at.isoformat(), "error_code": error_code},
+            )
+        return self.get(run_id)
+
     def non_terminal(self) -> tuple[JobRunRecord, ...]:
         """所有非终态运行，供启动恢复扫描。"""
         return self._runs.non_terminal()

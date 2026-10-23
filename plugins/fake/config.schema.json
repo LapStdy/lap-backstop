@@ -17,6 +17,12 @@
       "minimum": 1,
       "default": 3
     },
+    "fail_times": {
+      "type": "integer",
+      "title": "fail 形态先失败的次数，0 表示每次都失败",
+      "minimum": 0,
+      "default": 0
+    },
     "policy_id": {
       "type": "string",
       "title": "验证策略 id",

@@ -175,16 +175,14 @@ def test_executor_waits_for_scheduled_time(
     assert finished.state is RunState.SUCCEEDED
 
 
-def test_fail_scenario_records_failed_verdict(
+def test_fail_scenario_enters_recovery(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "fail")
     result = executor_for(connection, clock, data_root).execute(run_id)
-    assert result.state is RunState.FAILED
-    assert [item.status for item in VerdictRepository(connection).for_run(run_id)] == [
-        VerdictStatus.FAILED
-    ]
+    assert result.state is RunState.RECOVERING
+    assert result.attempt == 1
 
 
 def test_partial_scenario_ends_unknown(
@@ -209,13 +207,13 @@ def test_hang_scenario_stops_script_and_ends_unknown(
     assert phases(connection, run_id)["execute"] is PhaseState.TIMED_OUT
 
 
-def test_crash_scenario_marks_plugin_crash(
+def test_crash_scenario_enters_recovery_with_plugin_crash(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "crash")
     result = executor_for(connection, clock, data_root).execute(run_id)
-    assert result.state is RunState.FAILED
+    assert result.state is RunState.RECOVERING
     assert result.error_code == "E_PLUGIN_CRASH"
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
 
