@@ -6,8 +6,6 @@
 
 - [ ] 契约单一真源校验：docs/05 与 contracts/ 一份定义，02/03/09 只引用。
 - [ ] pre-commit 钩子跑 `scripts/gate.py`，钩子失败不允许提交。
-- [ ] core/environments：环境状态机、probe、prepare、reset、cleanup、保温。
-- [ ] core/resources：租约、TTL、续租、排队。
 - [ ] core/events：证据落盘与引用、快照、回放。
 - [ ] core/recovery：重试、退避、升级、停手。
 - [ ] worker 进程：执行阶段、超时、取消、崩溃恢复。
