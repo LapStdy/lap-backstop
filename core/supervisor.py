@@ -113,7 +113,7 @@ class Supervisor:
         if run.state is RunState.SCHEDULED:
             return (self._runs.enqueue(run.id),)
         if run.state is RunState.RECOVERING and _retry_due(run, self._clock.utc_now()):
-            return (self._runs.transition(run.id, RunState.QUEUED, reason="startup_recovery"),)
+            return (self._runs.enqueue(run.id),)
         return ()
 
     def _release_orphan(self, lease: LeaseRow) -> None:
