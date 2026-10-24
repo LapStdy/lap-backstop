@@ -266,8 +266,12 @@ def classify(path: Path) -> tuple:
     return is_doc, is_code, is_ui
 
 
-def is_exempt(path: Path) -> bool:
-    parts = {p.lower() for p in path.parts}
+def is_exempt(path: Path, root: Path) -> bool:
+    try:
+        rel = path.resolve().relative_to(root.resolve())
+        parts = {p.lower() for p in rel.parts}
+    except ValueError:
+        parts = {p.lower() for p in path.parts}
     if parts & EXEMPT_DIRS:
         return True
     return any(fnmatch.fnmatch(path.name, g) for g in EXEMPT_GLOBS)
@@ -468,19 +472,19 @@ def display_path(path: Path, root: Path) -> str:
         return str(path)
 
 
-def collect(paths: list) -> list:
+def collect(paths: list, root: Path) -> list:
     files = []
     for raw in paths:
         p = Path(raw)
         if p.is_file():
-            if not is_exempt(p):
+            if not is_exempt(p, root):
                 files.append(p.resolve())
         elif p.is_dir():
             for dirpath, dirnames, filenames in os.walk(p):
                 dirnames[:] = [d for d in dirnames if d.lower() not in EXEMPT_DIRS]
                 for name in filenames:
                     f = Path(dirpath) / name
-                    if not f.is_file() or is_exempt(f):
+                    if not f.is_file() or is_exempt(f, root):
                         continue
                     if f.suffix.lower() not in (DOC_EXT | CODE_EXT | UI_EXT | DATA_EXT):
                         continue
@@ -497,10 +501,16 @@ def render(report: Report, max_per_rule: int) -> None:
     total = len(hits)
 
     if total:
-        print(
-            f"交付物检查：FAIL（扫描 {report.files} 个文件，命中 {total} 处："
-            f"高 {hi} / 中 {mid} / 低 {lo}）"
-        )
+        if hi:
+            print(
+                f"交付物检查：FAIL（扫描 {report.files} 个文件，命中 {total} 处："
+                f"高 {hi} / 中 {mid} / 低 {lo}）"
+            )
+        else:
+            print(
+                f"交付物检查：WARN（扫描 {report.files} 个文件，命中 {total} 处："
+                f"高 0 / 中 {mid} / 低 {lo}；不阻断，但交付前应清零）"
+            )
     else:
         print(f"交付物检查：PASS（扫描 {report.files} 个文件，未发现可疑文字）")
     if not total:
@@ -536,7 +546,10 @@ SELFTEST_CASES = {
         {"history_high", "history_mid"},
     ),
     "ui.tsx": ("export const T = () => <div>待定</div>;\n", {"placeholder_ui"}),
-    "code.py": ("def f():\n    # 改成这样，之前会崩\n    return 1\n", {"comment_changelog"}),
+    "code.py": (
+        "def f():\n    # 改成这样，之前会崩\n    return 1\n",
+        {"comment_changelog"},
+    ),
     "CHANGELOG.md": ("已改为新结构。\n", set()),
     "clean.md": ("# 用法\n\n运行 python scripts/check_artifacts.py 即可。\n", set()),
 }
@@ -548,7 +561,7 @@ def selftest() -> int:
         root = Path(td)
         for name, (content, _) in SELFTEST_CASES.items():
             (root / name).write_text(content, encoding="utf-8")
-        files = collect([str(root)])
+        files = collect([str(root)], root)
         hits = []
         for f in files:
             scan_file(f, root, hits)
@@ -585,7 +598,7 @@ def main(argv: list) -> int:
         return 2
 
     root = Path.cwd().resolve()
-    files = collect(targets)
+    files = collect(targets, root)
     report = Report(files=0)
     for f in files:
         report.files += scan_file(f, root, report.hits)

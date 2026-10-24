@@ -15,14 +15,19 @@
 
 规矩全文与检查器：GitHub `LapStdy/lap-skills-rules` 的 `rules/` 与 `tools/`；本文件是操作版，两者冲突以仓库为准。
 
+## 资产仓与技能
+
+- 规范与技能的唯一源是 GitHub `LapStdy/lap-skills-rules`；本机技能装在 `~/.dsh/skills/`，从仓库安装，不手工改安装副本。
+- 写技能、安装技能或调整项目结构前，先读仓库 `rules/skills.md` 与 `rules/project-structure.md`。
+
 ## 收尾自检（每次交付文件后、回复之前）
 
 ```bash
 python scripts/check_artifacts.py .
 ```
 
-1. 退出码 0 才算过；1 就按输出的「为什么 / 改法」改，改不动当场问。
-2. 在回复正文报一行：`交付物检查：PASS（N 个文件）` 或 `交付物检查：FAIL（高 N，已处理 / 待决定）`。
+1. 退出码 0 且输出 PASS 才算过；1 就按输出的「为什么 / 改法」改，改不动当场问。WARN（只有中/低风险）不阻断，但交付前同样要清零。
+2. 在回复正文报一行：`交付物检查：PASS（N 个文件）` 或 `交付物检查：FAIL（高 N，已处理 / 待决定）`；只出 WARN 时报 `交付物检查：WARN（中 N，已处理）`。
 3. 确属误报：该行加 `artifact-check: ignore`；只用于真误报，不要拿它绕规则。
 
 ## 项目状态
