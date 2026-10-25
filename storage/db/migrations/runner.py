@@ -9,7 +9,10 @@ import sqlite3
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
+from pathlib import Path
 from typing import cast
+
+from contracts.context import Clock
 
 UpFunction = Callable[[sqlite3.Connection], None]
 
@@ -49,16 +52,24 @@ def execute_statements(connection: sqlite3.Connection, script: str) -> None:
 def migrate(
     connection: sqlite3.Connection,
     migrations: Sequence[Migration] | None = None,
+    *,
+    backups_dir: Path | None = None,
+    clock: Clock | None = None,
 ) -> int:
     """把数据库前滚到最新版本，返回最终版本号。
 
     Args:
         connection: 已打开并设好 PRAGMA 的连接。
         migrations: 迁移清单；省略时用仓库内置清单。
+        backups_dir: 给定且存在待执行迁移时，先强制生成 pre-migrate 快照；
+            数据库已是最新则不生成。
+        clock: 快照的时间来源；给了 backups_dir 就必须给。
 
     Raises:
-        MigrationError: 版本不连续，或数据库版本高于代码支持的版本。
+        MigrationError: 版本不连续、数据库版本高于代码支持的版本，
+            或给了 backups_dir 却没给 clock。
         sqlite3.Error: 某份迁移的 SQL 执行失败；该份迁移整体回滚。
+        BackupError: 迁移前快照生成失败；此时不执行任何迁移。
     """
     if migrations is None:
         from storage.db.migrations import MIGRATIONS
@@ -72,6 +83,15 @@ def migrate(
     applied = current_version(connection)
     if applied > ordered[-1].version:
         raise MigrationError(f"数据库版本 {applied} 高于代码支持的最高版本 {ordered[-1].version}")
+    if backups_dir is not None and applied < ordered[-1].version:
+        if clock is None:
+            raise MigrationError("启用迁移前快照必须同时提供 clock")
+        # 延迟导入：backup 依赖本模块的 verify_integrity，顶层互导成环。
+        from storage.db.backup import create_pre_migrate_snapshot
+
+        create_pre_migrate_snapshot(
+            connection, backups_dir, version=ordered[-1].version, clock=clock
+        )
     for entry in ordered:
         if entry.version <= applied:
             continue

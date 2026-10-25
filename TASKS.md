@@ -7,7 +7,6 @@
 - [ ] 契约单一真源校验：docs/05 与 contracts/ 一份定义，02/03/09 只引用。
 - [ ] pre-commit 钩子跑 `scripts/gate.py`，钩子失败不允许提交。
 - [ ] core/events：事件快照与回放。
-- [ ] 数据库备份与恢复：快照、导出、迁移前快照。
 - [ ] 崩溃恢复后对环境做一次 probe，状态不明进入 unknown 并等待下一次 probe（docs/09）。
 - [ ] 看门狗、单实例、doctor 自检、磁盘水位。
 

@@ -6,13 +6,22 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from core.clock import VirtualClock
-from storage import BackupError, create_snapshot, migrate, open_database, verify_snapshot
+from storage import (
+    BackupError,
+    create_pre_migrate_snapshot,
+    create_snapshot,
+    export_configs,
+    migrate,
+    open_database,
+    prune_backups,
+    verify_snapshot,
+)
 from storage.db import backup as backup_module
 
 UPDATED_AT = "2026-10-25T00:00:00+00:00"
@@ -127,6 +136,76 @@ def test_verify_snapshot_returns_manifest_record_for_weekly(
     verified = verify_snapshot(result.path)
     assert verified == result
     assert verified.kind == "weekly"
+
+
+def test_export_configs_writes_settings_and_plugins_summary(
+    database: sqlite3.Connection, clock: VirtualClock, backups_dir: Path
+) -> None:
+    database.execute(
+        "INSERT INTO plugins (id, name, version, api_version, capabilities, config_schema, "
+        "error_map, requirements, enabled, installed_at) VALUES "
+        "('maa', 'MAA', '6.20.1', 1, '[]', '{}', '{}', '{}', 1, '2026-10-25T00:00:00+00:00')"
+    )
+    result = export_configs(database, backups_dir, clock=clock)
+    assert result.settings_path.name == "settings-20261025-040000.json"
+    assert result.plugins_path.name == "plugins-20261025-040000.json"
+    assert result.settings_count == 2
+    assert result.plugins_count == 1
+
+    settings = json.loads(result.settings_path.read_text(encoding="utf-8"))
+    assert settings["values"] == {"api.host": "127.0.0.1", "api.port": "8787"}
+    plugins = json.loads(result.plugins_path.read_text(encoding="utf-8"))
+    assert plugins["plugins"] == [{"id": "maa", "version": "6.20.1", "enabled": True}]
+
+
+def test_prune_keeps_newest_by_kind_and_skips_pre_migrate(
+    database: sqlite3.Connection, clock: VirtualClock, backups_dir: Path
+) -> None:
+    for _ in range(16):
+        create_snapshot(database, backups_dir, clock=clock)
+        _advance(clock)
+    for _ in range(9):
+        create_snapshot(database, backups_dir, clock=clock, kind="weekly")
+        _advance(clock)
+    pre_migrate = create_pre_migrate_snapshot(database, backups_dir, version=2, clock=clock)
+
+    result = prune_backups(backups_dir)
+
+    kinds = [
+        json.loads(manifest.read_text(encoding="utf-8"))["kind"]
+        for manifest in backups_dir.glob("*.manifest.json")
+    ]
+    assert kinds.count("daily") == 14
+    assert kinds.count("weekly") == 8
+    assert kinds.count("pre-migrate") == 1
+    assert len(result.deleted) == 6
+    assert not (backups_dir / "db-20261025-040000.sqlite").exists()
+    assert pre_migrate.path.exists()
+    assert pre_migrate.manifest_path.exists()
+
+
+def test_prune_keeps_newest_export_generations(
+    database: sqlite3.Connection, clock: VirtualClock, backups_dir: Path
+) -> None:
+    for _ in range(22):
+        export_configs(database, backups_dir, clock=clock)
+        _advance(clock)
+
+    result = prune_backups(backups_dir)
+
+    assert len(list(backups_dir.glob("settings-*.json"))) == 20
+    assert len(list(backups_dir.glob("plugins-*.json"))) == 20
+    assert not (backups_dir / "settings-20261025-040000.json").exists()
+    assert len(result.deleted) == 4
+
+
+def test_prune_empty_directory_is_noop(backups_dir: Path) -> None:
+    backups_dir.mkdir(parents=True)
+    assert prune_backups(backups_dir).deleted == ()
+
+
+def _advance(clock: VirtualClock, seconds: int = 1) -> None:
+    clock.advance(timedelta(seconds=seconds))
 
 
 def _sha256(path: Path) -> str:

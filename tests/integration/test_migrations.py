@@ -1,13 +1,15 @@
-"""迁移在真实 SQLite 文件上的行为：结构、版本、幂等与外键。"""
+"""迁移在真实 SQLite 文件上的行为：结构、版本、幂等、外键与迁移前快照。"""
 
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from core.clock import VirtualClock
 from storage import (
     Migration,
     MigrationError,
@@ -15,6 +17,7 @@ from storage import (
     migrate,
     open_database,
     verify_integrity,
+    verify_snapshot,
 )
 
 EXPECTED_TABLES = {
@@ -125,3 +128,50 @@ def test_database_newer_than_code_is_rejected(connection: sqlite3.Connection) ->
     connection.execute("PRAGMA user_version = 9")
     with pytest.raises(MigrationError):
         migrate(connection)
+
+
+def test_migrate_snapshots_before_pending_migration(tmp_path: Path) -> None:
+    connection = open_database(tmp_path / "state.db")
+    try:
+        migrations = [
+            Migration(1, "base", _create_table("first")),
+            Migration(2, "second", _create_table("second")),
+        ]
+        backups_dir = tmp_path / "backups"
+        clock = VirtualClock(datetime(2026, 10, 25, 4, 0, 0, tzinfo=UTC))
+        assert migrate(connection, migrations, backups_dir=backups_dir, clock=clock) == 2
+        snapshots = list(backups_dir.glob("pre-migrate-2-*.sqlite"))
+        assert len(snapshots) == 1
+        result = verify_snapshot(snapshots[0])
+        assert result.kind == "pre-migrate"
+        assert result.schema_version == 0
+    finally:
+        connection.close()
+
+
+def test_migrate_skips_snapshot_when_up_to_date(tmp_path: Path) -> None:
+    connection = open_database(tmp_path / "state.db")
+    try:
+        migrate(connection)
+        backups_dir = tmp_path / "backups"
+        clock = VirtualClock(datetime(2026, 10, 25, 4, 0, 0, tzinfo=UTC))
+        migrate(connection, backups_dir=backups_dir, clock=clock)
+        assert not backups_dir.exists()
+    finally:
+        connection.close()
+
+
+def test_migrate_requires_clock_when_backups_dir_given(tmp_path: Path) -> None:
+    connection = open_database(tmp_path / "state.db")
+    try:
+        with pytest.raises(MigrationError, match="clock"):
+            migrate(connection, backups_dir=tmp_path / "backups")
+    finally:
+        connection.close()
+
+
+def _create_table(name: str) -> Callable[[sqlite3.Connection], None]:
+    def up(connection: sqlite3.Connection) -> None:
+        connection.execute(f"CREATE TABLE {name} (id TEXT PRIMARY KEY)")
+
+    return up

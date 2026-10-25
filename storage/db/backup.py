@@ -22,11 +22,11 @@ from contracts.context import Clock
 from storage.db.migrations.runner import verify_integrity
 from storage.repositories.iso_time import format_at, parse_at
 
-SnapshotKind = Literal["daily", "weekly"]
+SnapshotKind = Literal["daily", "weekly", "pre-migrate"]
 
 _MANIFEST_SUFFIX = ".manifest.json"
 _SNAPSHOT_TIMESTAMP = "%Y%m%d-%H%M%S"
-_KINDS: tuple[SnapshotKind, ...] = ("daily", "weekly")
+_KINDS: tuple[SnapshotKind, ...] = ("daily", "weekly", "pre-migrate")
 
 
 class BackupError(RuntimeError):
@@ -72,11 +72,64 @@ def create_snapshot(
         BackupError: 同秒同名快照已存在、快照不可读、integrity_check
             未通过或备份目录不可写。
     """
-    backups_dir.mkdir(parents=True, exist_ok=True)
     created_at = clock.utc_now().astimezone(UTC)
-    stem = f"db-{created_at.strftime(_SNAPSHOT_TIMESTAMP)}"
-    final_path = backups_dir / f"{stem}.sqlite"
-    staging_path = backups_dir / f"{stem}.sqlite.tmp"
+    spec = _SnapshotSpec(
+        stem=f"db-{created_at.strftime(_SNAPSHOT_TIMESTAMP)}",
+        kind=kind,
+        created_at=created_at,
+    )
+    return _write_verified_snapshot(connection, backups_dir, spec)
+
+
+def create_pre_migrate_snapshot(
+    connection: sqlite3.Connection,
+    backups_dir: Path,
+    *,
+    version: int,
+    clock: Clock,
+) -> SnapshotResult:
+    """生成 schema 迁移前的强制快照（docs/08），文件名携带目标版本号。
+
+    Args:
+        connection: 已打开并设好 PRAGMA 的源库连接。
+        backups_dir: 备份目录，不存在时创建。
+        version: 即将迁移到的目标 schema 版本。
+        clock: 时间唯一来源；文件名时间戳与 manifest 时间取自它。
+
+    Returns:
+        SnapshotResult: kind 为 ``pre-migrate``，不参与例行修剪。
+
+    Raises:
+        BackupError: 同秒同名快照已存在、快照不可读、integrity_check
+            未通过或备份目录不可写。
+    """
+    created_at = clock.utc_now().astimezone(UTC)
+    spec = _SnapshotSpec(
+        stem=f"pre-migrate-{version}-{created_at.strftime(_SNAPSHOT_TIMESTAMP)}",
+        kind="pre-migrate",
+        created_at=created_at,
+    )
+    return _write_verified_snapshot(connection, backups_dir, spec)
+
+
+@dataclass(frozen=True, slots=True)
+class _SnapshotSpec:
+    """一次快照的命名要素：文件名主干、类别与时刻。"""
+
+    stem: str
+    kind: SnapshotKind
+    created_at: datetime
+
+
+def _write_verified_snapshot(
+    connection: sqlite3.Connection,
+    backups_dir: Path,
+    spec: _SnapshotSpec,
+) -> SnapshotResult:
+    """快照主体：临时名落盘，过 integrity_check 才转正名并写 manifest。"""
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    final_path = backups_dir / f"{spec.stem}.sqlite"
+    staging_path = backups_dir / f"{spec.stem}.sqlite.tmp"
     if final_path.exists():
         raise BackupError(f"同名快照已存在，换一个时刻再生成：{final_path.name}")
     staging_path.unlink(missing_ok=True)
@@ -90,7 +143,7 @@ def create_snapshot(
     except BackupError:
         _discard(staging_path)
         raise
-    return _describe_with_manifest(final_path, kind=kind, created_at=created_at)
+    return _describe_with_manifest(final_path, kind=spec.kind, created_at=spec.created_at)
 
 
 def verify_snapshot(snapshot_path: Path) -> SnapshotResult:
@@ -112,6 +165,145 @@ def verify_snapshot(snapshot_path: Path) -> SnapshotResult:
         raise BackupError(f"快照与 manifest 的 SHA-256 不符：{snapshot_path.name}")
     _verify_snapshot_file(snapshot_path)
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class ExportResult:
+    """一次配置导出生成的两个 JSON 文件。"""
+
+    settings_path: Path
+    plugins_path: Path
+    created_at: datetime
+    settings_count: int
+    plugins_count: int
+
+
+def export_configs(
+    connection: sqlite3.Connection,
+    exports_dir: Path,
+    *,
+    clock: Clock,
+) -> ExportResult:
+    """把平台配置导出为带时间戳的 JSON：settings 全量、plugins 概要。
+
+    docs/08 的备份内容：settings 键值全量；plugins 只含 id、版本与启用
+    状态。密钥不入库，因此也不会出现在导出里。
+
+    Args:
+        connection: 已打开的源库连接。
+        exports_dir: 导出目录，不存在时创建。
+        clock: 时间唯一来源；文件名时间戳取自它。
+
+    Returns:
+        ExportResult: 两个导出文件与各自条数。
+
+    Raises:
+        BackupError: 同秒同名导出已存在或目录不可写。
+    """
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    created_at = clock.utc_now().astimezone(UTC)
+    stamp = created_at.strftime(_SNAPSHOT_TIMESTAMP)
+    settings_path = exports_dir / f"settings-{stamp}.json"
+    plugins_path = exports_dir / f"plugins-{stamp}.json"
+    if settings_path.exists() or plugins_path.exists():
+        raise BackupError(f"同名导出已存在，换一个时刻再导出：settings-{stamp}.json")
+    values = {
+        str(row[0]): str(row[1])
+        for row in connection.execute("SELECT key, value FROM settings ORDER BY key")
+    }
+    plugins = [
+        {"id": str(row[0]), "version": str(row[1]), "enabled": bool(row[2])}
+        for row in connection.execute("SELECT id, version, enabled FROM plugins ORDER BY id")
+    ]
+    try:
+        _write_json_atomic(settings_path, {"created_at": format_at(created_at), "values": values})
+        _write_json_atomic(plugins_path, {"created_at": format_at(created_at), "plugins": plugins})
+    except OSError as error:
+        # 导出必须成对；缺一半的恢复材料比没有更误导。
+        _discard(settings_path)
+        _discard(plugins_path)
+        raise BackupError(f"配置导出失败：{error}") from error
+    return ExportResult(
+        settings_path=settings_path,
+        plugins_path=plugins_path,
+        created_at=created_at,
+        settings_count=len(values),
+        plugins_count=len(plugins),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class PruneResult:
+    """一次修剪删除的文件；快照与 manifest 成对计入。"""
+
+    deleted: tuple[Path, ...]
+
+
+def prune_backups(
+    backups_dir: Path,
+    *,
+    daily_keep: int = 14,
+    weekly_keep: int = 8,
+    export_keep: int = 20,
+) -> PruneResult:
+    """按 manifest 的 kind 修剪备份，最旧优先删除（docs/03 保留表）。
+
+    默认保留 14 份日备、8 份周备、20 组配置导出。pre-migrate 快照与没有
+    manifest 的文件不参与修剪：分不了类的一律不动，去留由升级流程决定。
+
+    Args:
+        backups_dir: 备份目录；快照与配置导出同目录。
+        daily_keep: 日备保留份数。
+        weekly_keep: 周备保留份数。
+        export_keep: 配置导出保留组数（一组含 settings 与 plugins）。
+
+    Returns:
+        PruneResult: 实际删除的文件清单。
+
+    Raises:
+        BackupError: manifest 损坏或不可读——宁可停下也不猜着删。
+    """
+    if not backups_dir.exists():
+        return PruneResult(deleted=())
+    deleted = _prune_snapshots(backups_dir, daily_keep=daily_keep, weekly_keep=weekly_keep)
+    deleted += _prune_exports(backups_dir, export_keep=export_keep)
+    return PruneResult(deleted=tuple(deleted))
+
+
+def _prune_snapshots(backups_dir: Path, *, daily_keep: int, weekly_keep: int) -> list[Path]:
+    """快照按类别各保留最新 N 份；manifest 是分类唯一依据。"""
+    keeps: dict[str, int] = {"daily": daily_keep, "weekly": weekly_keep}
+    groups: dict[str, list[SnapshotResult]] = {"daily": [], "weekly": []}
+    for manifest_path in sorted(backups_dir.glob(f"*{_MANIFEST_SUFFIX}")):
+        snapshot_path = manifest_path.with_name(
+            manifest_path.name.removesuffix(_MANIFEST_SUFFIX) + ".sqlite"
+        )
+        result = _result_from_manifest(snapshot_path, manifest_path, _load_json(manifest_path))
+        if result.kind in groups:
+            groups[result.kind].append(result)
+    deleted: list[Path] = []
+    for kind, results in groups.items():
+        results.sort(key=lambda item: item.created_at)
+        for victim in results[: max(len(results) - keeps[kind], 0)]:
+            victim.path.unlink()
+            victim.manifest_path.unlink()
+            deleted.extend((victim.path, victim.manifest_path))
+    return deleted
+
+
+def _prune_exports(exports_dir: Path, *, export_keep: int) -> list[Path]:
+    """配置导出按时间戳分组修剪，一组含 settings 与 plugins 两个文件。"""
+    generations: dict[str, list[Path]] = {}
+    for prefix in ("settings-", "plugins-"):
+        for path in sorted(exports_dir.glob(f"{prefix}*.json")):
+            stamp = path.name.removesuffix(".json").removeprefix(prefix)
+            generations.setdefault(stamp, []).append(path)
+    deleted: list[Path] = []
+    for stamp in sorted(generations)[: max(len(generations) - export_keep, 0)]:
+        for path in generations[stamp]:
+            path.unlink()
+            deleted.append(path)
+    return deleted
 
 
 def _describe_with_manifest(
