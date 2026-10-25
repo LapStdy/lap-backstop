@@ -79,15 +79,21 @@ __all__ = [
     "SERVER_ID_KEY",
     "TOKEN_KEY",
     "RunFilters",
+    "active_run_rows",
     "all_settings",
     "bearer_token",
     "delete_schedule",
     "delete_template",
     "ensure_server_id",
+    "environment_rows",
     "insert_schedule",
     "insert_template",
     "job_template_exists",
+    "plugin_row",
+    "plugin_rows",
     "put_settings",
+    "queued_run_rows",
+    "recent_verdict_rows",
     "record_run_now",
     "run_now_run_id",
     "run_rows",
@@ -218,6 +224,122 @@ def record_run_now(
         "VALUES (?, 'run_now', ?, ?) ON CONFLICT (key) DO NOTHING",
         (key, run_id, format_at(at)),
     )
+
+
+_ACTIVE_STATES = (
+    "scheduled",
+    "queued",
+    "preparing",
+    "waiting",
+    "executing",
+    "verifying",
+    "cleaning",
+    "recovering",
+)
+
+
+def active_run_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """全部非终态运行，按创建时间升序；供 /status 的当前运行一栏。"""
+    marks = ", ".join("?" for _ in _ACTIVE_STATES)
+    rows = connection.execute(
+        f"SELECT {_RUN_COLUMNS} FROM job_runs WHERE state IN ({marks}) ORDER BY created_at, id",
+        _ACTIVE_STATES,
+    ).fetchall()
+    return [_run_json(row) for row in rows]
+
+
+def queued_run_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """排队中的运行，按出队顺序（docs/03：priority 降序、时间升序）。"""
+    rows = connection.execute(
+        f"SELECT {_RUN_COLUMNS} FROM job_runs WHERE state = 'queued' "
+        "ORDER BY priority DESC, scheduled_at ASC, created_at ASC"
+    ).fetchall()
+    return [_run_json(row) for row in rows]
+
+
+def recent_verdict_rows(connection: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
+    """最近的结论摘要，新的在前。"""
+    rows = connection.execute(
+        "SELECT id, run_id, status, confidence, reason, created_at FROM verdicts "
+        "ORDER BY created_at DESC, id LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [
+        {
+            "id": str(row["id"]),
+            "run_id": str(row["run_id"]),
+            "status": str(row["status"]),
+            "confidence": float(row["confidence"]),
+            "reason": str(row["reason"]),
+            "created_at": str(row["created_at"]),
+        }
+        for row in rows
+    ]
+
+
+_ENVIRONMENT_QUERY = (
+    "SELECT id, provider_id, name, state, last_probe_at, warm_until, detail FROM environments"
+)
+
+
+def environment_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """环境列表；状态语义由 core/environments 维护，这里只读。"""
+    rows = connection.execute(f"{_ENVIRONMENT_QUERY} ORDER BY id").fetchall()
+    return [_environment_json(row) for row in rows]
+
+
+def environment_row(connection: sqlite3.Connection, environment_id: str) -> dict[str, Any] | None:
+    """按 id 取环境；不存在返回 None。"""
+    row = connection.execute(
+        f"{_ENVIRONMENT_QUERY} WHERE id = ?",
+        (environment_id,),
+    ).fetchone()
+    return None if row is None else _environment_json(row)
+
+
+def _environment_json(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "provider_id": str(row["provider_id"]),
+        "name": str(row["name"]),
+        "state": str(row["state"]),
+        "last_probe_at": optional_str(row["last_probe_at"]),
+        "warm_until": optional_str(row["warm_until"]),
+        "detail": json.loads(str(row["detail"])),
+    }
+
+
+def plugin_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """插件列表，按 id 排序；manifest 由内核加载时写入这张表。"""
+    rows = connection.execute(f"{_PLUGIN_QUERY} ORDER BY id").fetchall()
+    return [_plugin_json(row) for row in rows]
+
+
+_PLUGIN_QUERY = (
+    "SELECT id, name, version, api_version, capabilities, config_schema, "
+    "error_map, requirements, enabled, installed_at FROM plugins"
+)
+
+
+def plugin_row(connection: sqlite3.Connection, plugin_id: str) -> dict[str, Any] | None:
+    """按 id 取插件；不存在返回 None。"""
+    row = connection.execute(f"{_PLUGIN_QUERY} WHERE id = ?", (plugin_id,)).fetchone()
+    return None if row is None else _plugin_json(row)
+
+
+def _plugin_json(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "name": str(row["name"]),
+        "version": str(row["version"]),
+        "api_version": int(row["api_version"]),
+        "capabilities": json.loads(str(row["capabilities"])),
+        "config_schema": json.loads(str(row["config_schema"])),
+        "error_map": json.loads(str(row["error_map"])),
+        "requirements": json.loads(str(row["requirements"])),
+        "enabled": bool(row["enabled"]),
+        "installed_at": str(row["installed_at"]),
+    }
 
 
 _RUN_COLUMNS = (

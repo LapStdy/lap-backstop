@@ -1,4 +1,4 @@
-"""系统端点：health 存活检查与 settings 读写（docs/03 端点表）。"""
+"""系统端点：health、status 快照、settings 读写与环境/插件只读（docs/03 端点表）。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,16 @@ from core.hostops.serve import executable_version
 from storage.db.transaction import transaction
 
 # 能力清单列出本构建已落地的端点组；SSE 与导出不在本卡。
-CAPABILITIES: tuple[str, ...] = ("health", "settings", "schedules", "job-templates", "runs")
+CAPABILITIES: tuple[str, ...] = (
+    "health",
+    "status",
+    "settings",
+    "schedules",
+    "job-templates",
+    "runs",
+    "environments",
+    "plugins",
+)
 
 
 def health(ctx: RequestCtx) -> ApiResponse:
@@ -23,6 +32,20 @@ def health(ctx: RequestCtx) -> ApiResponse:
             "version": executable_version(),
             "server_id": server_id,
             "capabilities": list(CAPABILITIES),
+        },
+    )
+
+
+def get_status(ctx: RequestCtx) -> ApiResponse:
+    """当前运行、队列、环境状态与最近结论（docs/03 /status）。"""
+    connection = ctx.connection
+    return ApiResponse(
+        status=200,
+        payload={
+            "active_runs": store.active_run_rows(connection),
+            "queue": store.queued_run_rows(connection),
+            "environments": store.environment_rows(connection),
+            "recent_verdicts": store.recent_verdict_rows(connection),
         },
     )
 
@@ -41,4 +64,40 @@ def put_settings(ctx: RequestCtx) -> ApiResponse:
     return get_settings(ctx)
 
 
-__all__ = ["CAPABILITIES", "get_settings", "health", "put_settings"]
+def list_environments(ctx: RequestCtx) -> ApiResponse:
+    """环境列表。"""
+    return ApiResponse(status=200, payload={"environments": store.environment_rows(ctx.connection)})
+
+
+def get_environment(ctx: RequestCtx) -> ApiResponse:
+    """环境详情与状态。"""
+    row = store.environment_row(ctx.connection, ctx.params["id"])
+    if row is None:
+        raise ContractError(ErrorCode.NOT_FOUND, f"环境不存在：{ctx.params['id']}")
+    return ApiResponse(status=200, payload={"environment": row})
+
+
+def list_plugins(ctx: RequestCtx) -> ApiResponse:
+    """插件列表。"""
+    return ApiResponse(status=200, payload={"plugins": store.plugin_rows(ctx.connection)})
+
+
+def get_plugin(ctx: RequestCtx) -> ApiResponse:
+    """插件详情。"""
+    row = store.plugin_row(ctx.connection, ctx.params["id"])
+    if row is None:
+        raise ContractError(ErrorCode.NOT_FOUND, f"插件不存在：{ctx.params['id']}")
+    return ApiResponse(status=200, payload={"plugin": row})
+
+
+__all__ = [
+    "CAPABILITIES",
+    "get_environment",
+    "get_plugin",
+    "get_settings",
+    "get_status",
+    "health",
+    "list_environments",
+    "list_plugins",
+    "put_settings",
+]
