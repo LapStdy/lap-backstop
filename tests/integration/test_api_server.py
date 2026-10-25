@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -117,6 +118,22 @@ def test_oversized_body_rejected(server: ApiServer) -> None:
     status, payload, _ = request(server, "PUT", "/api/v1/settings", body=body)
     assert status == 400
     assert payload["error"]["code"] == "E_BAD_REQUEST"
+
+
+def test_malformed_content_length_rejected(server: ApiServer) -> None:
+    """Content-Length 非整数要得到 400 JSON，而不是连接被掐断。"""
+    host, port = server.address
+    # urllib 会重写 Content-Length，这里直接用裸套接字发原始头
+    with socket.create_connection((host, port), timeout=10) as sock:
+        raw = (
+            f"PUT /api/v1/settings HTTP/1.0\r\n"
+            f"Host: {host}\r\n"
+            f"Authorization: Bearer {TOKEN}\r\n"
+            f"Content-Length: abc\r\n\r\n"
+        ).encode()
+        sock.sendall(raw)
+        status_line = sock.recv(1024).decode("utf-8", errors="replace")
+    assert status_line.startswith("HTTP/1.0 400"), status_line
 
 
 def test_server_stops_after_request_limit(tmp_path: Path) -> None:
