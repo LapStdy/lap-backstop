@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from typing import Any
 
 from contracts import PhaseState
 from storage.repositories.iso_time import format_at, parse_optional_at
+from storage.repositories.json_columns import dump_json, load_json_object
 from storage.repositories.sql import optional_str
 
 _COLUMNS = "id, run_id, phase, attempt, state, started_at, finished_at, timeout_seconds, detail"
@@ -51,7 +51,7 @@ class RunPhaseRepository:
                 None if phase.started_at is None else format_at(phase.started_at),
                 None if phase.finished_at is None else format_at(phase.finished_at),
                 phase.timeout_seconds,
-                json.dumps(dict(phase.detail), ensure_ascii=False, sort_keys=True),
+                dump_json(phase.detail),
             ),
         )
 
@@ -77,7 +77,7 @@ class RunPhaseRepository:
             (
                 state.value,
                 format_at(at),
-                json.dumps(dict(detail), ensure_ascii=False, sort_keys=True),
+                dump_json(detail),
                 phase_id,
             ),
         )
@@ -102,15 +102,8 @@ def _row_to_row(row: sqlite3.Row) -> RunPhaseRow:
         started_at=parse_optional_at(optional_str(row["started_at"])),
         finished_at=parse_optional_at(optional_str(row["finished_at"])),
         timeout_seconds=int(row["timeout_seconds"]),
-        detail=_load_detail(row["detail"]),
+        detail=load_json_object(row["detail"], "阶段 detail"),
     )
-
-
-def _load_detail(value: object) -> Mapping[str, Any]:
-    detail = json.loads(str(value))
-    if not isinstance(detail, dict):
-        raise sqlite3.DatabaseError("阶段 detail 不是 JSON 对象")
-    return detail
 
 
 __all__ = ["RunPhaseRepository", "RunPhaseRow"]

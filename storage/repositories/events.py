@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -17,6 +16,7 @@ from contracts import (
     run_event_id,
 )
 from storage.repositories.iso_time import format_at, parse_at
+from storage.repositories.json_columns import dump_json, load_json_object
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +58,7 @@ class EventLog:
         moment = format_at(at)
         self._connection.execute(
             "INSERT INTO run_events (id, run_id, seq, type, ts, payload) VALUES (?, ?, ?, ?, ?, ?)",
-            (event_id, run_id, seq, event_type.value, moment, _dump(payload)),
+            (event_id, run_id, seq, event_type.value, moment, dump_json(payload)),
         )
         return StoredEvent(
             id=event_id,
@@ -87,7 +87,7 @@ class EventLog:
         moment = format_at(at)
         cursor = self._connection.execute(
             "INSERT INTO events_global (type, payload, ts) VALUES (?, ?, ?)",
-            (event_type.value, _dump(payload), moment),
+            (event_type.value, dump_json(payload), moment),
         )
         seq = cursor.lastrowid
         if seq is None:
@@ -115,7 +115,7 @@ class EventLog:
                 seq=int(row["seq"]),
                 type=str(row["type"]),
                 at=parse_at(str(row["ts"])),
-                payload=_load(row["payload"]),
+                payload=load_json_object(row["payload"], "事件载荷"),
             )
             for row in rows
         )
@@ -128,14 +128,3 @@ class EventLog:
         if row is None:
             raise sqlite3.DatabaseError("无法计算运行事件序号")
         return int(row[0])
-
-
-def _dump(payload: Mapping[str, Any]) -> str:
-    return json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
-
-
-def _load(text: object) -> Mapping[str, Any]:
-    payload = json.loads(str(text))
-    if not isinstance(payload, dict):
-        raise sqlite3.DatabaseError("事件载荷不是 JSON 对象")
-    return payload

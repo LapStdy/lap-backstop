@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -12,6 +11,7 @@ from uuid import uuid4
 
 from contracts import TERMINAL_RUN_STATES, RunState
 from storage.repositories.iso_time import format_at, parse_at, parse_optional_at
+from storage.repositories.json_columns import dump_json, load_json_object
 from storage.repositories.sql import optional_str, placeholders
 
 _COLUMNS = (
@@ -123,7 +123,7 @@ class JobRunRepository:
                 RunState.SCHEDULED.value,
                 run.priority,
                 None if run.deadline_at is None else format_at(run.deadline_at),
-                json.dumps(dict(run.detail), ensure_ascii=False, sort_keys=True),
+                dump_json(run.detail),
             ),
         )
         created = cursor.rowcount == 1
@@ -203,7 +203,7 @@ class JobRunRepository:
         """覆盖运行摘要，供恢复等待等调度提示使用。"""
         self._connection.execute(
             "UPDATE job_runs SET detail = ? WHERE id = ?",
-            (json.dumps(dict(detail), ensure_ascii=False, sort_keys=True), run_id),
+            (dump_json(detail), run_id),
         )
 
 
@@ -223,12 +223,5 @@ def _row_to_record(row: sqlite3.Row) -> JobRunRecord:
         finished_at=parse_optional_at(optional_str(row["finished_at"])),
         verdict_id=optional_str(row["verdict_id"]),
         error_code=optional_str(row["error_code"]),
-        detail=_load_detail(row["detail"]),
+        detail=load_json_object(row["detail"], "detail"),
     )
-
-
-def _load_detail(value: object) -> Mapping[str, Any]:
-    detail = json.loads(str(value))
-    if not isinstance(detail, dict):
-        raise sqlite3.DatabaseError("detail 不是 JSON 对象")
-    return detail

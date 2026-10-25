@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from storage.repositories.json_columns import load_json_object
 
 _COLUMNS = (
     "id, name, plugin_id, environment_id, config, config_schema_version, "
@@ -57,19 +58,14 @@ def _row_to_row(row: sqlite3.Row) -> JobTemplateRow:
         name=str(row["name"]),
         plugin_id=str(row["plugin_id"]),
         environment_id=str(row["environment_id"]),
-        config=_load_mapping(row["config"], "config"),
+        config=load_json_object(row["config"], "模板 config"),
         config_schema_version=str(row["config_schema_version"]),
-        verification_policy=_load_mapping(row["verification_policy"], "verification_policy"),
-        recovery_policy=_load_mapping(row["recovery_policy"], "recovery_policy"),
+        verification_policy=load_json_object(
+            row["verification_policy"], "模板 verification_policy"
+        ),
+        recovery_policy=load_json_object(row["recovery_policy"], "模板 recovery_policy"),
         enabled=bool(row["enabled"]),
     )
-
-
-def _load_mapping(value: object, field: str) -> Mapping[str, Any]:
-    payload = json.loads(str(value))
-    if not isinstance(payload, dict):
-        raise sqlite3.DatabaseError(f"模板 {field} 不是 JSON 对象")
-    return payload
 
 
 __all__ = ["JobTemplateRepository", "JobTemplateRow"]

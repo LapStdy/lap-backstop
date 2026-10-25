@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from typing import Any
 
 from contracts import EnvironmentState
 from storage.repositories.iso_time import format_at, parse_optional_at
+from storage.repositories.json_columns import dump_json, load_json_object
 from storage.repositories.sql import optional_str
 
 _COLUMNS = "id, provider_id, name, state, last_probe_at, warm_until, detail"
@@ -77,7 +77,7 @@ class EnvironmentRepository:
         """写入新状态、最近探测时间与探针摘要。"""
         self._connection.execute(
             "UPDATE environments SET state = ?, last_probe_at = ?, detail = ? WHERE id = ?",
-            (state.value, format_at(at), _dump(detail), environment_id),
+            (state.value, format_at(at), dump_json(detail), environment_id),
         )
 
     def touch(
@@ -90,7 +90,7 @@ class EnvironmentRepository:
         """状态未变时只刷新探测时间与摘要。"""
         self._connection.execute(
             "UPDATE environments SET last_probe_at = ?, detail = ? WHERE id = ?",
-            (format_at(at), _dump(detail), environment_id),
+            (format_at(at), dump_json(detail), environment_id),
         )
 
     def set_warm_until(
@@ -129,19 +129,8 @@ def _row_to_row(row: sqlite3.Row) -> EnvironmentRow:
         state=EnvironmentState(str(row["state"])),
         last_probe_at=parse_optional_at(optional_str(row["last_probe_at"])),
         warm_until=parse_optional_at(optional_str(row["warm_until"])),
-        detail=_load_detail(row["detail"]),
+        detail=load_json_object(row["detail"], "环境 detail"),
     )
-
-
-def _dump(detail: Mapping[str, Any]) -> str:
-    return json.dumps(dict(detail), ensure_ascii=False, sort_keys=True)
-
-
-def _load_detail(value: object) -> Mapping[str, Any]:
-    detail = json.loads(str(value))
-    if not isinstance(detail, dict):
-        raise sqlite3.DatabaseError("环境 detail 不是 JSON 对象")
-    return detail
 
 
 __all__ = ["EnvironmentRepository", "EnvironmentRow"]

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
+
+from storage.repositories.json_columns import dump_json, load_json_object
 
 RESOURCE_TYPES = frozenset({"environment", "account", "gpu", "custom"})
 _COLUMNS = "id, type, name, capacity, detail"
@@ -55,7 +56,7 @@ class ResourceRepository:
                     resource_type,
                     name,
                     effective,
-                    json.dumps(dict(detail or {}), ensure_ascii=False, sort_keys=True),
+                    dump_json(detail or {}),
                 ),
             )
         return self._require(resource_id)
@@ -86,15 +87,8 @@ def _row_to_row(row: sqlite3.Row) -> ResourceRow:
         type=str(row["type"]),
         name=str(row["name"]),
         capacity=int(row["capacity"]),
-        detail=_load_detail(row["detail"]),
+        detail=load_json_object(row["detail"], "资源 detail"),
     )
-
-
-def _load_detail(value: object) -> Mapping[str, Any]:
-    detail = json.loads(str(value))
-    if not isinstance(detail, dict):
-        raise sqlite3.DatabaseError("资源 detail 不是 JSON 对象")
-    return detail
 
 
 __all__ = ["RESOURCE_TYPES", "ResourceRepository", "ResourceRow"]

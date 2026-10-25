@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Sequence
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
 from contracts.context import Clock
+from storage.db.transaction import transaction
 
 UpFunction = Callable[[sqlite3.Connection], None]
 
@@ -75,15 +75,9 @@ def migrate(
     for entry in ordered:
         if entry.version <= applied:
             continue
-        connection.execute("BEGIN IMMEDIATE")
-        try:
+        with transaction(connection):
             entry.up(connection)
             connection.execute(f"PRAGMA user_version = {entry.version}")
-        except BaseException:
-            with suppress(sqlite3.Error):
-                connection.execute("ROLLBACK")
-            raise
-        connection.execute("COMMIT")
         applied = entry.version
     return applied
 
