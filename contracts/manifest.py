@@ -77,6 +77,7 @@ class Manifest:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Manifest:
+        """从 manifest 字典构造并校验；任何字段非法抛 E_PLUGIN_MANIFEST。"""
         manifest = cls(
             id=_require_str(data, "id"),
             name=_require_str(data, "name"),

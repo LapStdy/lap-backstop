@@ -207,14 +207,7 @@ def export_configs(
     plugins_path = exports_dir / f"plugins-{stamp}.json"
     if settings_path.exists() or plugins_path.exists():
         raise BackupError(f"同名导出已存在，换一个时刻再导出：settings-{stamp}.json")
-    values = {
-        str(row[0]): str(row[1])
-        for row in connection.execute("SELECT key, value FROM settings ORDER BY key")
-    }
-    plugins = [
-        {"id": str(row[0]), "version": str(row[1]), "enabled": bool(row[2])}
-        for row in connection.execute("SELECT id, version, enabled FROM plugins ORDER BY id")
-    ]
+    values, plugins = _collect_export_data(connection)
     try:
         _write_json_atomic(settings_path, {"created_at": format_at(created_at), "values": values})
         _write_json_atomic(plugins_path, {"created_at": format_at(created_at), "plugins": plugins})
@@ -230,6 +223,21 @@ def export_configs(
         settings_count=len(values),
         plugins_count=len(plugins),
     )
+
+
+def _collect_export_data(
+    connection: sqlite3.Connection,
+) -> tuple[dict[str, str], list[dict[str, object]]]:
+    """收导出数据：settings 全量键值与 plugins 概要（id、版本、启用）。"""
+    values = {
+        str(row[0]): str(row[1])
+        for row in connection.execute("SELECT key, value FROM settings ORDER BY key")
+    }
+    plugins = [
+        {"id": str(row[0]), "version": str(row[1]), "enabled": bool(row[2])}
+        for row in connection.execute("SELECT id, version, enabled FROM plugins ORDER BY id")
+    ]
+    return values, plugins
 
 
 @dataclass(frozen=True, slots=True)

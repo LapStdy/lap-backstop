@@ -128,6 +128,7 @@ def default_recovery(code: ErrorCode) -> RecoveryAction | None:
 
 
 def http_status(code: ErrorCode) -> int:
+    """错误码的 HTTP 状态码；未映射的码按 500 兜底。"""
     return _HTTP.get(code, DEFAULT_HTTP_STATUS)
 
 

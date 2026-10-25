@@ -16,16 +16,22 @@ from typing import Any, Protocol, runtime_checkable
 class Clock(Protocol):
     """插件唯一的时间来源；测试时替换成虚拟时钟。"""
 
-    def monotonic(self) -> float: ...
+    def monotonic(self) -> float:
+        """单调递增秒数，只用于计时；不受系统时间回拨影响。"""
+        ...
 
-    def utc_now(self) -> datetime: ...
+    def utc_now(self) -> datetime:
+        """带时区的当前 UTC 时刻。"""
+        ...
 
 
 @runtime_checkable
 class CancelToken(Protocol):
     """由内核持有；插件只能查询。"""
 
-    def is_cancelled(self) -> bool: ...
+    def is_cancelled(self) -> bool:
+        """本次运行是否已被请求取消。"""
+        ...
 
 
 @runtime_checkable

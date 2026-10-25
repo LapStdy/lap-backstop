@@ -229,4 +229,5 @@ CREATE INDEX idx_notifications_run ON notifications (run_id, status);
 
 
 def up(connection: sqlite3.Connection) -> None:
+    """版本 1：建全部表与索引；字段与约束的唯一真源是 docs/03。"""
     execute_statements(connection, SCHEMA)

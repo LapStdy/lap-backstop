@@ -71,27 +71,7 @@ def migrate(
         sqlite3.Error: 某份迁移的 SQL 执行失败；该份迁移整体回滚。
         BackupError: 迁移前快照生成失败；此时不执行任何迁移。
     """
-    if migrations is None:
-        from storage.db.migrations import MIGRATIONS
-
-        ordered = MIGRATIONS
-    else:
-        ordered = tuple(migrations)
-    ordered = tuple(sorted(ordered, key=lambda entry: entry.version))
-    _require_contiguous(ordered)
-
-    applied = current_version(connection)
-    if applied > ordered[-1].version:
-        raise MigrationError(f"数据库版本 {applied} 高于代码支持的最高版本 {ordered[-1].version}")
-    if backups_dir is not None and applied < ordered[-1].version:
-        if clock is None:
-            raise MigrationError("启用迁移前快照必须同时提供 clock")
-        # 延迟导入：backup 依赖本模块的 verify_integrity，顶层互导成环。
-        from storage.db.backup import create_pre_migrate_snapshot
-
-        create_pre_migrate_snapshot(
-            connection, backups_dir, version=ordered[-1].version, clock=clock
-        )
+    ordered, applied = _prepare_and_snapshot(connection, migrations, backups_dir, clock)
     for entry in ordered:
         if entry.version <= applied:
             continue
@@ -106,6 +86,36 @@ def migrate(
         connection.execute("COMMIT")
         applied = entry.version
     return applied
+
+
+def _prepare_and_snapshot(
+    connection: sqlite3.Connection,
+    migrations: Sequence[Migration] | None,
+    backups_dir: Path | None,
+    clock: Clock | None,
+) -> tuple[tuple[Migration, ...], int]:
+    """迁移前置：清单排序与连续性校验、版本检查与 pre-migrate 快照。"""
+    if migrations is None:
+        from storage.db.migrations import MIGRATIONS
+
+        ordered: tuple[Migration, ...] = MIGRATIONS
+    else:
+        ordered = tuple(migrations)
+    ordered = tuple(sorted(ordered, key=lambda entry: entry.version))
+    _require_contiguous(ordered)
+    applied = current_version(connection)
+    if applied > ordered[-1].version:
+        raise MigrationError(f"数据库版本 {applied} 高于代码支持的最高版本 {ordered[-1].version}")
+    if backups_dir is not None and applied < ordered[-1].version:
+        if clock is None:
+            raise MigrationError("启用迁移前快照必须同时提供 clock")
+        # 延迟导入：backup 依赖本模块的 verify_integrity，顶层互导成环。
+        from storage.db.backup import create_pre_migrate_snapshot
+
+        create_pre_migrate_snapshot(
+            connection, backups_dir, version=ordered[-1].version, clock=clock
+        )
+    return ordered, applied
 
 
 def verify_integrity(connection: sqlite3.Connection) -> None:
