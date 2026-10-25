@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contracts import ContractError, ErrorCode
-from core.api import store
+from core.api import registry_store, run_store, store
 from core.api.ctx import RequestCtx
 from core.api.wire import ApiResponse
 from core.hostops.serve import executable_version
@@ -42,10 +42,10 @@ def get_status(ctx: RequestCtx) -> ApiResponse:
     return ApiResponse(
         status=200,
         payload={
-            "active_runs": store.active_run_rows(connection),
-            "queue": store.queued_run_rows(connection),
-            "environments": store.environment_rows(connection),
-            "recent_verdicts": store.recent_verdict_rows(connection),
+            "active_runs": run_store.active_run_rows(connection),
+            "queue": run_store.queued_run_rows(connection),
+            "environments": registry_store.environment_rows(connection),
+            "recent_verdicts": run_store.recent_verdict_rows(connection),
         },
     )
 
@@ -66,12 +66,13 @@ def put_settings(ctx: RequestCtx) -> ApiResponse:
 
 def list_environments(ctx: RequestCtx) -> ApiResponse:
     """环境列表。"""
-    return ApiResponse(status=200, payload={"environments": store.environment_rows(ctx.connection)})
+    rows = registry_store.environment_rows(ctx.connection)
+    return ApiResponse(status=200, payload={"environments": rows})
 
 
 def get_environment(ctx: RequestCtx) -> ApiResponse:
     """环境详情与状态。"""
-    row = store.environment_row(ctx.connection, ctx.params["id"])
+    row = registry_store.environment_row(ctx.connection, ctx.params["id"])
     if row is None:
         raise ContractError(ErrorCode.NOT_FOUND, f"环境不存在：{ctx.params['id']}")
     return ApiResponse(status=200, payload={"environment": row})
@@ -79,12 +80,12 @@ def get_environment(ctx: RequestCtx) -> ApiResponse:
 
 def list_plugins(ctx: RequestCtx) -> ApiResponse:
     """插件列表。"""
-    return ApiResponse(status=200, payload={"plugins": store.plugin_rows(ctx.connection)})
+    return ApiResponse(status=200, payload={"plugins": registry_store.plugin_rows(ctx.connection)})
 
 
 def get_plugin(ctx: RequestCtx) -> ApiResponse:
     """插件详情。"""
-    row = store.plugin_row(ctx.connection, ctx.params["id"])
+    row = registry_store.plugin_row(ctx.connection, ctx.params["id"])
     if row is None:
         raise ContractError(ErrorCode.NOT_FOUND, f"插件不存在：{ctx.params['id']}")
     return ApiResponse(status=200, payload={"plugin": row})

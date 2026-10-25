@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from contracts import ContractError, ErrorCode, RunState
-from core.api import store
+from core.api import run_store
 from core.api.ctx import RequestCtx
 from core.api.fields import require_timestamp
 from core.api.wire import ApiResponse
@@ -27,7 +27,7 @@ MAX_PAGE_SIZE = 500
 def list_runs(ctx: RequestCtx) -> ApiResponse:
     """运行列表；支持 state、template_id、since、until 与 limit。"""
     filters = _filters(ctx)
-    return ApiResponse(status=200, payload={"runs": store.run_rows(ctx.connection, filters)})
+    return ApiResponse(status=200, payload={"runs": run_store.run_rows(ctx.connection, filters)})
 
 
 def get_run(ctx: RequestCtx) -> ApiResponse:
@@ -83,13 +83,13 @@ def run_json(record: JobRunRecord) -> dict[str, Any]:
     }
 
 
-def _filters(ctx: RequestCtx) -> store.RunFilters:
+def _filters(ctx: RequestCtx) -> run_store.RunFilters:
     query = ctx.query
     state = query.get("state")
     if state is not None and state not in {item.value for item in RunState}:
         raise ContractError(ErrorCode.BAD_REQUEST, f"state 取值非法：{state}")
     limit = _page_size(query.get("limit"))
-    return store.RunFilters(
+    return run_store.RunFilters(
         state=state,
         template_id=query.get("template_id"),
         since=_optional_timestamp(query, "since"),

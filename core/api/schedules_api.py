@@ -13,7 +13,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from contracts import Clock, ContractError, ErrorCode
-from core.api import catalog_store, store
+from core.api import catalog_store, run_store
 from core.api.ctx import RequestCtx, body_object
 from core.api.fields import (
     require_bool,
@@ -89,7 +89,7 @@ def _manual_run(
     key: str,
 ) -> tuple[JobRunRecord, bool]:
     """事务内建手动运行并登记幂等键；键已命中时返回既有运行。"""
-    hit = store.run_now_run_id(connection, key)
+    hit = run_store.run_now_run_id(connection, key)
     if hit is not None:
         record = JobRunRepository(connection).get(hit)
         if record is not None:
@@ -107,7 +107,7 @@ def _manual_run(
             detail={"trigger": "manual"},
         )
     )
-    store.record_run_now(connection, key, record.id, at=now)
+    run_store.record_run_now(connection, key, record.id, at=now)
     return record, created
 
 
