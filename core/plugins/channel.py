@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Final
 
-from contracts import PLUGIN_EVENTS, EventType, Logger, RunContext
+from contracts import Logger, RunContext
 from core.logging import NullLogger
 from core.plugins import rpc
 from core.plugins.errors import (
@@ -402,11 +402,11 @@ class WorkerChannel:
 
     def _run_callback(self, op: object, args: Mapping[str, Any], ctx: RunContext) -> object:
         if op == "emit":
-            event = _plugin_event(_text(args, "event"))
+            event = rpc.plugin_event(_text(args, "event"))
             payload = args.get("payload")
             if not isinstance(payload, Mapping):
                 raise WorkerPayloadError("emit 的 payload 应为对象")
-            _check_plugin_payload(event, payload)
+            rpc.check_plugin_payload(event, payload)
             ctx.emit(event.value, payload)
             return None
         if op == "record_evidence":
@@ -472,28 +472,6 @@ class WorkerChannel:
 
     def _stderr_tail(self) -> str:
         return " | ".join(line for line in self._stderr if line)[-800:]
-
-
-def _plugin_event(name: str) -> EventType:
-    """插件只能写 PLUGIN_EVENTS 里的事件；其余事件由内核写。"""
-    try:
-        event = EventType(name)
-    except ValueError as error:
-        raise WorkerPayloadError(f"未知事件类型：{name}") from error
-    if event not in PLUGIN_EVENTS:
-        raise WorkerPayloadError(f"插件不能写内核事件：{name}")
-    return event
-
-
-def _check_plugin_payload(event: EventType, payload: Mapping[str, Any]) -> None:
-    if event is not EventType.RUN_SIGNAL:
-        return
-    kind = payload.get("kind")
-    if not isinstance(kind, str) or not kind:
-        raise WorkerPayloadError("run.signal 的 kind 必须是非空字符串")
-    signal_payload = payload.get("payload", {})
-    if not isinstance(signal_payload, Mapping):
-        raise WorkerPayloadError("run.signal 的 payload 必须是对象")
 
 
 def _describe_failure(reply: Mapping[str, Any], capability: str, method: str) -> str:

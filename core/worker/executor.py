@@ -41,6 +41,7 @@ from core.events.verdicts import VerdictError, VerdictService
 from core.jobs.phases import PhaseTracker
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
+from core.plugins import rpc
 from core.plugins.errors import PluginError, WorkerCancelledError, WorkerTimeoutError
 from core.plugins.registry import PluginRegistry
 from core.recovery.policy import RecoveryPolicy
@@ -596,9 +597,12 @@ class WorkerExecutor:
 
     def _emitter(self, run_id: str) -> Emit:
         def emit(event: str, payload: Mapping[str, Any]) -> None:
+            # 插件只能写 run.signal（docs/03）：与 worker 通道共用同一白名单校验。
+            checked = rpc.plugin_event(event)
+            rpc.check_plugin_payload(checked, payload)
             self._events.append_run(
                 run_id,
-                EventType(event),
+                checked,
                 dict(payload),
                 at=self._clock.utc_now(),
             )
