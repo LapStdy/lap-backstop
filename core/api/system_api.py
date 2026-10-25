@@ -10,7 +10,7 @@ from core.hostops.serve import executable_version
 from storage.db.transaction import transaction
 
 # 能力清单列出本构建已落地的端点组；SSE 与导出不在本卡。
-CAPABILITIES: tuple[str, ...] = ("health", "settings")
+CAPABILITIES: tuple[str, ...] = ("health", "settings", "schedules")
 
 
 def health(ctx: RequestCtx) -> ApiResponse:

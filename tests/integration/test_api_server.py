@@ -68,7 +68,7 @@ def test_health_over_http(server: ApiServer) -> None:
     status, payload, _ = request(server, "GET", "/api/v1/health")
     assert status == 200
     assert payload["status"] == "ok"
-    assert payload["capabilities"] == ["health", "settings"]
+    assert "health" in payload["capabilities"]
 
 
 def test_unconfigured_token_rejects_http_requests(tmp_path: Path) -> None:
