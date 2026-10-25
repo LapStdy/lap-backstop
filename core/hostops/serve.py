@@ -9,26 +9,37 @@ Windows 的 TerminateProcess 没有处理器可走，优雅停机靠可捕获的
 from __future__ import annotations
 
 import contextlib
-import importlib.metadata
+import errno
 import os
 import signal
 import sqlite3
 import subprocess
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import FrameType
+from typing import Any
 
 from contracts import Clock, EventType, Logger, RunState
 from core.__main__ import (
     EXIT_DISK_LOW,
     EXIT_ERROR,
     EXIT_OK,
+    EXIT_PORT_CONFLICT,
     EXIT_SECOND_INSTANCE,
     resolve_executable_path,
 )
+from core.api.server import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    ApiOptions,
+    ApiServer,
+    start_api_server,
+)
+from core.api.store import all_settings, bearer_token
+from core.api.version import executable_version
 from core.clock import SystemClock
 from core.hostops import heartbeat, instance, tasks, watchdog
 from core.hostops.doctor import WINLOGON_KEY, RegistryGet, registry_get
@@ -44,6 +55,9 @@ TICK_INTERVAL_SECONDS = 1.0
 AUTOLOGON_CHECKED_EVENT = "host.autologon_checked"
 TASKS_REGISTERED_EVENT = "host.tasks_registered"
 WATCHDOG_GAVE_UP_EVENT = "host.watchdog_gave_up"
+PORT_CONFLICT_EVENT = "core.port_conflict"
+API_HOST_KEY = "api.host"
+API_PORT_KEY = "api.port"
 _HEARTBEAT_INTERVAL = timedelta(seconds=int(default("host", "heartbeat_interval_seconds")))
 _ACTIVE_RUN_STATES = frozenset(
     {RunState.PREPARING, RunState.WAITING, RunState.EXECUTING, RunState.VERIFYING}
@@ -62,6 +76,7 @@ class ServeOptions:
     register_tasks: bool = True
     task_runner: tasks.Runner = field(default_factory=lambda: subprocess.run)
     registry_get: RegistryGet = field(default_factory=lambda: registry_get)
+    on_api_listening: Callable[[str, int], None] | None = None
 
 
 def install_stop_handlers() -> threading.Event:
@@ -80,14 +95,6 @@ def install_stop_handlers() -> threading.Event:
         if number is not None:
             signal.signal(number, request_stop)
     return stop
-
-
-def executable_version() -> str:
-    """发行包版本号；源码直跑（环境里未安装发行包）记 ``dev``。"""
-    try:
-        return importlib.metadata.version("lap-backstop")
-    except importlib.metadata.PackageNotFoundError:
-        return "dev"
 
 
 @dataclass(frozen=True, slots=True)
@@ -272,8 +279,9 @@ def _write_lock(lock_path: Path, started_at: datetime, log: Logger) -> bool:
 
 
 def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> int:
-    """库、迁移、启动扫描与 tick 循环；打开失败与运行期错误都记日志退 1。"""
+    """库、迁移、启动扫描、API 挂载与 tick 循环；打开失败与运行期错误都记日志退 1。"""
     connection: sqlite3.Connection | None = None
+    api_server: ApiServer | None = None
     try:
         connection = open_database(data_root / "backstop.sqlite")
         migrate(connection)
@@ -288,6 +296,9 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
         setup_at = options.clock.utc_now()
         events = _host_setup_events(data_root, options, at=setup_at)
         _record_events(connection, events, at=setup_at)
+        api_server, exit_code = _start_api(connection, options)
+        if exit_code is not None:
+            return exit_code
         writer = HeartbeatWriter(
             path=data_root / "run" / heartbeat.HEARTBEAT_FILENAME,
             started_at=started_at,
@@ -300,12 +311,75 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
         options.log.error({"event": "serve.run_failed", "error": str(error)})
         return EXIT_ERROR
     finally:
+        if api_server is not None:
+            api_server.shutdown()
         if connection is not None:
             connection.close()
 
 
+def _start_api(
+    connection: sqlite3.Connection,
+    options: ServeOptions,
+) -> tuple[ApiServer | None, int | None]:
+    """按 settings 挂载 API；未配 token 不启动，端口被占退 4 并写 core.port_conflict。"""
+    if bearer_token(connection) is None:
+        options.log.warn(
+            {"event": "serve.api_skipped", "reason": "settings 未配置 api.token，本进程不监听"}
+        )
+        return None, None
+    try:
+        host, port = _api_listen(all_settings(connection))
+    except ValueError as error:
+        options.log.error({"event": "serve.api_config_invalid", "error": str(error)})
+        return None, EXIT_ERROR
+    try:
+        server = start_api_server(
+            connection,
+            ApiOptions(
+                host=host,
+                port=port,
+                clock=options.clock,
+                log=options.log,
+                stop=options.stop,
+            ),
+        )
+    except OSError as error:
+        # docs/08 的退出码 4 只针对端口被占；地址不可达等其它绑定失败走通用失败路径。
+        if error.errno != errno.EADDRINUSE:
+            raise
+        _record_events(
+            connection,
+            [(PORT_CONFLICT_EVENT, f"{host}:{port} 已被其它进程监听：{error}")],
+            at=options.clock.utc_now(),
+        )
+        options.log.error(
+            {"event": "serve.port_conflict", "host": host, "port": port, "error": str(error)}
+        )
+        return None, EXIT_PORT_CONFLICT
+    options.log.info({"event": "serve.api_listening", "host": host, "port": port})
+    if options.on_api_listening is not None:
+        options.on_api_listening(*server.address)
+    return server, None
+
+
+def _api_listen(settings: Mapping[str, Any]) -> tuple[str, int]:
+    """读监听地址设置；缺项用默认值，取值非法按坏配置拒绝启动并指出键名。
+
+    Raises:
+        ValueError: api.host 或 api.port 的类型或取值范围不合法。
+    """
+    host = settings.get(API_HOST_KEY, DEFAULT_HOST)
+    port = settings.get(API_PORT_KEY, DEFAULT_PORT)
+    if not isinstance(host, str) or not host:
+        raise ValueError(f"{API_HOST_KEY} 必须是非空字符串")
+    if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= 65535:
+        raise ValueError(f"{API_PORT_KEY} 必须是 0 到 65535 的整数")
+    return host, port
+
+
 __all__ = [
     "AUTOLOGON_CHECKED_EVENT",
+    "PORT_CONFLICT_EVENT",
     "TASKS_REGISTERED_EVENT",
     "TICK_INTERVAL_SECONDS",
     "WATCHDOG_GAVE_UP_EVENT",
