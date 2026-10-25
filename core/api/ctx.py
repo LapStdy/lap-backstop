@@ -8,8 +8,9 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import Any
 
-from contracts import Clock
+from contracts import Clock, ContractError, ErrorCode
 from core.api.wire import ApiResponse
 
 
@@ -27,4 +28,12 @@ class RequestCtx:
 
 Handler = Callable[[RequestCtx], ApiResponse]
 
-__all__ = ["Handler", "RequestCtx"]
+
+def body_object(ctx: RequestCtx) -> dict[str, Any]:
+    """取对象形态的请求体；空体或非对象按 E_BAD_REQUEST 拒绝。"""
+    if not isinstance(ctx.body, dict):
+        raise ContractError(ErrorCode.BAD_REQUEST, "请求体必须是 JSON 对象")
+    return ctx.body
+
+
+__all__ = ["Handler", "RequestCtx", "body_object"]
