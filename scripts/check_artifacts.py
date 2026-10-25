@@ -41,11 +41,11 @@ FENCE = chr(96) * 3
 class Rule:
     rid: str
     level: str
-    applies: tuple
+    applies: tuple[str, ...]
     title: str
     why: str
     fix: str
-    pattern: re.Pattern
+    pattern: re.Pattern[str]
 
 
 RULES = [
@@ -347,7 +347,7 @@ def _py_comment(line: str) -> str:
 PAIRS = (("「", "」"), ("“", "”"), ("『", "』"), (chr(96), chr(96)))
 
 
-def quoted(text: str, m) -> bool:
+def quoted(text: str, m: re.Match[str]) -> bool:
     """命中词在引号里，通常是在讨论这个词，不是在用它。"""
     head = text[: m.start()]
     for open_q, close_q in PAIRS:
@@ -405,13 +405,13 @@ class Hit:
 @dataclass
 class Report:
     files: int = 0
-    hits: list = field(default_factory=list)
+    hits: list[Hit] = field(default_factory=list)
 
     def count(self, level: str) -> int:
         return sum(1 for h in self.hits if h.rule.level == level)
 
 
-def scan_file(path: Path, root: Path, hits: list) -> int:
+def scan_file(path: Path, root: Path, hits: list[Hit]) -> int:
     try:
         if path.stat().st_size > 2 * 1024 * 1024:
             return 0
@@ -472,7 +472,7 @@ def display_path(path: Path, root: Path) -> str:
         return str(path)
 
 
-def collect(paths: list, root: Path) -> list:
+def collect(paths: list[str], root: Path) -> list[Path]:
     files = []
     for raw in paths:
         p = Path(raw)
@@ -578,7 +578,7 @@ def selftest() -> int:
 # ---------------------------------------------------------------- 入口
 
 
-def main(argv: list) -> int:
+def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(
         description="交付物通道检查：查文档/界面文案/注释里的历史、备忘、占位、聊天腔。"
     )
