@@ -13,7 +13,7 @@ from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from contracts import Clock, ContractError, ErrorCode
-from core.api import store
+from core.api import catalog_store, store
 from core.api.ctx import RequestCtx, body_object
 from core.api.fields import (
     require_bool,
@@ -62,7 +62,8 @@ _INT_MINUTES = (
 
 def list_schedules(ctx: RequestCtx) -> ApiResponse:
     """调度列表，按创建时间排序。"""
-    return ApiResponse(status=200, payload={"schedules": store.schedule_rows(ctx.connection)})
+    rows = catalog_store.schedule_rows(ctx.connection)
+    return ApiResponse(status=200, payload={"schedules": rows})
 
 
 def run_now(ctx: RequestCtx) -> ApiResponse:
@@ -122,12 +123,12 @@ def create_schedule(ctx: RequestCtx) -> ApiResponse:
     _require_template(ctx, str(values["job_template_id"]))
     schedule_id = _new_schedule_id(ctx.headers.get("idempotency-key"))
     with transaction(ctx.connection):
-        created = store.insert_schedule(
+        created = catalog_store.insert_schedule(
             ctx.connection,
             {**values, "id": schedule_id},
             at=ctx.clock.utc_now(),
         )
-    row = store.schedule_row(ctx.connection, schedule_id)
+    row = catalog_store.schedule_row(ctx.connection, schedule_id)
     if row is None:
         raise ContractError(ErrorCode.INTERNAL, "调度写入后读不到")
     return ApiResponse(
@@ -144,7 +145,7 @@ def put_schedule(ctx: RequestCtx) -> ApiResponse:
     values = schedule_values(body_object(ctx), existing=row)
     _require_template(ctx, str(values["job_template_id"]))
     with transaction(ctx.connection):
-        updated = store.update_schedule(
+        updated = catalog_store.update_schedule(
             ctx.connection,
             ctx.params["id"],
             values,
@@ -165,7 +166,7 @@ def delete_schedule(ctx: RequestCtx) -> ApiResponse:
     _require_schedule(ctx)
     try:
         with transaction(ctx.connection):
-            removed = store.delete_schedule(ctx.connection, ctx.params["id"])
+            removed = catalog_store.delete_schedule(ctx.connection, ctx.params["id"])
     except sqlite3.IntegrityError as error:
         raise ContractError(ErrorCode.CONFLICT, "调度仍被运行记录引用，不能删除") from error
     if not removed:
@@ -249,14 +250,14 @@ def _interval_minutes(merged: dict[str, Any]) -> int:
 
 
 def _require_schedule(ctx: RequestCtx) -> dict[str, Any]:
-    row = store.schedule_row(ctx.connection, ctx.params["id"])
+    row = catalog_store.schedule_row(ctx.connection, ctx.params["id"])
     if row is None:
         raise ContractError(ErrorCode.NOT_FOUND, f"调度不存在：{ctx.params['id']}")
     return row
 
 
 def _require_template(ctx: RequestCtx, template_id: str) -> None:
-    if not store.job_template_exists(ctx.connection, template_id):
+    if not catalog_store.job_template_exists(ctx.connection, template_id):
         raise ContractError(
             ErrorCode.BAD_REQUEST,
             f"job_template_id 不存在：{template_id}",

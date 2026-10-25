@@ -11,7 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 from contracts import ContractError, ErrorCode
-from core.api import store
+from core.api import catalog_store
 from core.api.ctx import RequestCtx, body_object
 from core.api.fields import require_bool, require_object, require_text
 from core.api.wire import ApiResponse, check_if_match, content_etag
@@ -34,7 +34,8 @@ _REQUIRED = ("name", "plugin_id", "environment_id")
 
 def list_templates(ctx: RequestCtx) -> ApiResponse:
     """模板列表，按创建时间排序。"""
-    return ApiResponse(status=200, payload={"job_templates": store.template_rows(ctx.connection)})
+    rows = catalog_store.template_rows(ctx.connection)
+    return ApiResponse(status=200, payload={"job_templates": rows})
 
 
 def get_template(ctx: RequestCtx) -> ApiResponse:
@@ -48,8 +49,10 @@ def create_template(ctx: RequestCtx) -> ApiResponse:
     values = template_values(body_object(ctx), existing=None)
     template_id = uuid4().hex
     with transaction(ctx.connection):
-        store.insert_template(ctx.connection, {**values, "id": template_id}, at=ctx.clock.utc_now())
-    row = store.template_row(ctx.connection, template_id)
+        catalog_store.insert_template(
+            ctx.connection, {**values, "id": template_id}, at=ctx.clock.utc_now()
+        )
+    row = catalog_store.template_row(ctx.connection, template_id)
     if row is None:
         raise ContractError(ErrorCode.INTERNAL, "模板写入后读不到")
     return ApiResponse(status=201, payload={"job_template": row}, etag=content_etag(row))
@@ -61,7 +64,7 @@ def put_template(ctx: RequestCtx) -> ApiResponse:
     check_if_match(ctx.headers.get("if-match"), content_etag(row))
     values = template_values(body_object(ctx), existing=row)
     with transaction(ctx.connection):
-        updated = store.update_template(
+        updated = catalog_store.update_template(
             ctx.connection,
             ctx.params["id"],
             values,
@@ -82,7 +85,7 @@ def delete_template(ctx: RequestCtx) -> ApiResponse:
     _require_template_row(ctx)
     try:
         with transaction(ctx.connection):
-            removed = store.delete_template(ctx.connection, ctx.params["id"])
+            removed = catalog_store.delete_template(ctx.connection, ctx.params["id"])
     except sqlite3.IntegrityError as error:
         raise ContractError(ErrorCode.CONFLICT, "模板仍被调度或运行记录引用，不能删除") from error
     if not removed:
@@ -124,7 +127,7 @@ def _normalize(merged: dict[str, Any]) -> None:
 
 
 def _require_template_row(ctx: RequestCtx) -> dict[str, Any]:
-    row = store.template_row(ctx.connection, ctx.params["id"])
+    row = catalog_store.template_row(ctx.connection, ctx.params["id"])
     if row is None:
         raise ContractError(ErrorCode.NOT_FOUND, f"模板不存在：{ctx.params['id']}")
     return row
