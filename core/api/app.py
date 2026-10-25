@@ -99,6 +99,7 @@ class ApiApp:
         self._clock: Clock = SystemClock() if clock is None else clock
         self._log: Logger = NullLogger() if log is None else log
         self._routes = ROUTES
+        self._capabilities = tuple(sorted({route.segments[0] for route in ROUTES}))
 
     def handle(self, request: ApiRequest) -> ApiResponse:
         """处理一次请求；任何失败都映射成错误响应并写一行请求日志。"""
@@ -157,6 +158,7 @@ class ApiApp:
             params=params,
             query=request.query,
             headers=request.headers,
+            capabilities=self._capabilities,
             body=body,
         )
         return route.handler(context)

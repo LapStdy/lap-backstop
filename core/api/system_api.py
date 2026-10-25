@@ -9,21 +9,9 @@ from core.api.wire import ApiResponse
 from core.hostops.serve import executable_version
 from storage.db.transaction import transaction
 
-# 能力清单列出服务已实现的端点组，客户端据此判断可用性。
-CAPABILITIES: tuple[str, ...] = (
-    "health",
-    "status",
-    "settings",
-    "schedules",
-    "job-templates",
-    "runs",
-    "environments",
-    "plugins",
-)
-
 
 def health(ctx: RequestCtx) -> ApiResponse:
-    """服务存活与自身信息；server_id 首次访问时落库并保持不变。"""
+    """服务存活与自身信息；能力清单由路由表派生，端点与清单不会漂移。"""
     server_id = store.ensure_server_id(ctx.connection, at=ctx.clock.utc_now())
     return ApiResponse(
         status=200,
@@ -31,7 +19,7 @@ def health(ctx: RequestCtx) -> ApiResponse:
             "status": "ok",
             "version": executable_version(),
             "server_id": server_id,
-            "capabilities": list(CAPABILITIES),
+            "capabilities": list(ctx.capabilities),
         },
     )
 
@@ -92,7 +80,6 @@ def get_plugin(ctx: RequestCtx) -> ApiResponse:
 
 
 __all__ = [
-    "CAPABILITIES",
     "get_environment",
     "get_plugin",
     "get_settings",

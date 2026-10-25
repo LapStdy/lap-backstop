@@ -23,6 +23,7 @@ class RequestCtx:
     params: Mapping[str, str]
     query: Mapping[str, str]
     headers: Mapping[str, str]
+    capabilities: tuple[str, ...]
     body: object
 
 
