@@ -171,7 +171,9 @@ class _Logger:
         return None
 
 
-def make_context(evidence_dir: Path | None = None) -> RunContext:
+def make_context(
+    evidence_dir: Path | None = None, config: Mapping[str, Any] | None = None
+) -> RunContext:
     """构造契约测试用的 RunContext；证据 id 恒为 evidence-1。"""
     return RunContext(
         run_id="run-1",
@@ -179,7 +181,7 @@ def make_context(evidence_dir: Path | None = None) -> RunContext:
         template_id="template-1",
         plugin_id="maa",
         environment_id="env-1",
-        config={},
+        config={} if config is None else config,
         work_dir=Path("."),
         evidence_dir=Path(".") if evidence_dir is None else evidence_dir,
         deadline_at=NOW + timedelta(minutes=5),
@@ -235,25 +237,26 @@ def test_environment_actions_are_repeatable_and_fail_closed() -> None:
             assert result.ended_at == NOW
 
 
-def test_launch_returns_handle_and_observe_is_repeatable() -> None:
+def test_launch_returns_handle_and_observe_is_repeatable(tmp_path: Path) -> None:
     """docs/05 契约测试表 script 行：launch 返回句柄；observe 只读且可重复。"""
     adapter = MaaScript()
-    ctx = make_context()
+    ctx = make_context(config={"maa_dir": str(tmp_path)})
     handle = adapter.launch(script_ref(), ctx)
     assert isinstance(handle, ScriptHandle)
     assert handle.pid is None
-    assert handle.meta == {"launched": False}
+    assert handle.meta["launched"] is False
+    assert handle.meta["log_dir"] == str(tmp_path / "debug")
     first = adapter.observe(handle, ctx)
     second = adapter.observe(handle, ctx)
-    assert first.state is ScriptState.EXITED
+    assert first.state is ScriptState.RUNNING
     assert first.signals == ()
     assert first == second
 
 
-def test_stop_is_idempotent_and_recover_fails_closed() -> None:
+def test_stop_is_idempotent_and_recover_fails_closed(tmp_path: Path) -> None:
     """docs/05 契约测试表 script 行：stop 可重复；recover 对四种内核动作都不执行。"""
     adapter = MaaScript()
-    ctx = make_context()
+    ctx = make_context(config={"maa_dir": str(tmp_path)})
     handle = adapter.launch(script_ref(), ctx)
     assert adapter.stop(handle, ctx, StopMode.GRACEFUL).ok
     assert adapter.stop(handle, ctx, StopMode.FORCE).ok
