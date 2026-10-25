@@ -39,19 +39,10 @@ class MaaVerifier:
         )
         return Verdict(
             status=VerdictStatus.UNKNOWN,
-            policy_id=_policy_id(ctx.config),
+            policy_id=DEFAULT_POLICY_ID,
             confidence=0.0,
             reason=_REASON,
             checks=(check,),
             evidence_ids=(evidence_id,),
             created_at=now,
         )
-
-
-def _policy_id(config: object) -> str:
-    """从插件配置读验证策略 id；配置里没有该键时用固定值。"""
-    if isinstance(config, dict) and isinstance(config.get("policy_id"), str):
-        value = config["policy_id"]
-        if value:
-            return value
-    return DEFAULT_POLICY_ID

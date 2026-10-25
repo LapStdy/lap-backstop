@@ -30,7 +30,7 @@ from contracts.manifest import range_covers
 from plugins.maa.capabilities.config_projection import MaaConfigProjection
 from plugins.maa.capabilities.environment import MaaEnvironment
 from plugins.maa.capabilities.script import MaaScript
-from plugins.maa.capabilities.verifier import MaaVerifier
+from plugins.maa.capabilities.verifier import DEFAULT_POLICY_ID, MaaVerifier
 from plugins.maa.plugin import PLUGIN, load_manifest
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "maa"
@@ -171,10 +171,7 @@ class _Logger:
         return None
 
 
-def make_context(
-    config: Mapping[str, Any] | None = None,
-    evidence_dir: Path | None = None,
-) -> RunContext:
+def make_context(evidence_dir: Path | None = None) -> RunContext:
     """构造契约测试用的 RunContext；证据 id 恒为 evidence-1。"""
     return RunContext(
         run_id="run-1",
@@ -182,7 +179,7 @@ def make_context(
         template_id="template-1",
         plugin_id="maa",
         environment_id="env-1",
-        config={} if config is None else dict(config),
+        config={},
         work_dir=Path("."),
         evidence_dir=Path(".") if evidence_dir is None else evidence_dir,
         deadline_at=NOW + timedelta(minutes=5),
@@ -271,12 +268,10 @@ def test_verifier_returns_unknown_with_evidence_stably(tmp_path: Path) -> None:
     verifier = MaaVerifier()
     first = verifier.verify(make_context(evidence_dir=tmp_path))
     second = verifier.verify(make_context(evidence_dir=tmp_path))
-    with_policy = verifier.verify(make_context({"policy_id": "tpl-1"}, evidence_dir=tmp_path))
     assert first.status is VerdictStatus.UNKNOWN
     assert first.evidence_ids
     assert first.status == second.status
-    assert first.policy_id == second.policy_id == "maa-policy"
-    assert with_policy.policy_id == "tpl-1"
+    assert first.policy_id == second.policy_id == DEFAULT_POLICY_ID
     assert (tmp_path / "verify.log").is_file()
 
 
