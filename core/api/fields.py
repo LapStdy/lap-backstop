@@ -25,12 +25,14 @@ def require_enum(
 ) -> str:
     """枚举字段；取值必须在允许集合内。"""
     value = values.get(key)
-    if value not in allowed:
+    # 先收窄成字符串再做成员判断：集合成员判断对 list/dict 这类不可哈希值会抛
+    # TypeError，落到兜底 500，而入参非法应当按 E_BAD_REQUEST 回 400。
+    if not isinstance(value, str) or value not in allowed:
         raise ContractError(
             ErrorCode.BAD_REQUEST,
             f"字段 {key} 取值必须是 {'、'.join(sorted(allowed))} 之一",
         )
-    return str(value)
+    return value
 
 
 def require_int(
