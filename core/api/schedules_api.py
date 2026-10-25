@@ -8,14 +8,20 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from contracts import ContractError, ErrorCode
 from core.api import store
 from core.api.ctx import RequestCtx, body_object
+from core.api.fields import (
+    require_bool,
+    require_enum,
+    require_int,
+    require_text,
+    require_timestamp,
+    require_timezone,
+)
 from core.api.wire import ApiResponse, content_etag
 from storage.db.transaction import transaction
 from storage.defaults import default
@@ -156,24 +162,40 @@ def _default_values() -> dict[str, Any]:
 
 def _normalize(merged: dict[str, Any]) -> None:
     """逐字段收窄类型并按 kind 规范 expr 与 at。"""
-    merged["name"] = _text(merged, "name")
-    merged["job_template_id"] = _text(merged, "job_template_id")
-    kind = _enum(merged, "kind", KINDS)
-    _enum(merged, "catch_up", CATCH_UPS)
+    merged["name"] = require_text(merged, "name")
+    merged["job_template_id"] = require_text(merged, "job_template_id")
+    kind = require_enum(merged, "kind", KINDS)
+    merged["catch_up"] = require_enum(merged, "catch_up", CATCH_UPS)
     for key in _INT_MINUTES:
-        _non_negative_int(merged, key)
-    _integer(merged, "priority")
+        merged[key] = require_int(merged, key, minimum=0)
+    merged["priority"] = require_int(merged, "priority")
     for key in ("coalesce", "enabled"):
-        _boolean(merged, key)
-    _timezone(merged)
+        merged[key] = require_bool(merged, key)
+    merged["timezone"] = require_timezone(merged, "timezone")
     if kind == "cron":
-        merged["expr"] = _text(merged, "expr")
+        merged["expr"] = require_text(merged, "expr")
     elif kind == "interval":
-        merged["expr"] = str(_positive_int(merged, "expr"))
+        merged["expr"] = str(_interval_minutes(merged))
     else:
-        merged["at"] = _timestamp(merged, "at")
+        merged["at"] = require_timestamp(merged, "at")
     if int(merged["window_minutes"]) > int(merged["deadline_minutes"]):
         raise ContractError(ErrorCode.CONFIG, "window_minutes 不能超过 deadline_minutes")
+
+
+def _interval_minutes(merged: dict[str, Any]) -> int:
+    """interval 的 expr 存分钟数；请求体给整数，库里读出是数字文本，两者都收。"""
+    value = merged.get("expr")
+    if isinstance(value, bool):
+        minutes: int | None = None
+    elif isinstance(value, int):
+        minutes = value
+    elif isinstance(value, str) and value.strip().isdigit():
+        minutes = int(value)
+    else:
+        minutes = None
+    if minutes is None or minutes <= 0:
+        raise ContractError(ErrorCode.BAD_REQUEST, "interval 调度的 expr 必须是正整数分钟数")
+    return minutes
 
 
 def _require_schedule(ctx: RequestCtx) -> dict[str, Any]:
@@ -203,74 +225,6 @@ def _check_if_match(header: str | None, current: str) -> None:
     if header is None or header == "*" or header == current:
         return
     raise ContractError(ErrorCode.CONFLICT, "If-Match 与当前版本不符，先重读再改")
-
-
-def _text(merged: dict[str, Any], key: str) -> str:
-    value = merged.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ContractError(ErrorCode.BAD_REQUEST, f"字段 {key} 必须是非空字符串")
-    return value
-
-
-def _enum(merged: dict[str, Any], key: str, allowed: frozenset[str]) -> str:
-    value = merged.get(key)
-    if value not in allowed:
-        raise ContractError(
-            ErrorCode.BAD_REQUEST,
-            f"字段 {key} 取值必须是 {'、'.join(sorted(allowed))} 之一",
-        )
-    return str(value)
-
-
-def _integer(merged: dict[str, Any], key: str) -> int:
-    value = merged.get(key)
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise ContractError(ErrorCode.BAD_REQUEST, f"字段 {key} 必须是整数")
-    merged[key] = value
-    return value
-
-
-def _non_negative_int(merged: dict[str, Any], key: str) -> int:
-    value = _integer(merged, key)
-    if value < 0:
-        raise ContractError(ErrorCode.BAD_REQUEST, f"字段 {key} 不能是负数")
-    return value
-
-
-def _positive_int(merged: dict[str, Any], key: str) -> int:
-    value = _integer(merged, key)
-    if value <= 0:
-        raise ContractError(ErrorCode.BAD_REQUEST, f"字段 {key} 必须是正整数")
-    return value
-
-
-def _boolean(merged: dict[str, Any], key: str) -> bool:
-    value = merged.get(key)
-    if not isinstance(value, bool):
-        raise ContractError(ErrorCode.BAD_REQUEST, f"字段 {key} 必须是布尔值")
-    merged[key] = value
-    return value
-
-
-def _timezone(merged: dict[str, Any]) -> None:
-    name = _text(merged, "timezone")
-    try:
-        ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError, KeyError) as error:
-        raise ContractError(ErrorCode.BAD_REQUEST, f"字段 timezone 不是合法时区：{name}") from error
-
-
-def _timestamp(merged: dict[str, Any], key: str) -> str:
-    value = merged.get(key)
-    if not isinstance(value, str):
-        raise ContractError(ErrorCode.BAD_REQUEST, f"字段 {key} 必须是 RFC3339 时间")
-    try:
-        moment = datetime.fromisoformat(value)
-    except ValueError as error:
-        raise ContractError(ErrorCode.BAD_REQUEST, f"字段 {key} 不是合法时间：{value}") from error
-    if moment.tzinfo is None:
-        raise ContractError(ErrorCode.BAD_REQUEST, f"字段 {key} 必须带时区")
-    return moment.isoformat()
 
 
 __all__ = [

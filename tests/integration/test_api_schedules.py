@@ -103,6 +103,18 @@ def test_create_rejects_unknown_or_missing_fields(app: ApiApp) -> None:
     assert missing.status == 400
 
 
+def test_interval_schedule_survives_update(app: ApiApp) -> None:
+    """interval 的 expr 请求体给整数、库里存数字文本；更新时读回文本不能被当成坏请求。"""
+    body = {**MINIMAL, "kind": "interval", "expr": 30}
+    created = call(app, "POST", "/api/v1/schedules", body=body)
+    assert created.status == 201
+    assert body_of(created)["schedule"]["expr"] == "30"
+    schedule_id = str(body_of(created)["schedule"]["id"])
+    updated = call(app, "PUT", f"/api/v1/schedules/{schedule_id}", body={"name": "改名"})
+    assert updated.status == 200
+    assert body_of(updated)["schedule"]["expr"] == "30"
+
+
 def test_create_rejects_window_larger_than_deadline(app: ApiApp) -> None:
     response = call(
         app,
