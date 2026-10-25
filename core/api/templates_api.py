@@ -7,11 +7,13 @@ payload 字段（config、两个 policy）的结构由插件 schema 决定，
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from typing import Any
 from uuid import uuid4
 
 from contracts import ContractError, ErrorCode
 from core.api import catalog_store
+from core.api.catalog_store import TemplateJson
 from core.api.ctx import RequestCtx, body_object
 from core.api.fields import require_bool, require_object, require_text
 from core.api.wire import ApiResponse, check_if_match, content_etag
@@ -93,7 +95,10 @@ def delete_template(ctx: RequestCtx) -> ApiResponse:
     return ApiResponse(status=204, payload=None)
 
 
-def template_values(body: dict[str, Any], existing: dict[str, Any] | None) -> dict[str, Any]:
+def template_values(
+    body: Mapping[str, Any],
+    existing: Mapping[str, Any] | None,
+) -> dict[str, Any]:
     """把请求体并进默认值或既有行，校验成完整列值。"""
     merged = _default_values() if existing is None else dict(existing)
     for key, value in body.items():
@@ -126,7 +131,7 @@ def _normalize(merged: dict[str, Any]) -> None:
     merged["enabled"] = require_bool(merged, "enabled")
 
 
-def _require_template_row(ctx: RequestCtx) -> dict[str, Any]:
+def _require_template_row(ctx: RequestCtx) -> TemplateJson:
     row = catalog_store.template_row(ctx.connection, ctx.params["id"])
     if row is None:
         raise ContractError(ErrorCode.NOT_FOUND, f"模板不存在：{ctx.params['id']}")

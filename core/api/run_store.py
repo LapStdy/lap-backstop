@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, TypedDict
 
 from storage.repositories.iso_time import format_at
 from storage.repositories.sql import optional_str
@@ -39,6 +40,37 @@ def record_run_now(
     )
 
 
+class RunJson(TypedDict):
+    """job_runs 一行的应答形态（docs/03 字段表）。"""
+
+    id: str
+    template_id: str
+    schedule_id: str | None
+    scheduled_at: str | None
+    created_at: str
+    idempotency_key: str
+    state: str
+    attempt: int
+    priority: int
+    deadline_at: str | None
+    started_at: str | None
+    finished_at: str | None
+    verdict_id: str | None
+    error_code: str | None
+    detail: Mapping[str, Any]
+
+
+class VerdictJson(TypedDict):
+    """verdicts 的摘要形态，/status 的最近结论一栏。"""
+
+    id: str
+    run_id: str
+    status: str
+    confidence: float
+    reason: str
+    created_at: str
+
+
 _ACTIVE_STATES = (
     "scheduled",
     "queued",
@@ -51,7 +83,7 @@ _ACTIVE_STATES = (
 )
 
 
-def active_run_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+def active_run_rows(connection: sqlite3.Connection) -> list[RunJson]:
     """全部非终态运行，按创建时间升序；供 /status 的当前运行一栏。"""
     marks = ", ".join("?" for _ in _ACTIVE_STATES)
     rows = connection.execute(
@@ -61,7 +93,7 @@ def active_run_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return [_run_json(row) for row in rows]
 
 
-def queued_run_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+def queued_run_rows(connection: sqlite3.Connection) -> list[RunJson]:
     """排队中的运行，按出队顺序（docs/03：priority 降序、时间升序）。"""
     rows = connection.execute(
         f"SELECT {_RUN_COLUMNS} FROM job_runs WHERE state = 'queued' "
@@ -70,7 +102,7 @@ def queued_run_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
     return [_run_json(row) for row in rows]
 
 
-def recent_verdict_rows(connection: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
+def recent_verdict_rows(connection: sqlite3.Connection, limit: int = 10) -> list[VerdictJson]:
     """最近的结论摘要，新的在前。"""
     rows = connection.execute(
         "SELECT id, run_id, status, confidence, reason, created_at FROM verdicts "
@@ -108,7 +140,7 @@ class RunFilters:
     limit: int = 100
 
 
-def run_rows(connection: sqlite3.Connection, filters: RunFilters) -> list[dict[str, Any]]:
+def run_rows(connection: sqlite3.Connection, filters: RunFilters) -> list[RunJson]:
     """按过滤条件取运行列表，新的在前。"""
     clauses: list[str] = []
     params: list[Any] = []
@@ -132,7 +164,7 @@ def run_rows(connection: sqlite3.Connection, filters: RunFilters) -> list[dict[s
     return [_run_json(row) for row in rows]
 
 
-def _run_json(row: sqlite3.Row) -> dict[str, Any]:
+def _run_json(row: sqlite3.Row) -> RunJson:
     return {
         "id": str(row["id"]),
         "template_id": str(row["template_id"]),
@@ -154,6 +186,8 @@ def _run_json(row: sqlite3.Row) -> dict[str, Any]:
 
 __all__ = [
     "RunFilters",
+    "RunJson",
+    "VerdictJson",
     "active_run_rows",
     "queued_run_rows",
     "recent_verdict_rows",

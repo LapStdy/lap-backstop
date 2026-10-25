@@ -52,7 +52,7 @@ API_PREFIX = "/api/v1"
 
 @dataclass(frozen=True, slots=True)
 class Route:
-    """一条路由：方法、按 ``{name}`` 占位的路径段与处理器。"""
+    """一条路由：方法、带 ``{name}`` 参数捕获的路径段与处理器。"""
 
     method: str
     segments: tuple[str, ...]

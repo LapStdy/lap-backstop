@@ -85,6 +85,10 @@ class ApiServer:
         self._options.stop.set()
         self._thread.join(timeout=10.0)
 
+    def wait_stopped(self, timeout: float = 10.0) -> None:
+        """等服务线程自行退出；用于确认请求上限等停机条件已生效。"""
+        self._thread.join(timeout)
+
 
 def start_api_server(
     connection: sqlite3.Connection,
@@ -129,7 +133,7 @@ def _serve(http: ThreadingHTTPServer, counter: _RequestCounter, options: ApiOpti
 class _HandlerMethods(BaseHTTPRequestHandler):
     """请求处理方法；具体会话的 app 与计数器由 _handler 组装的子类携带。"""
 
-    # HTTP/1.0 逐请求关连接；挂载 SSE 时再升级常驻连接。
+    # 逐请求关连接：本地单用户无保活需求，也不维持连接状态。
     timeout = REQUEST_TIMEOUT_SECONDS
     app: ApiApp
     counter: _RequestCounter

@@ -9,7 +9,7 @@ from core.api.wire import ApiResponse
 from core.hostops.serve import executable_version
 from storage.db.transaction import transaction
 
-# 能力清单列出本构建已落地的端点组；SSE 与导出不在本卡。
+# 能力清单列出服务已实现的端点组，客户端据此判断可用性。
 CAPABILITIES: tuple[str, ...] = (
     "health",
     "status",

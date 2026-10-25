@@ -10,10 +10,27 @@ import json
 import sqlite3
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from typing import Any, TypedDict
 
 from storage.repositories.iso_time import format_at
 from storage.repositories.sql import optional_str
+
+
+class TemplateJson(TypedDict):
+    """job_templates 一行的应答形态（docs/03 字段表）。"""
+
+    id: str
+    name: str
+    plugin_id: str
+    environment_id: str
+    config: Mapping[str, Any]
+    config_schema_version: str
+    verification_policy: Mapping[str, Any]
+    recovery_policy: Mapping[str, Any]
+    enabled: bool
+    created_at: str
+    updated_at: str
+
 
 _TEMPLATE_COLUMNS = (
     "id, name, plugin_id, environment_id, config, config_schema_version, "
@@ -21,7 +38,7 @@ _TEMPLATE_COLUMNS = (
 )
 
 
-def template_row(connection: sqlite3.Connection, template_id: str) -> dict[str, Any] | None:
+def template_row(connection: sqlite3.Connection, template_id: str) -> TemplateJson | None:
     """按 id 取模板的 JSON 形态；不存在返回 None。"""
     row = connection.execute(
         f"SELECT {_TEMPLATE_COLUMNS} FROM job_templates WHERE id = ?",
@@ -30,7 +47,7 @@ def template_row(connection: sqlite3.Connection, template_id: str) -> dict[str, 
     return None if row is None else _template_json(row)
 
 
-def template_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+def template_rows(connection: sqlite3.Connection) -> list[TemplateJson]:
     """全部模板，按创建时间排序。"""
     rows = connection.execute(
         f"SELECT {_TEMPLATE_COLUMNS} FROM job_templates ORDER BY created_at, id"
@@ -95,7 +112,7 @@ def _dump_payload(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True)
 
 
-def _template_json(row: sqlite3.Row) -> dict[str, Any]:
+def _template_json(row: sqlite3.Row) -> TemplateJson:
     return {
         "id": str(row["id"]),
         "name": str(row["name"]),
@@ -109,6 +126,29 @@ def _template_json(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": str(row["created_at"]),
         "updated_at": str(row["updated_at"]),
     }
+
+
+class ScheduleJson(TypedDict):
+    """schedules 一行的应答形态（docs/03 字段表）。"""
+
+    id: str
+    name: str
+    kind: str
+    expr: str | None
+    at: str | None
+    timezone: str
+    catch_up: str
+    window_minutes: int
+    coalesce: bool
+    priority: int
+    deadline_minutes: int
+    preheat_minutes: int
+    keep_warm_minutes: int
+    job_template_id: str
+    enabled: bool
+    next_run_at: str | None
+    created_at: str
+    updated_at: str
 
 
 _SCHEDULE_COLUMNS = (
@@ -127,7 +167,7 @@ def job_template_exists(connection: sqlite3.Connection, template_id: str) -> boo
     return row is not None
 
 
-def schedule_row(connection: sqlite3.Connection, schedule_id: str) -> dict[str, Any] | None:
+def schedule_row(connection: sqlite3.Connection, schedule_id: str) -> ScheduleJson | None:
     """按 id 取调度的 JSON 形态；不存在返回 None。"""
     row = connection.execute(
         f"SELECT {_SCHEDULE_COLUMNS} FROM schedules WHERE id = ?",
@@ -136,7 +176,7 @@ def schedule_row(connection: sqlite3.Connection, schedule_id: str) -> dict[str, 
     return None if row is None else _schedule_json(row)
 
 
-def schedule_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+def schedule_rows(connection: sqlite3.Connection) -> list[ScheduleJson]:
     """全部调度，按创建时间排序。"""
     rows = connection.execute(
         f"SELECT {_SCHEDULE_COLUMNS} FROM schedules ORDER BY created_at, id"
@@ -207,7 +247,7 @@ def _schedule_params(values: Mapping[str, Any]) -> tuple[Any, ...]:
     )
 
 
-def _schedule_json(row: sqlite3.Row) -> dict[str, Any]:
+def _schedule_json(row: sqlite3.Row) -> ScheduleJson:
     return {
         "id": str(row["id"]),
         "name": str(row["name"]),
@@ -231,6 +271,8 @@ def _schedule_json(row: sqlite3.Row) -> dict[str, Any]:
 
 
 __all__ = [
+    "ScheduleJson",
+    "TemplateJson",
     "delete_schedule",
     "delete_template",
     "insert_schedule",

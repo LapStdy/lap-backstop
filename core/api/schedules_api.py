@@ -8,12 +8,14 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Mapping
 from datetime import timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from contracts import Clock, ContractError, ErrorCode
 from core.api import catalog_store, run_store
+from core.api.catalog_store import ScheduleJson
 from core.api.ctx import RequestCtx, body_object
 from core.api.fields import (
     require_bool,
@@ -85,7 +87,7 @@ def run_now(ctx: RequestCtx) -> ApiResponse:
 def _manual_run(
     connection: sqlite3.Connection,
     clock: Clock,
-    row: dict[str, Any],
+    row: Mapping[str, Any],
     key: str,
 ) -> tuple[JobRunRecord, bool]:
     """事务内建手动运行并登记幂等键；键已命中时返回既有运行。"""
@@ -98,7 +100,8 @@ def _manual_run(
     record, created = JobRunService(connection, clock).create_scheduled(
         NewRun(
             template_id=str(row["job_template_id"]),
-            schedule_id=str(row["id"]),
+            # docs/03 job_runs：手动运行的 schedule_id 为空
+            schedule_id=None,
             scheduled_at=now,
             created_at=now,
             idempotency_key=f"manual:{key}",
@@ -174,7 +177,10 @@ def delete_schedule(ctx: RequestCtx) -> ApiResponse:
     return ApiResponse(status=204, payload=None)
 
 
-def schedule_values(body: dict[str, Any], existing: dict[str, Any] | None) -> dict[str, Any]:
+def schedule_values(
+    body: Mapping[str, Any],
+    existing: Mapping[str, Any] | None,
+) -> dict[str, Any]:
     """把请求体并进默认值或既有行，校验并规范化成完整列值。
 
     Args:
@@ -249,7 +255,7 @@ def _interval_minutes(merged: dict[str, Any]) -> int:
     return minutes
 
 
-def _require_schedule(ctx: RequestCtx) -> dict[str, Any]:
+def _require_schedule(ctx: RequestCtx) -> ScheduleJson:
     row = catalog_store.schedule_row(ctx.connection, ctx.params["id"])
     if row is None:
         raise ContractError(ErrorCode.NOT_FOUND, f"调度不存在：{ctx.params['id']}")

@@ -98,7 +98,7 @@ def test_run_now_same_key_returns_same_run(app: ApiApp) -> None:
     assert first.status == 201
     run = body_of(first)["run"]
     assert run["state"] == "scheduled"
-    assert run["schedule_id"] == schedule_id
+    assert run["schedule_id"] is None  # docs/03：手动运行的 schedule_id 为空
     assert run["template_id"] == TEMPLATE_ID
     assert run["idempotency_key"] == "manual:trigger-1"
     assert run["deadline_at"] == (NOW + timedelta(hours=3)).isoformat()

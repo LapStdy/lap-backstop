@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import socket
-import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -149,14 +148,8 @@ def test_server_stops_after_request_limit(tmp_path: Path) -> None:
         connection.close()
     status, _, _ = request(handle, "GET", "/api/v1/health")
     assert status == 200
-    deadline = time.monotonic() + 5.0
-    refused = False
-    while time.monotonic() < deadline:
-        try:
-            request(handle, "GET", "/api/v1/health")
-        except urllib.error.URLError:
-            refused = True
-            break
-        time.sleep(0.1)
-    assert refused, "请求上限生效后应停止监听"
+    # 服务线程在处理完第 1 个请求后自行退出；等它退出后再断言拒绝连接
+    handle.wait_stopped(timeout=5.0)
+    with pytest.raises(urllib.error.URLError):
+        request(handle, "GET", "/api/v1/health")
     handle.shutdown()
