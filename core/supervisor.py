@@ -14,6 +14,7 @@ from typing import Any
 
 from contracts import Clock, EnvironmentRef, EventType, Logger, RunContext, RunState
 from core.environments.service import EnvironmentCall, EnvironmentService
+from core.events.replay import ReplayError, RunSnapshot, replay_run
 from core.jobs.run_service import JobRunService
 from core.jobs.state_machine import can_transition, is_terminal
 from core.logging import NullLogger
@@ -79,10 +80,20 @@ class Supervisor:
         self._last_renew_at: datetime | None = None
 
     def startup(self) -> tuple[JobRunRecord, ...]:
-        """启动扫描：崩溃遗留的执行中运行记 unknown，到点的恢复重新排队，回收孤儿租约。"""
+        """启动扫描：按事件流回放重建状态再决策，孤儿记 unknown，恢复重排队，回收孤儿租约。"""
         settled: list[JobRunRecord] = []
         for run in self._runs.non_terminal():
-            settled.extend(self._settle_startup(run))
+            snapshot = self._replay(run)
+            if snapshot is not None and snapshot.attempt != run.attempt:
+                self._log.warn(
+                    {
+                        "event": "supervisor.attempt_divergence",
+                        "run_id": run.id,
+                        "table_attempt": run.attempt,
+                        "stream_attempt": snapshot.attempt,
+                    }
+                )
+            settled.extend(self._settle_startup(run, snapshot))
         for lease in self._leases.active():
             run = self._runs.get(lease.run_id)
             if run is None or is_terminal(run.state):
@@ -107,14 +118,55 @@ class Supervisor:
             flag.cancel()
         return self._runs.get(run_id)
 
-    def _settle_startup(self, run: JobRunRecord) -> tuple[JobRunRecord, ...]:
-        if run.state in _ORPHAN_STATES:
-            return (self._runs.transition(run.id, RunState.UNKNOWN, reason="startup_recovery"),)
-        if run.state is RunState.SCHEDULED:
-            return (self._runs.enqueue(run.id),)
-        if run.state is RunState.RECOVERING and _retry_due(run, self._clock.utc_now()):
-            return (self._runs.enqueue(run.id),)
+    def _replay(self, run: JobRunRecord) -> RunSnapshot | None:
+        """回放事件流重建快照；流损坏不拦启动，返回 None 由调用方按表状态兜底。"""
+        try:
+            return replay_run(self._runs.events(run.id))
+        except ReplayError as error:
+            self._log.warn(
+                {"event": "supervisor.replay_failed", "run_id": run.id, "error": str(error)}
+            )
+            return None
+
+    def _settle_startup(
+        self,
+        run: JobRunRecord,
+        snapshot: RunSnapshot | None,
+    ) -> tuple[JobRunRecord, ...]:
+        """决策用事件流回放出的状态；落地前先探表状态能否迁移。
+
+        撕裂（表与事件流不一致）只告警不动表：绕过状态机硬迁会写出与流矛盾的
+        被拒迁移记录，让这条流从此回放不了，留给人工处置。
+        """
+        state = run.state if snapshot is None else snapshot.state
+        if state in _ORPHAN_STATES:
+            return self._settle_to(run, RunState.UNKNOWN, stream_state=state)
+        if state is RunState.SCHEDULED or (
+            state is RunState.RECOVERING and _retry_due(run, self._clock.utc_now())
+        ):
+            return self._settle_to(run, RunState.QUEUED, stream_state=state)
         return ()
+
+    def _settle_to(
+        self,
+        run: JobRunRecord,
+        target: RunState,
+        *,
+        stream_state: RunState,
+    ) -> tuple[JobRunRecord, ...]:
+        if run.state is not target and not can_transition(run.state, target):
+            self._log.warn(
+                {
+                    "event": "supervisor.startup_state_conflict",
+                    "run_id": run.id,
+                    "table_state": run.state.value,
+                    "stream_state": stream_state.value,
+                }
+            )
+            return ()
+        if target is RunState.QUEUED:
+            return (self._runs.enqueue(run.id),)
+        return (self._runs.transition(run.id, target, reason="startup_recovery"),)
 
     def _release_orphan(self, lease: LeaseRow) -> None:
         try:
