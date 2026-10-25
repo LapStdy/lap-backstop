@@ -13,24 +13,31 @@ import importlib.metadata
 import os
 import signal
 import sqlite3
+import subprocess
 import threading
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import FrameType
 
-from contracts import Clock, Logger, RunState
+from contracts import Clock, EventType, Logger, RunState
 from core.__main__ import EXIT_ERROR, EXIT_OK, EXIT_SECOND_INSTANCE, resolve_executable_path
 from core.clock import SystemClock
-from core.hostops import heartbeat, instance
+from core.hostops import heartbeat, instance, tasks, watchdog
+from core.hostops.doctor import WINLOGON_KEY, RegistryGet, registry_get
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
 from core.plugins.registry import PluginRegistry
 from core.supervisor import Supervisor
 from storage import MigrationError, migrate, open_database
 from storage.defaults import default
+from storage.repositories.events import EventLog
 
 TICK_INTERVAL_SECONDS = 1.0
+AUTOLOGON_CHECKED_EVENT = "host.autologon_checked"
+TASKS_REGISTERED_EVENT = "host.tasks_registered"
+WATCHDOG_GAVE_UP_EVENT = "host.watchdog_gave_up"
 _HEARTBEAT_INTERVAL = timedelta(seconds=int(default("host", "heartbeat_interval_seconds")))
 _ACTIVE_RUN_STATES = frozenset(
     {RunState.PREPARING, RunState.WAITING, RunState.EXECUTING, RunState.VERIFYING}
@@ -46,6 +53,9 @@ class ServeOptions:
     stop: threading.Event = field(default_factory=threading.Event)
     max_ticks: int | None = None
     tick_interval_seconds: float = TICK_INTERVAL_SECONDS
+    register_tasks: bool = True
+    task_runner: tasks.Runner = field(default_factory=lambda: subprocess.run)
+    registry_get: RegistryGet = field(default_factory=lambda: registry_get)
 
 
 def install_stop_handlers() -> threading.Event:
@@ -153,6 +163,54 @@ def _active_run(runs: JobRunService) -> str | None:
     return None
 
 
+def _host_setup_events(
+    data_root: Path,
+    options: ServeOptions,
+    *,
+    at: datetime,
+) -> list[tuple[str, str]]:
+    """宿主启动动作的结果事件：看门狗停手补报、自动登录自检、任务注册。
+
+    三件事都尽力而为，结果进事件 detail；单项失败不阻断核心启动
+    （docs/08 自动登录自检与计划任务两节）。
+    """
+    events: list[tuple[str, str]] = []
+    gave_up = watchdog.claim_gave_up_report(data_root / "run" / watchdog.STATE_FILENAME)
+    if gave_up is not None:
+        events.append((WATCHDOG_GAVE_UP_EVENT, gave_up))
+    logon = options.registry_get(WINLOGON_KEY, "AutoAdminLogon")
+    user = options.registry_get(WINLOGON_KEY, "DefaultUserName")
+    if logon == "1" and user:
+        events.append((AUTOLOGON_CHECKED_EVENT, f"AutoAdminLogon=1，DefaultUserName={user}"))
+    else:
+        events.append(
+            (
+                AUTOLOGON_CHECKED_EVENT,
+                f"AutoAdminLogon={logon}，DefaultUserName={user}；重启后会停在登录界面",
+            )
+        )
+    if options.register_tasks:
+        _ok, detail = tasks.register_registered_tasks(
+            data_root,
+            runner=options.task_runner,
+            registered_at=at,
+        )
+        events.append((TASKS_REGISTERED_EVENT, detail))
+    return events
+
+
+def _record_events(
+    connection: sqlite3.Connection,
+    events: Iterable[tuple[str, str]],
+    *,
+    at: datetime,
+) -> None:
+    """把启动事件作为全局核心事件落库；写不进说明库有故障，由调用方处置。"""
+    log = EventLog(connection)
+    for event, detail in events:
+        log.append_global(EventType.CORE_EVENT, {"event": event, "detail": detail}, at=at)
+
+
 def run_serve(data_root: Path, options: ServeOptions | None = None) -> int:
     """serve 主流程，返回进程退出码。
 
@@ -219,6 +277,9 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             log=options.log,
         )
         supervisor.startup()
+        setup_at = options.clock.utc_now()
+        events = _host_setup_events(data_root, options, at=setup_at)
+        _record_events(connection, events, at=setup_at)
         writer = HeartbeatWriter(
             path=data_root / "run" / heartbeat.HEARTBEAT_FILENAME,
             started_at=started_at,
@@ -236,7 +297,10 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
 
 
 __all__ = [
+    "AUTOLOGON_CHECKED_EVENT",
+    "TASKS_REGISTERED_EVENT",
     "TICK_INTERVAL_SECONDS",
+    "WATCHDOG_GAVE_UP_EVENT",
     "HeartbeatWriter",
     "ServeLoop",
     "ServeOptions",

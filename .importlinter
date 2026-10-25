@@ -25,6 +25,15 @@ layers =
     storage
     contracts
 
+[importlinter:contract:watchdog-isolation]
+name = 看门狗只用标准库，不依赖内核其余代码路径与存储
+type = forbidden
+source_modules =
+    core.hostops.watchdog
+forbidden_modules =
+    core
+    storage
+
 [importlinter:contract:plugins-isolation]
 name = 插件只依赖契约，不碰内核与存储
 type = forbidden
