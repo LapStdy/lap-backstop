@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import subprocess
 import sys
 from datetime import timedelta
@@ -37,7 +38,13 @@ def resolve_executable_path() -> str:
 
 def main(argv: list[str] | None = None) -> int:
     """命令行入口，返回进程退出码。"""
-    arguments = _build_parser().parse_args(argv)
+    tokens = sys.argv[1:] if argv is None else argv
+    if tokens[:1] == ["worker"]:
+        # 打包件 exe 的 worker 回调不经主解析器注册，对外帮助保持不可见（ADR 0010）。
+        from core.plugins.worker import main as worker_main
+
+        return worker_main(tokens[1:])
+    arguments = _build_parser().parse_args(tokens)
     if arguments.command == "serve":
         from core.hostops.serve import ServeOptions, install_stop_handlers, run_serve
         from core.logging import JsonLineLogger
@@ -61,6 +68,10 @@ def main(argv: list[str] | None = None) -> int:
         from core.hostops.doctor import run_doctor
 
         return run_doctor(Path(arguments.data_root))
+    if arguments.command == "backup":
+        return _run_backup(Path(arguments.data_root))
+    if arguments.command == "db":
+        return _run_db_check(Path(arguments.data_root))
     from core.clock import SystemClock
     from core.hostops.tasks import register_registered_tasks
 
@@ -91,8 +102,69 @@ def _run_watchdog_check(data_root: Path) -> int:
     return run_check(data_root, inputs=inputs)
 
 
+def _run_backup(data_root: Path) -> int:
+    """每日备份：在线快照、配置导出与修剪（docs/08「备份与恢复」）。"""
+    from core.clock import SystemClock
+    from core.hostops.doctor import DATABASE_FILENAME
+    from storage import BackupError, create_snapshot, export_configs, open_database, prune_backups
+
+    database_path = data_root / DATABASE_FILENAME
+    if not database_path.is_file():
+        print(f"库文件不存在，先启动一次 serve 完成初始化：{database_path}", file=sys.stderr)
+        return EXIT_ERROR
+    backups_dir = data_root / "backups"
+    try:
+        connection = open_database(database_path)
+        try:
+            clock = SystemClock()
+            snapshot = create_snapshot(connection, backups_dir, clock=clock)
+            exports = export_configs(connection, backups_dir, clock=clock)
+        finally:
+            connection.close()
+        pruned = prune_backups(backups_dir)
+    except (BackupError, sqlite3.Error, OSError) as error:
+        print(
+            f"备份失败：{error}；检查 {backups_dir} 的写权限与磁盘剩余空间后重试",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    print(
+        f"备份完成：{snapshot.path.name}（schema 版本 {snapshot.schema_version}，"
+        f"{snapshot.size_bytes} 字节）；导出 {exports.settings_path.name} 与 "
+        f"{exports.plugins_path.name}；修剪 {len(pruned.deleted)} 个文件"
+    )
+    return EXIT_OK
+
+
+def _run_db_check(data_root: Path) -> int:
+    """数据库检查：integrity_check 加迁移到当前版本（docs/08 恢复顺序第 4 步）。"""
+    from core.hostops.doctor import DATABASE_FILENAME
+    from storage import MigrationError, migrate, open_database, verify_integrity
+
+    database_path = data_root / DATABASE_FILENAME
+    if not database_path.is_file():
+        print(
+            f"库文件不存在，先把目标快照复制为 {database_path} 再检查（docs/08 恢复顺序）",
+            file=sys.stderr,
+        )
+        return EXIT_ERROR
+    try:
+        connection = open_database(database_path)
+        try:
+            verify_integrity(connection)
+            version = migrate(connection)
+        finally:
+            connection.close()
+    except (MigrationError, sqlite3.Error, OSError) as error:
+        print(f"数据库检查未通过：{error}", file=sys.stderr)
+        return EXIT_ERROR
+    print(f"数据库完整，schema 版本 {version}：{database_path}")
+    return EXIT_OK
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    """子命令表：serve 常驻，watchdog 看门狗，doctor 自检，tasks 计划任务。"""
+    """子命令表：serve 常驻，watchdog 看门狗，doctor 自检，backup 备份，
+    db check 库检查，tasks 计划任务；worker 由 main 拦截转发，不出现在帮助里。"""
     parser = argparse.ArgumentParser(
         prog="lap-backstop",
         description="lap-backstop 宿主操作：常驻核心与排障入口",
@@ -115,6 +187,12 @@ def _build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--data-root", default=str(resolve_data_root()))
     doctor_parser = subparsers.add_parser("doctor", help="宿主环境自检")
     doctor_parser.add_argument("--data-root", default=str(resolve_data_root()))
+    backup_parser = subparsers.add_parser("backup", help="每日备份：快照、配置导出与修剪")
+    backup_parser.add_argument("--data-root", default=str(resolve_data_root()))
+    db_parser = subparsers.add_parser("db", help="数据库维护")
+    db_sub = db_parser.add_subparsers(dest="db_command", required=True)
+    db_check_parser = db_sub.add_parser("check", help="完整性检查并迁移到当前版本（恢复流程用）")
+    db_check_parser.add_argument("--data-root", default=str(resolve_data_root()))
     tasks_parser = subparsers.add_parser("tasks", help="计划任务注册")
     tasks_sub = tasks_parser.add_subparsers(dest="tasks_command", required=True)
     register_parser = tasks_sub.add_parser("register", help="注册或修复 P0 计划任务")

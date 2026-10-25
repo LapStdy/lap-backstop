@@ -38,6 +38,18 @@ _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 _PENDING: Final = object()
 
 
+def _worker_launch(is_frozen: bool) -> tuple[list[str], Path]:
+    """worker 默认拉起参数与工作目录。
+
+    源码运行用 ``-m core.plugins.worker``，仓库根作 cwd 保证模块可导入；打包件里
+    模块已进 exe，走 exe 自身的 worker 子命令（docs/08 计划任务的动作口径），
+    工作目录取 exe 所在目录。
+    """
+    if is_frozen:
+        return [sys.executable, "worker"], Path(sys.executable).resolve().parent
+    return [sys.executable, "-u", "-m", "core.plugins.worker"], _REPO_ROOT
+
+
 class WorkerChannel:
     """一个插件的 worker 子进程；同一时刻只执行一个能力调用。"""
 
@@ -45,11 +57,12 @@ class WorkerChannel:
         self.plugin_id = plugin_id
         self._config = config
         self._log: Logger = NullLogger() if config.log is None else config.log
-        self._command = (
-            list(config.command)
-            if config.command is not None
-            else [sys.executable, "-u", "-m", "core.plugins.worker"]
-        )
+        if config.command is None:
+            self._command, self._cwd = _worker_launch(getattr(sys, "frozen", False))
+        else:
+            # 自带命令的调用方接管拉起语义，cwd 沿用源码运行口径。
+            self._command = list(config.command)
+            self._cwd = _REPO_ROOT
         self._process: subprocess.Popen[str] | None = None
         self._reader: threading.Thread | None = None
         self._stderr_reader: threading.Thread | None = None
@@ -246,7 +259,7 @@ class WorkerChannel:
         command = [*self._command, self.plugin_id, "--plugins-root", str(self._config.plugins_root)]
         process = subprocess.Popen(
             command,
-            cwd=_REPO_ROOT,
+            cwd=self._cwd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

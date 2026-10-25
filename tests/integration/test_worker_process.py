@@ -254,3 +254,29 @@ def test_cancel_is_scoped_to_one_call(tmp_path: Path) -> None:
         assert second["value"]["detail"] == "cancelled=False"
     finally:
         session.close()
+
+
+def test_cli_worker_subcommand_serves_protocol(tmp_path: Path) -> None:
+    """exe 回调路径：`lap-backstop worker <id>` 与 -m 模块入口同一条协议（ADR 0010）。"""
+    process = subprocess.Popen(
+        [sys.executable, "-m", "core", "worker", "fake", "--plugins-root", str(PLUGINS_ROOT)],
+        cwd=REPO_ROOT,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        assert process.stdin is not None and process.stdout is not None
+        ready = rpc.decode_line(process.stdout.readline())
+        assert ready["kind"] == rpc.READY
+        assert ready["plugin_id"] == "fake"
+        assert set(ready["capabilities"]) == {"environment", "script", "verifier"}
+        process.stdin.write(json.dumps({"kind": rpc.SHUTDOWN}) + "\n")
+        process.stdin.flush()
+        assert process.wait(timeout=10) == 0
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=10)
