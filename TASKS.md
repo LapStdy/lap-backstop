@@ -2,15 +2,6 @@
 
 只记还没做的事。做完的进提交说明或交接账本。
 
-## P0：契约与内核
-
-- [ ] pre-commit 钩子跑 `scripts/gate.py`，钩子失败不允许提交。
-- [ ] 崩溃恢复后对环境做一次 probe，状态不明进入 unknown 并等待下一次 probe（docs/09）。
-- [ ] 看门狗、单实例、doctor 自检、磁盘水位。
-- [ ] 打包件收尾：`scripts/build_app.py` 产出 `app\releases\<version>\` 并维护 `app\current` 联接，`doctor` 冒烟通过；serve 在打包件下的 worker 拉起、`backup` 与 `db check` 子命令在后续任务补齐。
-
-验收：fake 插件在虚拟时钟下跑通 30 天调度；崩溃恢复后状态一致；场景测试全绿。
-
 ## P0 修复：worker RPC 审查发现（2026-10-24）
 
 - [ ] 多插件路由接入时按 `channel.is_degraded` 跳过降级插件（单插件模板下不适用）。
@@ -22,7 +13,7 @@
 - [ ] 就绪状态机：进程/窗口/adb/模板/稳定帧；未知画面记录。
 - [ ] 预热与保温：preheat_minutes、keep_warm_minutes、空闲关闭。
 - [ ] 门控：环境 ready 才放行 MAA；开始唤醒失败急停。
-- [ ] 脚本 adapter：MAA GUI 或 Python 绑定；日志/回调采集。
+- [ ] 脚本 adapter：MAA GUI 或 Python 绑定；日志/回调采集（日志信号解析已完成，绑定待做）。
 - [ ] verifier：期望任务集、完成集、理智数值、结束画面异常。
 - [ ] recovery：重连、重启游戏、重启模拟器、停手通知。
 - [ ] 证据与事件：截图、日志片段、任务集、Verdict。
@@ -42,12 +33,12 @@
 
 ## P3：客户端与远程
 
-- [ ] HTTP API 与 SSE：docs/03 的端点全部落地，页面、API、SSE 同源。
 - [ ] 六个页面：总览、作业、运行详情、环境、插件、设置；先按 390 宽手机全功能验收，再补宽屏布局。
 - [ ] schema 驱动表单：调度、作业模板、插件配置；手机宽度下只折叠分组，不删字段。
 - [ ] Tailscale + 单 token；只监听本机与 tailnet。
 - [ ] 通知渠道：ServerChan、钉钉、ntfy；投递重试。
 - [ ] 手机 App 安装壳：地址引导页 + WebView 加载同一页面；六页全写。
+- [ ] 单运行事件流 `GET /runs/{id}/events`（全局 `/api/v1/events` 已可用）。
 
 验收：手机在外能完成六页全部读写；断线重连可用；390 宽与 1024 宽可用操作一致。
 
