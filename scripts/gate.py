@@ -1,4 +1,4 @@
-"""六条门禁命令的统一入口。
+"""七条门禁命令的统一入口。
 
 命令清单与顺序见 docs/12 的门禁一节；本地与 CI 共用这一份口径。
 """
@@ -41,6 +41,7 @@ def commands() -> list[list[str]]:
         [sys.executable, "-m", "mypy"],
         [sys.executable, "-m", "pytest", "-q"],
         _lint_imports_command(),
+        [sys.executable, "scripts/check_contracts.py"],
         [sys.executable, "scripts/check_artifacts.py", "."],
     ]
 
@@ -63,7 +64,7 @@ def main() -> int:
         if completed.returncode != 0:
             print(f"门禁失败：{printable}")
             return completed.returncode
-    print("\n六条门禁全部通过")
+    print("\n七条门禁全部通过")
     return 0
 
 

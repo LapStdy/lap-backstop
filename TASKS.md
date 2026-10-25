@@ -4,7 +4,6 @@
 
 ## P0：契约与内核
 
-- [ ] 契约单一真源校验：docs/05 与 contracts/ 一份定义，02/03/09 只引用。
 - [ ] pre-commit 钩子跑 `scripts/gate.py`，钩子失败不允许提交。
 - [ ] 崩溃恢复后对环境做一次 probe，状态不明进入 unknown 并等待下一次 probe（docs/09）。
 - [ ] 看门狗、单实例、doctor 自检、磁盘水位。
