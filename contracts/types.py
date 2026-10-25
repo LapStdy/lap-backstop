@@ -236,8 +236,8 @@ class VerificationPolicy:
 @dataclass(frozen=True, slots=True)
 class ConfigDiff:
     path: str
-    desired: Any
-    actual: Any
+    desired: object
+    actual: object
     kind: ConfigDiffKind
 
 

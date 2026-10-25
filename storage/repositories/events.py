@@ -6,7 +6,6 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 from contracts import (
     GLOBAL_EVENTS,
@@ -28,7 +27,7 @@ class StoredEvent:
     seq: int
     type: str
     at: datetime
-    payload: Mapping[str, Any]
+    payload: Mapping[str, object]
 
 
 class EventLog:
@@ -41,7 +40,7 @@ class EventLog:
         self,
         run_id: str,
         event_type: EventType,
-        payload: Mapping[str, Any],
+        payload: Mapping[str, object],
         *,
         at: datetime,
     ) -> StoredEvent:
@@ -72,7 +71,7 @@ class EventLog:
     def append_global(
         self,
         event_type: EventType,
-        payload: Mapping[str, Any],
+        payload: Mapping[str, object],
         *,
         at: datetime,
     ) -> StoredEvent:

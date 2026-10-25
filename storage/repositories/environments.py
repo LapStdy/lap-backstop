@@ -6,7 +6,6 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 from contracts import EnvironmentState
 from storage.repositories.iso_time import format_at, parse_optional_at
@@ -26,7 +25,7 @@ class EnvironmentRow:
     state: EnvironmentState
     last_probe_at: datetime | None
     warm_until: datetime | None
-    detail: Mapping[str, Any]
+    detail: Mapping[str, object]
 
 
 class EnvironmentRepository:
@@ -57,14 +56,14 @@ class EnvironmentRepository:
             f"SELECT {_COLUMNS} FROM environments WHERE id = ?",
             (environment_id,),
         ).fetchone()
-        return None if row is None else _row_to_row(row)
+        return None if row is None else _row_to_record(row)
 
     def list_all(self) -> tuple[EnvironmentRow, ...]:
         """全部环境，按 id 排序。"""
         rows = self._connection.execute(
             f"SELECT {_COLUMNS} FROM environments ORDER BY id"
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
     def set_state(
         self,
@@ -72,7 +71,7 @@ class EnvironmentRepository:
         state: EnvironmentState,
         *,
         at: datetime,
-        detail: Mapping[str, Any],
+        detail: Mapping[str, object],
     ) -> None:
         """写入新状态、最近探测时间与探针摘要。"""
         self._connection.execute(
@@ -85,7 +84,7 @@ class EnvironmentRepository:
         environment_id: str,
         *,
         at: datetime,
-        detail: Mapping[str, Any],
+        detail: Mapping[str, object],
     ) -> None:
         """状态未变时只刷新探测时间与摘要。"""
         self._connection.execute(
@@ -112,7 +111,7 @@ class EnvironmentRepository:
             "ORDER BY warm_until",
             (EnvironmentState.READY.value, format_at(now)),
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
     def _require(self, environment_id: str) -> EnvironmentRow:
         row = self.get(environment_id)
@@ -121,7 +120,7 @@ class EnvironmentRepository:
         return row
 
 
-def _row_to_row(row: sqlite3.Row) -> EnvironmentRow:
+def _row_to_record(row: sqlite3.Row) -> EnvironmentRow:
     return EnvironmentRow(
         id=str(row["id"]),
         provider_id=str(row["provider_id"]),

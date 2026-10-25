@@ -12,7 +12,7 @@ from storage.repositories.sql import optional_str
 _COLUMNS = (
     "id, name, kind, expr, at, timezone, catch_up, window_minutes, coalesce, "
     "priority, deadline_minutes, preheat_minutes, keep_warm_minutes, "
-    "job_template_id, enabled, next_run_at, created_at"
+    "job_template_id, enabled, next_run_at, created_at, updated_at"
 )
 
 
@@ -37,6 +37,7 @@ class ScheduleRow:
     enabled: bool
     next_run_at: datetime | None
     created_at: datetime
+    updated_at: datetime
 
 
 class ScheduleRepository:
@@ -51,7 +52,7 @@ class ScheduleRepository:
             f"SELECT {_COLUMNS} FROM schedules WHERE enabled = 1 "
             "ORDER BY next_run_at IS NOT NULL, next_run_at",
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
     def get(self, schedule_id: str) -> ScheduleRow | None:
         """按 id 取调度；不存在返回 None。"""
@@ -59,7 +60,7 @@ class ScheduleRepository:
             f"SELECT {_COLUMNS} FROM schedules WHERE id = ?",
             (schedule_id,),
         ).fetchone()
-        return None if row is None else _row_to_row(row)
+        return None if row is None else _row_to_record(row)
 
     def set_next_run(
         self,
@@ -79,7 +80,7 @@ class ScheduleRepository:
         )
 
 
-def _row_to_row(row: sqlite3.Row) -> ScheduleRow:
+def _row_to_record(row: sqlite3.Row) -> ScheduleRow:
     return ScheduleRow(
         id=str(row["id"]),
         name=str(row["name"]),
@@ -98,4 +99,5 @@ def _row_to_row(row: sqlite3.Row) -> ScheduleRow:
         enabled=bool(row["enabled"]),
         next_run_at=parse_optional_at(optional_str(row["next_run_at"])),
         created_at=parse_at(str(row["created_at"])),
+        updated_at=parse_at(str(row["updated_at"])),
     )

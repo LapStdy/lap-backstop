@@ -52,7 +52,7 @@ class LeaseRepository:
             f"SELECT {_COLUMNS} FROM resource_leases WHERE id = ?",
             (lease_id,),
         ).fetchone()
-        return None if row is None else _row_to_row(row)
+        return None if row is None else _row_to_record(row)
 
     def active_for(self, resource_id: str) -> tuple[LeaseRow, ...]:
         """某个资源当前持有的租约。"""
@@ -63,7 +63,7 @@ class LeaseRepository:
             "ORDER BY acquired_at",
             (resource_id, *_ACTIVE_STATES),
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
     def active_for_run(self, run_id: str) -> tuple[LeaseRow, ...]:
         """某个运行当前持有的租约，按资源 id 排序。"""
@@ -74,7 +74,7 @@ class LeaseRepository:
             "ORDER BY resource_id",
             (run_id, *_ACTIVE_STATES),
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
     def active(self) -> tuple[LeaseRow, ...]:
         """全部活跃租约，按过期时间排序；启动清理与续租扫描用。"""
@@ -83,7 +83,7 @@ class LeaseRepository:
             f"SELECT {_COLUMNS} FROM resource_leases WHERE state IN ({marks}) ORDER BY expires_at",
             (*_ACTIVE_STATES,),
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
     def insert(self, lease: NewLease) -> LeaseRow:
         """写入一条 leased 租约。"""
@@ -137,7 +137,7 @@ class LeaseRepository:
             "WHERE state = ? AND expires_at <= ? ORDER BY expires_at",
             (LeaseState.EXPIRING.value, format_at(now)),
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
     def finish_expiry(self, now: datetime) -> tuple[LeaseRow, ...]:
         """把 expiring 租约正式释放，返回释放后的记录。"""
@@ -146,7 +146,7 @@ class LeaseRepository:
             "WHERE state = ? AND expires_at <= ? ORDER BY expires_at",
             (LeaseState.EXPIRING.value, format_at(now)),
         ).fetchall()
-        leases = tuple(_row_to_row(row) for row in rows)
+        leases = tuple(_row_to_record(row) for row in rows)
         self._connection.execute(
             "UPDATE resource_leases SET state = ? WHERE state = ? AND expires_at <= ?",
             (LeaseState.RELEASED.value, LeaseState.EXPIRING.value, format_at(now)),
@@ -154,7 +154,7 @@ class LeaseRepository:
         return leases
 
 
-def _row_to_row(row: sqlite3.Row) -> LeaseRow:
+def _row_to_record(row: sqlite3.Row) -> LeaseRow:
     return LeaseRow(
         id=str(row["id"]),
         resource_id=str(row["resource_id"]),

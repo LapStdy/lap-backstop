@@ -58,7 +58,7 @@ class VerdictRepository:
             f"SELECT {_COLUMNS} FROM verdicts WHERE id = ?",
             (verdict_id,),
         ).fetchone()
-        return None if row is None else _row_to_row(row)
+        return None if row is None else _row_to_record(row)
 
     def for_run(self, run_id: str) -> tuple[VerdictRow, ...]:
         """某个运行的全部结论，按创建时间排序。"""
@@ -66,10 +66,10 @@ class VerdictRepository:
             f"SELECT {_COLUMNS} FROM verdicts WHERE run_id = ? ORDER BY created_at",
             (run_id,),
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
 
-def _row_to_row(row: sqlite3.Row) -> VerdictRow:
+def _row_to_record(row: sqlite3.Row) -> VerdictRow:
     return VerdictRow(
         id=str(row["id"]),
         run_id=str(row["run_id"]),

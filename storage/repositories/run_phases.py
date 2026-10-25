@@ -6,7 +6,6 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 from contracts import PhaseState
 from storage.repositories.iso_time import format_at, parse_optional_at
@@ -28,7 +27,7 @@ class RunPhaseRow:
     started_at: datetime | None
     finished_at: datetime | None
     timeout_seconds: int
-    detail: Mapping[str, Any]
+    detail: Mapping[str, object]
 
 
 class RunPhaseRepository:
@@ -61,7 +60,7 @@ class RunPhaseRepository:
             f"SELECT {_COLUMNS} FROM run_phases WHERE id = ?",
             (phase_id,),
         ).fetchone()
-        return None if row is None else _row_to_row(row)
+        return None if row is None else _row_to_record(row)
 
     def finish(
         self,
@@ -69,7 +68,7 @@ class RunPhaseRepository:
         *,
         state: PhaseState,
         at: datetime,
-        detail: Mapping[str, Any],
+        detail: Mapping[str, object],
     ) -> None:
         """写入阶段终态与结束时间。"""
         self._connection.execute(
@@ -89,10 +88,10 @@ class RunPhaseRepository:
             "ORDER BY started_at IS NULL, started_at, phase",
             (run_id,),
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
 
-def _row_to_row(row: sqlite3.Row) -> RunPhaseRow:
+def _row_to_record(row: sqlite3.Row) -> RunPhaseRow:
     return RunPhaseRow(
         id=str(row["id"]),
         run_id=str(row["run_id"]),

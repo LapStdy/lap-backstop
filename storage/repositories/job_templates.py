@@ -5,7 +5,6 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
 
 from storage.repositories.json_columns import load_json_object
 
@@ -23,10 +22,10 @@ class JobTemplateRow:
     name: str
     plugin_id: str
     environment_id: str
-    config: Mapping[str, Any]
+    config: Mapping[str, object]
     config_schema_version: str
-    verification_policy: Mapping[str, Any]
-    recovery_policy: Mapping[str, Any]
+    verification_policy: Mapping[str, object]
+    recovery_policy: Mapping[str, object]
     enabled: bool
 
 
@@ -42,17 +41,17 @@ class JobTemplateRepository:
             f"SELECT {_COLUMNS} FROM job_templates WHERE id = ?",
             (template_id,),
         ).fetchone()
-        return None if row is None else _row_to_row(row)
+        return None if row is None else _row_to_record(row)
 
     def list_all(self) -> tuple[JobTemplateRow, ...]:
         """全部模板，按 id 排序。"""
         rows = self._connection.execute(
             f"SELECT {_COLUMNS} FROM job_templates ORDER BY id"
         ).fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
 
-def _row_to_row(row: sqlite3.Row) -> JobTemplateRow:
+def _row_to_record(row: sqlite3.Row) -> JobTemplateRow:
     return JobTemplateRow(
         id=str(row["id"]),
         name=str(row["name"]),

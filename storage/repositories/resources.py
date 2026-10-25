@@ -5,7 +5,6 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any
 
 from storage.repositories.json_columns import dump_json, load_json_object
 
@@ -21,7 +20,7 @@ class ResourceRow:
     type: str
     name: str
     capacity: int
-    detail: Mapping[str, Any]
+    detail: Mapping[str, object]
 
 
 class ResourceRepository:
@@ -37,7 +36,7 @@ class ResourceRepository:
         resource_type: str,
         name: str,
         capacity: int = 1,
-        detail: Mapping[str, Any] | None = None,
+        detail: Mapping[str, object] | None = None,
     ) -> ResourceRow:
         """注册资源；已存在时原样返回。
 
@@ -67,12 +66,12 @@ class ResourceRepository:
             f"SELECT {_COLUMNS} FROM resources WHERE id = ?",
             (resource_id,),
         ).fetchone()
-        return None if row is None else _row_to_row(row)
+        return None if row is None else _row_to_record(row)
 
     def list_all(self) -> tuple[ResourceRow, ...]:
         """全部资源，按 id 排序。"""
         rows = self._connection.execute(f"SELECT {_COLUMNS} FROM resources ORDER BY id").fetchall()
-        return tuple(_row_to_row(row) for row in rows)
+        return tuple(_row_to_record(row) for row in rows)
 
     def _require(self, resource_id: str) -> ResourceRow:
         row = self.get(resource_id)
@@ -81,7 +80,7 @@ class ResourceRepository:
         return row
 
 
-def _row_to_row(row: sqlite3.Row) -> ResourceRow:
+def _row_to_record(row: sqlite3.Row) -> ResourceRow:
     return ResourceRow(
         id=str(row["id"]),
         type=str(row["type"]),

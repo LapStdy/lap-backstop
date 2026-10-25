@@ -6,7 +6,6 @@ import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
 from uuid import uuid4
 
 from contracts import TERMINAL_RUN_STATES, RunState
@@ -51,7 +50,7 @@ class JobRunRecord:
     finished_at: datetime | None
     verdict_id: str | None
     error_code: str | None
-    detail: Mapping[str, Any]
+    detail: Mapping[str, object]
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +64,7 @@ class NewRun:
     idempotency_key: str
     priority: int
     deadline_at: datetime | None
-    detail: Mapping[str, Any] = field(default_factory=dict)
+    detail: Mapping[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +198,7 @@ class JobRunRepository:
             (attempt, run_id),
         )
 
-    def set_detail(self, run_id: str, detail: Mapping[str, Any]) -> None:
+    def set_detail(self, run_id: str, detail: Mapping[str, object]) -> None:
         """覆盖运行摘要，供恢复等待等调度提示使用。"""
         self._connection.execute(
             "UPDATE job_runs SET detail = ? WHERE id = ?",
