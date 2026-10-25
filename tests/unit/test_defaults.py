@@ -18,6 +18,14 @@ def test_default_returns_section_value() -> None:
     assert default("leases", "renew_interval_seconds") == 60
 
 
+def test_host_section_matches_watchdog_baseline() -> None:
+    assert default("host", "heartbeat_interval_seconds") == 60
+    assert default("host", "stale_seconds") == 300
+    assert default("host", "acceptance_seconds") == 120
+    assert default("host", "give_up_window_minutes") == 30
+    assert default("host", "give_up_max_failures") == 3
+
+
 def test_unknown_key_reports_section_and_key() -> None:
     with pytest.raises(KeyError) as excinfo:
         default("worker", "does_not_exist")

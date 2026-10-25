@@ -22,6 +22,13 @@ recover_delay_seconds = 60
 [storage]
 busy_timeout_ms = 5000
 
+[host]
+heartbeat_interval_seconds = 60
+stale_seconds = 300
+acceptance_seconds = 120
+give_up_window_minutes = 30
+give_up_max_failures = 3
+
 [scheduler]
 timezone = "Asia/Shanghai"
 catch_up = "run_once"
