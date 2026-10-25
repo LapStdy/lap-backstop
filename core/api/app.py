@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import hmac
 import sqlite3
+import threading
 import time
+from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,6 +18,7 @@ from pathlib import Path
 from contracts import Clock, ContractError, ErrorCode, Logger
 from core.api import store
 from core.api.ctx import Handler, RequestCtx
+from core.api.events_api import StreamOptions, stream_frames
 from core.api.runs_api import get_run, list_runs, stop_run
 from core.api.schedules_api import (
     create_schedule,
@@ -48,6 +51,8 @@ from core.logging import NullLogger
 from storage import open_database
 
 API_PREFIX = "/api/v1"
+# /events 是流式端点，不走 ROUTES 的请求-响应形态；能力清单仍要如实列出。
+EVENTS_CAPABILITY = "events"
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +104,9 @@ class ApiApp:
         self._clock: Clock = SystemClock() if clock is None else clock
         self._log: Logger = NullLogger() if log is None else log
         self._routes = ROUTES
-        self._capabilities = tuple(sorted({route.segments[0] for route in ROUTES}))
+        self._capabilities = tuple(
+            sorted({route.segments[0] for route in ROUTES} | {EVENTS_CAPABILITY})
+        )
 
     def handle(self, request: ApiRequest) -> ApiResponse:
         """处理一次请求；任何失败都映射成错误响应并写一行请求日志。"""
@@ -115,6 +122,27 @@ class ApiApp:
             }
         )
         return response
+
+    def authorize(self, request: ApiRequest) -> None:
+        """只做鉴权不进路由；长连接端点开流前复用同一套校验。
+
+        Raises:
+            ContractError: 凭据缺失或不匹配，错误码 E_AUTH。
+        """
+        with closing(open_database(self._database)) as connection:
+            self._authorize(connection, request)
+
+    def event_frames(
+        self,
+        last_event_id: str | None,
+        *,
+        stop: threading.Event,
+    ) -> Iterator[bytes]:
+        """全局事件流的 SSE 帧迭代器；传输层鉴权后逐帧写出，游标由帧携带。"""
+        return stream_frames(
+            self._database,
+            StreamOptions(clock=self._clock, stop=stop, last_event_id=last_event_id),
+        )
 
     def _safe_handle(self, request: ApiRequest) -> ApiResponse:
         try:
@@ -203,4 +231,4 @@ def _match_route(
     return params
 
 
-__all__ = ["API_PREFIX", "ROUTES", "ApiApp", "Route"]
+__all__ = ["API_PREFIX", "EVENTS_CAPABILITY", "ROUTES", "ApiApp", "Route"]

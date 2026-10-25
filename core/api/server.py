@@ -15,12 +15,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from contracts import Clock, ContractError, ErrorCode, Logger
-from core.api.app import ApiApp
+from contracts import Clock, ContractError, ErrorCode, Logger, parse_event_id
+from core.api.app import API_PREFIX, EVENTS_CAPABILITY, ApiApp
 from core.api.store import ensure_server_id
 from core.api.wire import ApiRequest, ApiResponse, encode_json, error_response
 from core.clock import SystemClock
 from core.logging import NullLogger
+
+EVENTS_PATH = f"{API_PREFIX}/{EVENTS_CAPABILITY}"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
@@ -44,6 +46,12 @@ class ApiOptions:
     log: Logger = field(default_factory=NullLogger)
     stop: threading.Event = field(default_factory=threading.Event)
     max_requests: int | None = None
+
+
+class _ApiHttpServer(ThreadingHTTPServer):
+    # Windows 的 SO_REUSEADDR 允许绑到别人正在监听的端口上，端口冲突会静默接管；
+    # 关掉它，占用才表现为绑定失败（docs/08 退出码 4 的判定前提）。
+    allow_reuse_address = False
 
 
 class _RequestCounter:
@@ -104,7 +112,7 @@ def start_api_server(
     ensure_server_id(connection, at=active.clock.utc_now())
     app = ApiApp(database, clock=active.clock, log=active.log)
     counter = _RequestCounter()
-    http = ThreadingHTTPServer((active.host, active.port), _handler(app, counter))
+    http = _ApiHttpServer((active.host, active.port), _handler(app, counter, active.stop))
     http.timeout = POLL_INTERVAL_SECONDS
     thread = threading.Thread(
         target=_serve,
@@ -131,12 +139,13 @@ def _serve(http: ThreadingHTTPServer, counter: _RequestCounter, options: ApiOpti
 
 
 class _HandlerMethods(BaseHTTPRequestHandler):
-    """请求处理方法；具体会话的 app 与计数器由 _handler 组装的子类携带。"""
+    """请求处理方法；具体会话的 app、计数器与停机事件由 _handler 组装的子类携带。"""
 
     # 逐请求关连接：本地单用户无保活需求，也不维持连接状态。
     timeout = REQUEST_TIMEOUT_SECONDS
     app: ApiApp
     counter: _RequestCounter
+    stop: threading.Event
 
     def do_GET(self) -> None:
         self._respond()
@@ -152,20 +161,39 @@ class _HandlerMethods(BaseHTTPRequestHandler):
 
     def _respond(self) -> None:
         try:
+            if self.command == "GET" and urlsplit(self.path).path == EVENTS_PATH:
+                self._stream_events()
+                return
             response = self.app.handle(self._read_request())
             self._write(response)
         except ContractError as error:
             self._write(error_response(error.code, error.message))
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
         finally:
             self.counter.bump()
             self.close_connection = True
 
+    def _stream_events(self) -> None:
+        """SSE 长连接：鉴权后逐帧写出事件流，停机事件或客户端断开时收尾。"""
+        last_event_id = self.headers.get("Last-Event-ID")
+        if last_event_id is not None:
+            _require_event_id(last_event_id)
+        self.app.authorize(
+            ApiRequest("GET", urlsplit(self.path).path, {}, self._lowered_headers(), b"")
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        for frame in self.app.event_frames(last_event_id, stop=self.stop):
+            self.wfile.write(frame)
+            self.wfile.flush()
+
     def _read_request(self) -> ApiRequest:
         split = urlsplit(self.path)
         query = {key: values[-1] for key, values in parse_qs(split.query).items()}
-        headers = {key.lower(): value for key, value in self.headers.items()}
+        headers = self._lowered_headers()
         length = self._body_length(headers)
         if length > MAX_BODY_BYTES:
             # 先读走正文再拒绝：不读就关连接会触发 TCP RST，客户端收不到 400。
@@ -176,6 +204,10 @@ class _HandlerMethods(BaseHTTPRequestHandler):
             )
         body = self.rfile.read(length) if length > 0 else b""
         return ApiRequest(self.command, split.path, query, headers, body)
+
+    def _lowered_headers(self) -> dict[str, str]:
+        """请求头键统一小写；应用层按小写取头。"""
+        return {key.lower(): value for key, value in self.headers.items()}
 
     def _body_length(self, headers: Mapping[str, str]) -> int:
         """解析 Content-Length；畸形值按坏请求拒绝而不是让线程崩掉。"""
@@ -211,9 +243,32 @@ class _HandlerMethods(BaseHTTPRequestHandler):
         return None
 
 
-def _handler(app: ApiApp, counter: _RequestCounter) -> type[BaseHTTPRequestHandler]:
-    """按会话绑定 app 与计数器的处理器类；每个服务实例独立，互不覆盖。"""
-    return type("BoundHandler", (_HandlerMethods,), {"app": app, "counter": counter})
+def _handler(
+    app: ApiApp,
+    counter: _RequestCounter,
+    stop: threading.Event,
+) -> type[BaseHTTPRequestHandler]:
+    """按会话绑定 app、计数器与停机事件的处理器类；每个服务实例独立，互不覆盖。"""
+    return type(
+        "BoundHandler",
+        (_HandlerMethods,),
+        {"app": app, "counter": counter, "stop": stop},
+    )
+
+
+def _require_event_id(event_id: str) -> None:
+    """Last-Event-ID 的文法校验：非法值在开流前拿到 400，而不是进流后 reset。
+
+    Raises:
+        ContractError: 不符合 ``r:<run_id>:<seq>`` 或 ``g:<seq>`` 文法，错误码 E_BAD_REQUEST。
+    """
+    try:
+        parse_event_id(event_id)
+    except ValueError as error:
+        raise ContractError(
+            ErrorCode.BAD_REQUEST,
+            f"Last-Event-ID 不是合法事件 id：{event_id}",
+        ) from error
 
 
 def _database_path(connection: sqlite3.Connection) -> Path:
@@ -228,6 +283,7 @@ def _database_path(connection: sqlite3.Connection) -> Path:
 __all__ = [
     "DEFAULT_HOST",
     "DEFAULT_PORT",
+    "EVENTS_PATH",
     "MAX_BODY_BYTES",
     "ApiOptions",
     "ApiServer",
