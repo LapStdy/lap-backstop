@@ -60,6 +60,9 @@ _HOLDING_LEASE_STATES = frozenset(
         RunState.WAITING,
         RunState.EXECUTING,
         RunState.VERIFYING,
+        # docs/09：租约持有到 cleanup 完成；cleaning 期间同样续租，
+        # 不让长 cleanup 因 TTL 过期被回收后把运行标成 failed。
+        RunState.CLEANING,
     }
 )
 _ORPHAN_STATES = frozenset(

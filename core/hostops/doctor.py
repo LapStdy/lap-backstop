@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import socket
 import sqlite3
 import subprocess
@@ -22,13 +21,12 @@ from typing import TextIO
 
 from core.hostops import instance, tasks
 from core.hostops.heartbeat import HEARTBEAT_FILENAME, heartbeat_age_seconds, read_heartbeat
+from core.jobs.run_service import DISK_GUARD_BYTES, DISK_WARN_BYTES, disk_free_bytes
 from storage.db.migrations import MIGRATIONS
 from storage.defaults import DEFAULTS, load_defaults
 
 DATABASE_FILENAME = "backstop.sqlite"
 DEFAULT_API_ADDRESS = ("127.0.0.1", 8787)
-WARN_BYTES = 5 * 1024**3
-FAIL_BYTES = 2 * 1024**3
 # 排障入口可以比看门狗宽裕，但仍必须有界（docs/11 每个外部调用都必须带超时）。
 _EXTERNAL_TIMEOUT_SECONDS = 10.0
 WINLOGON_KEY = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
@@ -74,7 +72,7 @@ class DoctorDeps:
     now: datetime = field(default_factory=lambda: datetime.now(UTC))
     registry_get: RegistryGet = field(default_factory=lambda: registry_get)
     runner: Runner = field(default_factory=lambda: _run)
-    disk_free: Callable[[Path], int | None] = field(default_factory=lambda: _disk_free)
+    disk_free: Callable[[Path], int | None] = disk_free_bytes
     api_address: tuple[str, int] = DEFAULT_API_ADDRESS
 
 
@@ -213,9 +211,9 @@ def _check_disk_watermark(deps: DoctorDeps) -> CheckResult:
     if free is None:
         return _result(7, "磁盘水位", Level.FAIL, "查不到可用空间")
     gib = free / 1024**3
-    if free < FAIL_BYTES:
+    if free < DISK_GUARD_BYTES:
         return _result(7, "磁盘水位", Level.FAIL, f"可用 {gib:.1f} GiB，低于 2 GiB")
-    if free < WARN_BYTES:
+    if free < DISK_WARN_BYTES:
         return _result(7, "磁盘水位", Level.WARN, f"可用 {gib:.1f} GiB，低于 5 GiB")
     return _result(7, "磁盘水位", Level.PASS, f"可用 {gib:.1f} GiB")
 
@@ -377,13 +375,6 @@ def _run(command: list[str]) -> subprocess.CompletedProcess[bytes]:
         )
     except (OSError, subprocess.TimeoutExpired):
         return subprocess.CompletedProcess(command, -1, b"", b"")
-
-
-def _disk_free(path: Path) -> int | None:
-    try:
-        return shutil.disk_usage(path).free
-    except OSError:
-        return None
 
 
 __all__ = [
