@@ -188,7 +188,7 @@ def test_observe_merges_signals_across_logs_by_time(tmp_path: Path) -> None:
     append_log(
         tmp_path,
         "asst.log",
-        '[2026-10-20 03:07:30.000][INF][Px1f0][Tx6e00]'
+        "[2026-10-20 03:07:30.000][INF][Px1f0][Tx6e00]"
         '{"what":"SubTaskExtraInfo","details":{"target":"SanityBeforeStage",'
         '"current_sanity":82,"max_sanity":135}}\n',
     )
@@ -243,6 +243,28 @@ def test_observe_counts_unknown_lines_and_logs_total(tmp_path: Path) -> None:
     assert logger.events == [{"event": "maa.log.unknown", "count": 2}]
     adapter.observe(handle, ctx)
     assert len(logger.events) == 1
+
+
+def test_observe_rereads_log_after_rollover(tmp_path: Path) -> None:
+    """日志滚动（文件变短）后从头重读新文件，并记录一次 rolled 事件。"""
+    logger = _RecordingLogger()
+    adapter = MaaScript()
+    ctx = make_context(tmp_path, logger)
+    handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
+    append_log(
+        tmp_path,
+        "gui.log",
+        "2026-10-20 03:07:20.000 INF 开始任务: 开始唤醒\n"
+        "2026-10-20 03:08:00.000 INF 完成任务: 开始唤醒\n",
+    )
+    assert kinds(adapter.observe(handle, ctx).signals) == ["task.started", "task.completed"]
+    (tmp_path / "debug" / "gui.log").write_text(
+        "2026-10-21 03:07:20 INF 任务已全部完成！\n", encoding="utf-8", newline="\n"
+    )
+    observation = adapter.observe(handle, ctx)
+    assert observation.state is ScriptState.EXITED
+    assert kinds(observation.signals) == ["run.completed"]
+    assert {"event": "maa.log.rolled", "file": "gui.log"} in logger.events
 
 
 def test_observe_keeps_terminal_state_on_late_signals(tmp_path: Path) -> None:

@@ -79,8 +79,10 @@ class MaaScript:
         gui = _drain(run.gui_path, parse_gui_line, run.gui_offset, ctx)
         asst = _drain(run.asst_path, parse_asst_line, run.asst_offset, ctx)
         run.gui_offset, run.asst_offset = gui.offset, asst.offset
-        if gui.truncated or asst.truncated:
-            ctx.log.info({"event": "maa.log.rolled"})
+        if gui.truncated:
+            ctx.log.info({"event": "maa.log.rolled", "file": GUI_LOG_NAME})
+        if asst.truncated:
+            ctx.log.info({"event": "maa.log.rolled", "file": ASST_LOG_NAME})
         if gui.unknown or asst.unknown:
             run.unknown_lines += gui.unknown + asst.unknown
             ctx.log.info({"event": "maa.log.unknown", "count": run.unknown_lines})
@@ -192,6 +194,6 @@ def _log_dir(config: Mapping[str, Any]) -> Path:
     return Path(str(maa_dir)) / LOG_DIR_NAME
 
 
-def _offset(value: Any) -> int:
+def _offset(value: object) -> int:
     """句柄 meta 里的偏移收窄为非负整数；缺失或非法按 0 处理。"""
     return value if isinstance(value, int) and not isinstance(value, bool) else 0

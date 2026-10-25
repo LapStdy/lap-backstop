@@ -156,12 +156,12 @@ def _sanity_payload(line: str) -> dict[str, int] | None:
     return dict(found) if len(found) == len(_SANITY_KEYS) else None
 
 
-def _collect_sanity(node: Any, found: dict[str, int]) -> dict[str, int]:
+def _collect_sanity(node: object, found: dict[str, int]) -> dict[str, int]:
     """在回调 JSON 的任意层级收集理智数值；嵌套形态由 MAA 版本决定。"""
     if isinstance(node, dict):
         for key, value in node.items():
             if _is_sanity_entry(key, value):
-                found[key] = value
+                found[str(key)] = value
             else:
                 _collect_sanity(value, found)
     elif isinstance(node, list):
@@ -170,6 +170,11 @@ def _collect_sanity(node: Any, found: dict[str, int]) -> dict[str, int]:
     return found
 
 
-def _is_sanity_entry(key: Any, value: Any) -> bool:
+def _is_sanity_entry(key: object, value: object) -> bool:
     """理智数值键判定；bool 是 int 的子类，需排除。"""
-    return key in _SANITY_KEYS and isinstance(value, int) and not isinstance(value, bool)
+    return (
+        isinstance(key, str)
+        and key in _SANITY_KEYS
+        and isinstance(value, int)
+        and not isinstance(value, bool)
+    )
