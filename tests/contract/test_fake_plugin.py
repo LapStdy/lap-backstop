@@ -190,6 +190,27 @@ def test_stop_and_recover_are_idempotent() -> None:
     assert adapter.recover(handle, ctx, RecoveryAction.RETRY).ok
 
 
+def test_repeated_capability_calls_leave_no_extra_side_effects() -> None:
+    """docs/12 契约表「幂等」：同一调用重复执行不产生两次副作用。
+
+    fake 的副作用面是环境动作与脚本停启；重复调用后环境仍能一步就绪、
+    句柄仍按原场景观察，说明重复执行没有叠加状态。
+    """
+    provider = FakeEnvironmentProvider()
+    adapter = FakeScriptAdapter()
+    ctx = make_context()
+    ref = env_ref()
+    for _ in range(2):
+        assert provider.probe(ref, ctx).state is EnvironmentState.READY
+        assert provider.prepare(ref, ctx).ok
+    handle = adapter.launch(ScriptRef(id="script-1", plugin_id="fake"), ctx)
+    for _ in range(2):
+        assert adapter.stop(handle, ctx, StopMode.GRACEFUL).ok
+        assert adapter.recover(handle, ctx, RecoveryAction.RETRY).ok
+    assert provider.probe(ref, ctx).state is EnvironmentState.READY
+    assert adapter.observe(handle, ctx).state is ScriptState.EXITED
+
+
 def test_probe_observed_at_comes_from_clock() -> None:
     probe = FakeEnvironmentProvider().probe(env_ref(), make_context())
     assert isinstance(probe, EnvironmentProbe)
