@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,9 @@ from contracts import (
 from plugins.maa.logparse import (
     ASST_LOG_NAME,
     GUI_LOG_NAME,
+    KIND_RUN_COMPLETED,
+    KIND_RUN_DISCONNECTED,
+    KIND_RUN_FAILED,
     LOG_DIR_NAME,
     ParsedSignal,
     file_size,
@@ -39,17 +43,36 @@ from plugins.maa.logparse import (
     read_new_lines,
 )
 
+# 默认值真源是 config.schema.json（内核保存/加载时按 schema 补齐）；此常量
+# 供句柄 meta 缺失时兜底，契约测试锁定它与 schema 默认值一致。
 DEFAULT_MAA_DIR = "H:/MAA"
 DEFAULT_LOG_DIR = Path(DEFAULT_MAA_DIR) / LOG_DIR_NAME
 _RECOVERY_UNAVAILABLE = "恢复动作不可用：未执行真机操作"
 _EPOCH = datetime.min.replace(tzinfo=UTC)
 
-# 内部运行状态；终态集合映射为 ScriptState.EXITED，首个终态生效。
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "disconnected", "stopped"})
+
+class _RunStatus(StrEnum):
+    """运行内部状态；终态映射 ScriptState.EXITED，失败细节由信号携带。"""
+
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    DISCONNECTED = "disconnected"
+    STOPPED = "stopped"
+
+
+_TERMINAL_STATUSES = frozenset(
+    {
+        _RunStatus.COMPLETED,
+        _RunStatus.FAILED,
+        _RunStatus.DISCONNECTED,
+        _RunStatus.STOPPED,
+    }
+)
 _STATUS_BY_SIGNAL = {
-    "run.completed": "completed",
-    "run.failed": "failed",
-    "run.disconnected": "disconnected",
+    KIND_RUN_COMPLETED: _RunStatus.COMPLETED,
+    KIND_RUN_FAILED: _RunStatus.FAILED,
+    KIND_RUN_DISCONNECTED: _RunStatus.DISCONNECTED,
 }
 
 
@@ -79,16 +102,15 @@ class MaaScript:
         gui = _drain(run.gui_path, parse_gui_line, run.gui_offset, ctx)
         asst = _drain(run.asst_path, parse_asst_line, run.asst_offset, ctx)
         run.gui_offset, run.asst_offset = gui.offset, asst.offset
-        if gui.truncated:
-            ctx.log.info({"event": "maa.log.rolled", "file": GUI_LOG_NAME})
-        if asst.truncated:
-            ctx.log.info({"event": "maa.log.rolled", "file": ASST_LOG_NAME})
+        for name, drained in ((GUI_LOG_NAME, gui), (ASST_LOG_NAME, asst)):
+            if drained.truncated:
+                ctx.log.info({"event": "maa.log.rolled", "file": name})
         if gui.unknown or asst.unknown:
             run.unknown_lines += gui.unknown + asst.unknown
             ctx.log.info({"event": "maa.log.unknown", "count": run.unknown_lines})
         signals = _merge_by_time(gui.signals, asst.signals)
         for signal in signals:
-            _advance(run, signal, ctx.clock.utc_now())
+            run.advance(signal, ctx.clock.utc_now())
         return ScriptObservation(
             state=ScriptState.EXITED if run.status in _TERMINAL_STATUSES else ScriptState.RUNNING,
             signals=tuple(signals),
@@ -100,7 +122,7 @@ class MaaScript:
         """无进程可停，返回成功；已终态的运行不重复改状态。"""
         run = self._runs.get(handle.id)
         if run is not None and run.status not in _TERMINAL_STATUSES:
-            run.status = "stopped"
+            run.status = _RunStatus.STOPPED
             run.since = ctx.clock.utc_now()
         return StopResult(ok=True, detail="无进程可停止")
 
@@ -123,22 +145,29 @@ class _RunState:
     gui_offset: int
     asst_offset: int
     since: datetime | None
-    status: str = "running"
+    status: _RunStatus = _RunStatus.RUNNING
     unknown_lines: int = 0
     last_signal: Signal | None = None
+
+    def advance(self, signal: Signal, now: datetime) -> None:
+        """按信号推进状态；终态只生效一次，最近信号始终更新。"""
+        self.last_signal = signal
+        target = _STATUS_BY_SIGNAL.get(signal.kind)
+        if target is not None and self.status not in _TERMINAL_STATUSES:
+            self.status = target
+            self.since = now
 
     @classmethod
     def from_handle(cls, handle: ScriptHandle) -> _RunState:
         """从句柄 meta 恢复游标；句柄是偏移与目录的唯一载体。"""
         meta = handle.meta
         log_dir = Path(str(meta.get("log_dir", str(DEFAULT_LOG_DIR))))
-        launched_at = meta.get("launched_at")
         return cls(
             gui_path=log_dir / GUI_LOG_NAME,
             asst_path=log_dir / ASST_LOG_NAME,
             gui_offset=_offset(meta.get("gui_log_offset")),
             asst_offset=_offset(meta.get("asst_log_offset")),
-            since=datetime.fromisoformat(launched_at) if isinstance(launched_at, str) else None,
+            since=_aware_or_none(meta.get("launched_at")),
         )
 
 
@@ -167,7 +196,14 @@ def _drain(
         if hit is None:
             unknown += 1 if text.strip() else 0
             continue
-        signals.append(Signal(kind=hit.kind, payload=hit.payload, at=hit.at or ctx.clock.utc_now()))
+        # 原始行是验证器的证据材料；契约 Signal 没有独立字段，随载荷过境。
+        signals.append(
+            Signal(
+                kind=hit.kind,
+                payload={**hit.payload, "line": hit.line},
+                at=hit.at or ctx.clock.utc_now(),
+            )
+        )
     return _DrainResult(signals, chunk.offset, unknown, chunk.truncated)
 
 
@@ -179,13 +215,15 @@ def _merge_by_time(*batches: list[Signal]) -> list[Signal]:
     )
 
 
-def _advance(run: _RunState, signal: Signal, now: datetime) -> None:
-    """按信号推进内部状态；终态只生效一次，最近信号始终更新。"""
-    run.last_signal = signal
-    target = _STATUS_BY_SIGNAL.get(signal.kind)
-    if target is not None and run.status not in _TERMINAL_STATUSES:
-        run.status = target
-        run.since = now
+def _aware_or_none(value: object) -> datetime | None:
+    """解析句柄里的 ISO 时间；naive 值按宿主本地时区补全，非法返回 None。"""
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.astimezone()
 
 
 def _log_dir(config: Mapping[str, Any]) -> Path:

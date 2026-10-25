@@ -166,17 +166,20 @@ def test_observe_collects_sanity_sample_from_asst_log(tmp_path: Path) -> None:
     adapter = MaaScript()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
-    append_log(
-        tmp_path,
-        "asst.log",
+    line = (
         "[2026-10-20 03:08:30.123][INF][Px1f0][Tx6e00]"
         '{"what":"SubTaskExtraInfo","details":{"target":"SanityBeforeStage",'
-        '"current_sanity":82,"max_sanity":135}}\n',
+        '"current_sanity":82,"max_sanity":135}}'
     )
+    append_log(tmp_path, "asst.log", f"{line}\n")
     observation = adapter.observe(handle, ctx)
     assert observation.state is ScriptState.RUNNING
     assert kinds(observation.signals) == ["sanity.sample"]
-    assert observation.signals[0].payload == {"current_sanity": 82, "max_sanity": 135}
+    assert observation.signals[0].payload == {
+        "current_sanity": 82,
+        "max_sanity": 135,
+        "line": line,
+    }
 
 
 def test_observe_merges_signals_across_logs_by_time(tmp_path: Path) -> None:

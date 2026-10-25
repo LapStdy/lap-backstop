@@ -29,7 +29,7 @@ from contracts import (
 from contracts.manifest import range_covers
 from plugins.maa.capabilities.config_projection import MaaConfigProjection
 from plugins.maa.capabilities.environment import MaaEnvironment
-from plugins.maa.capabilities.script import MaaScript
+from plugins.maa.capabilities.script import DEFAULT_MAA_DIR, MaaScript
 from plugins.maa.capabilities.verifier import DEFAULT_POLICY_ID, MaaVerifier
 from plugins.maa.plugin import PLUGIN, load_manifest
 
@@ -115,7 +115,8 @@ def test_config_schema_defaults_match_plugin_doc() -> None:
     """docs/plugins/maa.md 参数 schema 表：默认值逐项一致。"""
     props = load_schema()["properties"]
     assert props["mode"]["default"] == "gui"
-    assert props["maa_dir"]["default"] == "H:/MAA"
+    # schema 是默认值真源；script.py 的兜底常量与此处同步（两处同源维护）。
+    assert props["maa_dir"]["default"] == DEFAULT_MAA_DIR
     assert props["mumu_dir"]["default"] == "H:/MuMuPlayer"
     assert props["adb_address"]["default"] == "127.0.0.1:16384"
     assert props["launch_timeout_s"]["default"] == 180

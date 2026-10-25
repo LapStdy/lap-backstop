@@ -8,7 +8,9 @@ asst.log 只提取 SanityBeforeStage 理智采样；AllTasksCompleted 在整轮
 时间戳取自行首：gui.log 是裸时间戳，asst.log 带方括号前缀。MAA 写本地
 墙钟时间且不带时区标记，按宿主本地时区补全（docs/11：不外传 naive
 datetime）。读取只消费完整行，尾部半行留到下一轮；文件变短视为滚动或
-截断，偏移归零重读。解码坏字节替换为 U+FFFD：观测不能因个别坏字节中断。
+截断，偏移归零重读。滚动检测只认「文件变短」：新文件在两次轮询之间
+长过旧偏移时识别不出，Windows 下没有稳定 inode 可供比对。解码坏字节
+替换为 U+FFFD：观测不能因个别坏字节中断。
 """
 
 from __future__ import annotations
@@ -20,7 +22,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 LOG_DIR_NAME = "debug"
 GUI_LOG_NAME = "gui.log"
@@ -57,7 +58,7 @@ class ParsedSignal:
     """一条已识别的日志信号：名称、时间、参数与原始行。"""
 
     kind: str
-    payload: Mapping[str, Any]
+    payload: Mapping[str, object]
     at: datetime | None
     line: str
 
