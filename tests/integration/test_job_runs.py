@@ -12,7 +12,7 @@ import pytest
 from contracts import EventType, RunState
 from core.clock import VirtualClock
 from core.jobs.errors import IllegalRunTransitionError, RunNotFoundError
-from core.jobs.run_service import JobRunService
+from core.jobs.run_service import DiskFullError, JobRunService
 from storage import migrate, open_database
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import (
@@ -244,3 +244,31 @@ def test_cas_transition_ignores_stale_source(connection: sqlite3.Connection) -> 
     )
     assert not repository.transition(stale)
     assert repository.get(record.id) is not None
+
+
+def test_create_rejected_below_disk_guard(connection: sqlite3.Connection) -> None:
+    limit = 2 * 1024**3
+    service = JobRunService(connection, VirtualClock(NOW), disk_free=lambda: limit - 1)
+    with pytest.raises(DiskFullError) as excinfo:
+        service.create_scheduled(make_run())
+    assert excinfo.value.code == "E_DISK"
+    assert excinfo.value.free_bytes == limit - 1
+    assert connection.execute("SELECT COUNT(*) FROM job_runs").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM run_events").fetchone()[0] == 0
+
+
+def test_create_at_disk_guard_boundary_is_allowed(connection: sqlite3.Connection) -> None:
+    service = JobRunService(connection, VirtualClock(NOW), disk_free=lambda: 2 * 1024**3)
+    record, created = service.create_scheduled(make_run())
+    assert created
+    assert event_types(connection, record.id) == ["run.created"]
+
+
+def test_disk_guard_does_not_reject_idempotent_replay(connection: sqlite3.Connection) -> None:
+    free = {"bytes": 6 * 1024**3}
+    service = JobRunService(connection, VirtualClock(NOW), disk_free=lambda: free["bytes"])
+    record, _ = service.create_scheduled(make_run())
+    free["bytes"] = 1024**3
+    again, created = service.create_scheduled(make_run())
+    assert not created
+    assert again.id == record.id

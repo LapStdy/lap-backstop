@@ -34,6 +34,8 @@ from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+
+_STABLE_DISK_FREE = 100 * 1024**3
 TEMPLATE_ID = "template-1"
 ENV_ID = "env-1"
 SCHEDULE_ID = "schedule-1"
@@ -125,7 +127,9 @@ def supervisor_for(
     clock: VirtualClock,
     data_root: Path,
 ) -> Supervisor:
-    return Supervisor(connection, clock, make_registry(), data_root=data_root)
+    return Supervisor(
+        connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
 
 
 def prepare_run(
@@ -251,7 +255,9 @@ def test_cancel_during_execute_stops_script_gracefully(
             verifier=FakeVerifier(),
         )
     )
-    supervisor = Supervisor(connection, clock, registry, data_root=data_root)
+    supervisor = Supervisor(
+        connection, clock, registry, data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
     adapter.supervisor = supervisor
     supervisor.tick()
     assert runs.get(run_id).state is RunState.CANCELLED
@@ -272,7 +278,13 @@ def test_dispatch_uses_rpc_registry(
     runs.enqueue(run_id)
     plugins_root = Path(__file__).resolve().parents[2] / "plugins"
     with RpcPluginHost(plugins_root, ["fake"]) as host:
-        supervisor = Supervisor(connection, clock, host.registry, data_root=data_root)
+        supervisor = Supervisor(
+            connection,
+            clock,
+            host.registry,
+            data_root=data_root,
+            disk_free=lambda: _STABLE_DISK_FREE,
+        )
         supervisor.tick()
         assert runs.get(run_id).state is RunState.SUCCEEDED
         assert host.channels["fake"].pid is not None

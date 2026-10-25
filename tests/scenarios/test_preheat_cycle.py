@@ -21,6 +21,8 @@ from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, Fake
 from storage import migrate, open_database
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+
+_STABLE_DISK_FREE = 100 * 1024**3
 SCHEDULED_AT = T0 + timedelta(hours=1)
 PREHEAT = timedelta(minutes=10)
 KEEP_WARM = timedelta(minutes=30)
@@ -104,7 +106,9 @@ def test_preheat_creates_run_only_when_trigger_time_arrives(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     connection, clock, runs, data_root = env
-    supervisor = Supervisor(connection, clock, make_registry(), data_root=data_root)
+    supervisor = Supervisor(
+        connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
     clock.jump_to(SCHEDULED_AT - PREHEAT - timedelta(seconds=1))
     supervisor.tick()
     assert runs.non_terminal() == ()
@@ -119,7 +123,9 @@ def test_environment_is_ready_before_scheduled_time_and_executes_on_time(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     connection, clock, runs, data_root = env
-    supervisor = Supervisor(connection, clock, make_registry(), data_root=data_root)
+    supervisor = Supervisor(
+        connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
     clock.jump_to(SCHEDULED_AT - PREHEAT)
     supervisor.tick()
 

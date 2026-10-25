@@ -23,6 +23,8 @@ from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+
+_STABLE_DISK_FREE = 100 * 1024**3
 TEMPLATE_ID = "template-1"
 ENV_ID = "env-1"
 SCHEDULED_AT = T0 + timedelta(minutes=30)
@@ -100,7 +102,9 @@ def supervisor_for(
     clock: VirtualClock,
     data_root: Path,
 ) -> Supervisor:
-    return Supervisor(connection, clock, make_registry(), data_root=data_root)
+    return Supervisor(
+        connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
 
 
 def event_types(runs: JobRunService, run_id: str) -> list[str]:

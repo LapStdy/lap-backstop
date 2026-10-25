@@ -22,7 +22,13 @@ from pathlib import Path
 from types import FrameType
 
 from contracts import Clock, EventType, Logger, RunState
-from core.__main__ import EXIT_ERROR, EXIT_OK, EXIT_SECOND_INSTANCE, resolve_executable_path
+from core.__main__ import (
+    EXIT_DISK_LOW,
+    EXIT_ERROR,
+    EXIT_OK,
+    EXIT_SECOND_INSTANCE,
+    resolve_executable_path,
+)
 from core.clock import SystemClock
 from core.hostops import heartbeat, instance, tasks, watchdog
 from core.hostops.doctor import WINLOGON_KEY, RegistryGet, registry_get
@@ -128,12 +134,14 @@ class ServeLoop:
         self._last_heartbeat_at: datetime | None = None
 
     def run(self) -> int:
-        """循环到停机信号或 tick 上限；正常路径返回 0。"""
+        """循环到停机信号、tick 上限或磁盘 critical；正常路径返回 0，磁盘水位返回 5。"""
         ticks = 0
         while not self._options.stop.is_set() and (
             self._options.max_ticks is None or ticks < self._options.max_ticks
         ):
             self._supervisor.tick()
+            if self._supervisor.is_disk_critical:
+                return EXIT_DISK_LOW
             ticks += 1
             self._write_heartbeat_if_due()
             self._options.stop.wait(self._options.tick_interval_seconds)
