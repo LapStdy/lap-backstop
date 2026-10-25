@@ -1,4 +1,4 @@
-"""build_app 布局用例：版本目录、current 联接、幂等与 data/plugins 隔离。
+r"""build_app 布局用例：版本目录、current 联接、幂等与 data/plugins 隔离。
 
 判据来自 docs/08「路径布局」「升级与回滚」：exe 直接位于版本目录根，
 app\current 是指向最新版本目录的联接，构建只写 app\ 与 build\。PyInstaller
