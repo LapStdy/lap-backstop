@@ -22,7 +22,7 @@ from core.api.fields import (
     require_timestamp,
     require_timezone,
 )
-from core.api.wire import ApiResponse, content_etag
+from core.api.wire import ApiResponse, check_if_match, content_etag
 from storage.db.transaction import transaction
 from storage.defaults import default
 
@@ -90,7 +90,7 @@ def create_schedule(ctx: RequestCtx) -> ApiResponse:
 def put_schedule(ctx: RequestCtx) -> ApiResponse:
     """整行替换修改；带 If-Match 时校验当前 ETag，不符按 E_CONFLICT 拒绝。"""
     row = _require_schedule(ctx)
-    _check_if_match(ctx.headers.get("if-match"), content_etag(row))
+    check_if_match(ctx.headers.get("if-match"), content_etag(row))
     values = schedule_values(body_object(ctx), existing=row)
     _require_template(ctx, str(values["job_template_id"]))
     with transaction(ctx.connection):
@@ -218,13 +218,6 @@ def _new_schedule_id(idempotency_key: str | None) -> str:
     if idempotency_key is None or not idempotency_key.strip():
         return uuid4().hex
     return uuid5(NAMESPACE_URL, f"schedule:{idempotency_key}").hex
-
-
-def _check_if_match(header: str | None, current: str) -> None:
-    """If-Match 校验：``*`` 匹配任意存在；否则必须等于当前 ETag。"""
-    if header is None or header == "*" or header == current:
-        return
-    raise ContractError(ErrorCode.CONFLICT, "If-Match 与当前版本不符，先重读再改")
 
 
 __all__ = [

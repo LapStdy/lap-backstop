@@ -80,14 +80,115 @@ __all__ = [
     "all_settings",
     "bearer_token",
     "delete_schedule",
+    "delete_template",
     "ensure_server_id",
     "insert_schedule",
+    "insert_template",
     "job_template_exists",
     "put_settings",
     "schedule_row",
     "schedule_rows",
+    "template_row",
+    "template_rows",
     "update_schedule",
+    "update_template",
 ]
+
+
+_TEMPLATE_COLUMNS = (
+    "id, name, plugin_id, environment_id, config, config_schema_version, "
+    "verification_policy, recovery_policy, enabled, created_at, updated_at"
+)
+
+
+def template_row(connection: sqlite3.Connection, template_id: str) -> dict[str, Any] | None:
+    """按 id 取模板的 JSON 形态；不存在返回 None。"""
+    row = connection.execute(
+        f"SELECT {_TEMPLATE_COLUMNS} FROM job_templates WHERE id = ?",
+        (template_id,),
+    ).fetchone()
+    return None if row is None else _template_json(row)
+
+
+def template_rows(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """全部模板，按创建时间排序。"""
+    rows = connection.execute(
+        f"SELECT {_TEMPLATE_COLUMNS} FROM job_templates ORDER BY created_at, id"
+    ).fetchall()
+    return [_template_json(row) for row in rows]
+
+
+def insert_template(
+    connection: sqlite3.Connection,
+    values: Mapping[str, Any],
+    *,
+    at: datetime,
+) -> None:
+    """写入一条模板；id 由调用方生成。"""
+    moment = format_at(at)
+    connection.execute(
+        "INSERT INTO job_templates (id, name, plugin_id, environment_id, config, "
+        "config_schema_version, verification_policy, recovery_policy, enabled, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (values["id"], *_template_params(values), moment, moment),
+    )
+
+
+def update_template(
+    connection: sqlite3.Connection,
+    template_id: str,
+    values: Mapping[str, Any],
+    *,
+    at: datetime,
+) -> bool:
+    """整行覆盖更新；行不存在返回 False。"""
+    cursor = connection.execute(
+        "UPDATE job_templates SET name = ?, plugin_id = ?, environment_id = ?, "
+        "config = ?, config_schema_version = ?, verification_policy = ?, "
+        "recovery_policy = ?, enabled = ?, updated_at = ? WHERE id = ?",
+        (*_template_params(values), format_at(at), template_id),
+    )
+    return cursor.rowcount == 1
+
+
+def delete_template(connection: sqlite3.Connection, template_id: str) -> bool:
+    """删除模板；行不存在返回 False，仍被调度或运行引用时抛 IntegrityError。"""
+    cursor = connection.execute("DELETE FROM job_templates WHERE id = ?", (template_id,))
+    return cursor.rowcount == 1
+
+
+def _template_params(values: Mapping[str, Any]) -> tuple[Any, ...]:
+    """JSON 形态到列值的转换；payload 字段序列化成 JSON 文本。"""
+    return (
+        values["name"],
+        values["plugin_id"],
+        values["environment_id"],
+        _dump_payload(values.get("config")),
+        values["config_schema_version"],
+        _dump_payload(values.get("verification_policy")),
+        _dump_payload(values.get("recovery_policy")),
+        int(values["enabled"]),
+    )
+
+
+def _dump_payload(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _template_json(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "name": str(row["name"]),
+        "plugin_id": str(row["plugin_id"]),
+        "environment_id": str(row["environment_id"]),
+        "config": json.loads(str(row["config"])),
+        "config_schema_version": str(row["config_schema_version"]),
+        "verification_policy": json.loads(str(row["verification_policy"])),
+        "recovery_policy": json.loads(str(row["recovery_policy"])),
+        "enabled": bool(row["enabled"]),
+        "created_at": str(row["created_at"]),
+        "updated_at": str(row["updated_at"]),
+    }
 
 
 _SCHEDULE_COLUMNS = (

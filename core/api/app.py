@@ -24,6 +24,13 @@ from core.api.schedules_api import (
     put_schedule,
 )
 from core.api.system_api import get_settings, health, put_settings
+from core.api.templates_api import (
+    create_template,
+    delete_template,
+    get_template,
+    list_templates,
+    put_template,
+)
 from core.api.wire import ApiRequest, ApiResponse, decode_json, error_response
 from core.clock import SystemClock
 from core.logging import NullLogger
@@ -50,6 +57,11 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", ("schedules", "{id}"), get_schedule),
     Route("PUT", ("schedules", "{id}"), put_schedule),
     Route("DELETE", ("schedules", "{id}"), delete_schedule),
+    Route("GET", ("job-templates",), list_templates),
+    Route("POST", ("job-templates",), create_template),
+    Route("GET", ("job-templates", "{id}"), get_template),
+    Route("PUT", ("job-templates", "{id}"), put_template),
+    Route("DELETE", ("job-templates", "{id}"), delete_template),
 )
 
 

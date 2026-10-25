@@ -67,9 +67,21 @@ def content_etag(payload: object) -> str:
     return f'"{digest}"'
 
 
+def check_if_match(header: str | None, current: str) -> None:
+    """If-Match 校验：``*`` 匹配任意存在；否则必须等于当前 ETag。
+
+    Raises:
+        ContractError: 头存在且不匹配当前版本，错误码 E_CONFLICT。
+    """
+    if header is None or header == "*" or header == current:
+        return
+    raise ContractError(ErrorCode.CONFLICT, "If-Match 与当前版本不符，先重读再改")
+
+
 __all__ = [
     "ApiRequest",
     "ApiResponse",
+    "check_if_match",
     "content_etag",
     "decode_json",
     "encode_json",
