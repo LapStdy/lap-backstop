@@ -193,7 +193,10 @@ class Supervisor:
             )
 
     def _probe_environments(self) -> None:
-        """启动探测与运行恢复互相独立：不管运行重建结果如何，中间态环境各探一次。"""
+        """启动探测与运行恢复互相独立：不管运行重建结果如何，中间态环境各探一次。
+
+        只挂在启动扫描上，tick 不探测；探后仍 unknown 的等下一次启动再判，本轮不补探。
+        """
         now = self._clock.utc_now()
         for row in self._environments.list_all():
             if row.state in _STARTUP_PROBE_SKIP:

@@ -231,6 +231,41 @@ def test_startup_probe_timeout_marks_unknown(
     assert env_transitions(connection, ENV_ID) == [("busy", "unknown")]
 
 
+def test_startup_probes_degraded_environment_to_unknown(
+    env: Env,
+) -> None:
+    connection, clock, _runs, service, provider, data_root = env
+    make_env(service)
+    crash_leave(connection, ENV_ID, EnvironmentState.DEGRADED)
+    provider.script(ENV_ID, [TimeoutError("探针超时")])
+
+    supervisor_for(connection, clock, provider, data_root).startup()
+
+    assert service.get(ENV_ID).state is EnvironmentState.UNKNOWN
+    assert provider.probe_calls[ENV_ID] == 1
+    assert env_transitions(connection, ENV_ID) == [("degraded", "unknown")]
+
+
+def test_unknown_environment_waits_next_startup_not_ticks(
+    env: Env,
+) -> None:
+    connection, clock, _runs, service, provider, data_root = env
+    make_env(service)
+    crash_leave(connection, ENV_ID, EnvironmentState.BUSY)
+    provider.script(ENV_ID, [TimeoutError("探针超时")])
+    supervisor = supervisor_for(connection, clock, provider, data_root)
+
+    supervisor.startup()
+    assert provider.probe_calls[ENV_ID] == 1
+
+    clock.jump_to(T0 + timedelta(minutes=10))
+    for _ in range(3):
+        supervisor.tick()
+
+    assert provider.probe_calls[ENV_ID] == 1
+    assert service.get(ENV_ID).state is EnvironmentState.UNKNOWN
+
+
 def test_consecutive_unknown_recovers_on_later_probe(
     env: Env,
 ) -> None:
