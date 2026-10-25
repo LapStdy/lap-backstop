@@ -1,0 +1,14 @@
+{
+  "id": "maa",
+  "name": "MAA · 明日方舟",
+  "version": "1.0.0",
+  "api_version": 1,
+  "description": "驱动 MAA 完成明日方舟日常并验证结果",
+  "capabilities": ["environment", "script", "verifier", "config_projection"],
+  "config_schema": "config.schema.json",
+  "requires": {
+    "contract": ">=1 <2",
+    "platform": "windows",
+    "python": ">=3.12"
+  }
+}

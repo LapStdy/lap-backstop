@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plugin://maa/config/1",
+  "x-schema-version": 1,
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "maa_dir": {
+      "type": "string",
+      "title": "MAA 目录",
+      "default": "H:/MAA"
+    },
+    "mode": {
+      "type": "string",
+      "title": "脚本模式",
+      "enum": ["gui", "binding"],
+      "default": "gui"
+    },
+    "mumu_dir": {
+      "type": "string",
+      "title": "MuMu 安装目录",
+      "default": "H:/MuMuPlayer"
+    },
+    "adb_address": {
+      "type": "string",
+      "title": "模拟器 adb 地址",
+      "default": "127.0.0.1:16384"
+    },
+    "profile": {
+      "type": "string",
+      "title": "MAA 配置名",
+      "description": "留空时使用 gui.new.json 里 Current 指向的配置"
+    },
+    "tasks": {
+      "type": "array",
+      "title": "任务队列",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "title": "任务类型",
+            "enum": [
+              "StartUpTask",
+              "CloseDownTask",
+              "FightTask",
+              "OperProgressTask",
+              "AwardTask",
+              "MallTask",
+              "InfrastTask",
+              "RecruitTask",
+              "RoguelikeTask",
+              "CopilotTask",
+              "SSSCopilotTask",
+              "SingleStepTask",
+              "DepotTask",
+              "OperBoxTask",
+              "UserDataUpdateTask",
+              "ReclamationTask",
+              "DepotMaintainTask",
+              "SwitchThemeTask",
+              "CustomTask"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "title": "任务名"
+          },
+          "enabled": {
+            "type": "boolean",
+            "title": "是否启用",
+            "default": true
+          },
+          "params": {
+            "type": "object",
+            "title": "任务参数",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "launch_timeout_s": {
+      "type": "integer",
+      "title": "启动到资源加载完成的上限（秒）",
+      "minimum": 1,
+      "default": 180
+    },
+    "wake_timeout_s": {
+      "type": "integer",
+      "title": "开始唤醒到主界面的上限（秒）",
+      "minimum": 1,
+      "default": 90
+    },
+    "startup_timeout_s": {
+      "type": "integer",
+      "title": "游戏启动到登录界面的上限（秒）",
+      "minimum": 1,
+      "default": 300
+    },
+    "sample_interval_s": {
+      "type": "integer",
+      "title": "运行期抽帧间隔（秒）",
+      "minimum": 1,
+      "default": 30
+    },
+    "keep_warm_minutes": {
+      "type": "integer",
+      "title": "运行结束后保持环境就绪的时长（分钟）",
+      "minimum": 0,
+      "default": 30
+    },
+    "config_projection": {
+      "type": "object",
+      "title": "配置投影",
+      "additionalProperties": false,
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "开跑前对账并写入",
+          "default": true
+        },
+        "backup_keep": {
+          "type": "integer",
+          "title": "备份保留份数",
+          "minimum": 1,
+          "default": 20
+        }
+      }
+    }
+  }
+}
