@@ -12,7 +12,15 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from contracts import Clock, EnvironmentRef, EventType, Logger, RunContext, RunState
+from contracts import (
+    Clock,
+    EnvironmentRef,
+    EnvironmentState,
+    EventType,
+    Logger,
+    RunContext,
+    RunState,
+)
 from core.environments.service import EnvironmentCall, EnvironmentService
 from core.events.replay import ReplayError, RunSnapshot, replay_run
 from core.jobs.run_service import JobRunService
@@ -50,6 +58,9 @@ _ORPHAN_STATES = frozenset(
         RunState.CLEANING,
     }
 )
+# 崩溃只让中间态失真：off 是稳定关机、ready 可被下一次运行直接复用，
+# 其余状态都可能是崩溃瞬间的半程，启动时必须重新探测（docs/09）。
+_STARTUP_PROBE_SKIP = frozenset({EnvironmentState.OFF, EnvironmentState.READY})
 
 
 class Supervisor:
@@ -80,7 +91,7 @@ class Supervisor:
         self._last_renew_at: datetime | None = None
 
     def startup(self) -> tuple[JobRunRecord, ...]:
-        """启动扫描：按事件流回放重建状态再决策，孤儿记 unknown，恢复重排队，回收孤儿租约。"""
+        """启动扫描：重建运行、回收孤儿租约，最后对状态不明的环境各探一次。"""
         settled: list[JobRunRecord] = []
         for run in self._runs.non_terminal():
             snapshot = self._replay(run)
@@ -98,6 +109,7 @@ class Supervisor:
             run = self._runs.get(lease.run_id)
             if run is None or is_terminal(run.state):
                 self._release_orphan(lease)
+        self._probe_environments()
         return tuple(settled)
 
     def tick(self) -> None:
@@ -180,6 +192,32 @@ class Supervisor:
                 }
             )
 
+    def _probe_environments(self) -> None:
+        """启动探测与运行恢复互相独立：不管运行重建结果如何，中间态环境各探一次。"""
+        now = self._clock.utc_now()
+        for row in self._environments.list_all():
+            if row.state in _STARTUP_PROBE_SKIP:
+                continue
+            try:
+                provider = self._registry.environment(row.provider_id)
+            except Exception as error:
+                self._log.warn(
+                    {
+                        "event": "supervisor.probe_provider_missing",
+                        "environment_id": row.id,
+                        "error": str(error),
+                    }
+                )
+                self._environments.mark_unknown(row.id, detail=f"探针不可用：{error}")
+                continue
+            call = EnvironmentCall(
+                environment_id=row.id,
+                provider=provider,
+                ref=EnvironmentRef(id=row.id, provider_id=row.provider_id),
+                ctx=self._standalone_context(row, now, "probe"),
+            )
+            self._environments.probe(call)
+
     def _expire_leases(self, now: datetime) -> None:
         for lease in self._leases.expire(now):
             self._lease_lost(lease)
@@ -244,7 +282,7 @@ class Supervisor:
                 environment_id=row.id,
                 provider=provider,
                 ref=EnvironmentRef(id=row.id, provider_id=row.provider_id),
-                ctx=self._warm_context(row, now),
+                ctx=self._standalone_context(row, now, "warm"),
             )
             self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
         except Exception as error:
@@ -256,9 +294,14 @@ class Supervisor:
                 }
             )
 
-    def _warm_context(self, row: EnvironmentRow, now: datetime) -> RunContext:
-        """保温关闭没有运行归属，给插件一份最小上下文；该路径不接受证据。"""
-        run_id = f"warm:{row.id}"
+    def _standalone_context(
+        self,
+        row: EnvironmentRow,
+        now: datetime,
+        purpose: str,
+    ) -> RunContext:
+        """无运行归属的内核动作（保温关闭、启动探测）给插件的最小上下文；不接受证据。"""
+        run_id = f"{purpose}:{row.id}"
         return RunContext(
             run_id=run_id,
             attempt=0,
@@ -332,7 +375,8 @@ class Supervisor:
 
 
 def _reject_evidence(kind: str, path: Path, summary: str) -> str:
-    raise ValueError("保温关闭不接收证据")
+    """拒绝证据写入：无运行归属的动作没有可挂靠的运行与证据目录。"""
+    raise ValueError("无运行归属的内核动作不接收证据")
 
 
 def _retry_at(run: JobRunRecord) -> datetime | None:

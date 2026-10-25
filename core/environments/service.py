@@ -57,13 +57,45 @@ class EnvironmentService:
             raise EnvironmentNotFoundError(f"环境不存在：{environment_id}")
         return row
 
-    def probe(self, call: EnvironmentCall) -> EnvironmentProbe:
-        """调用插件探针并把结果落成状态迁移。"""
+    def list_all(self) -> tuple[EnvironmentRow, ...]:
+        """全部环境，按 id 排序。"""
+        return self._environments.list_all()
+
+    def probe(self, call: EnvironmentCall) -> EnvironmentProbe | None:
+        """调用插件探针并把结果落成状态迁移。
+
+        探针调用失败或结果无法从当前状态迁入时按状态不明处置：环境置 unknown，
+        等下一次探测再判定，不向调用方抛错；已在 unknown 时只刷新观测时间（docs/02）。
+        探针本身失败时返回 None。
+        """
         row = self.get(call.environment_id)
-        probe = call.provider.probe(call.ref, call.ctx)
-        at = probe.observed_at if probe.observed_at is not None else self._clock.utc_now()
-        self._apply(row, probe.state, at=at, detail={"detail": probe.detail})
+        now = self._clock.utc_now()
+        try:
+            probe = call.provider.probe(call.ref, call.ctx)
+        except Exception as error:
+            self.mark_unknown(call.environment_id, detail=f"探针失败：{error}")
+            return None
+        at = probe.observed_at if probe.observed_at is not None else now
+        try:
+            self._apply(row, probe.state, at=at, detail={"detail": probe.detail})
+        except EnvironmentStateError:
+            self._apply(
+                row,
+                EnvironmentState.UNKNOWN,
+                at=at,
+                detail={"detail": f"探针报告 {probe.state.value}，不允许从 {row.state.value} 迁入"},
+            )
         return probe
+
+    def mark_unknown(self, environment_id: str, *, detail: str) -> EnvironmentRow:
+        """状态不明（探针不可用等）：置 unknown，等下一次探测再判定。"""
+        row = self.get(environment_id)
+        return self._apply(
+            row,
+            EnvironmentState.UNKNOWN,
+            at=self._clock.utc_now(),
+            detail={"detail": detail},
+        )
 
     def prepare(self, call: EnvironmentCall) -> PhaseResult:
         """准备环境：unknown/off/failed 先进入 booting，成功后 ready。"""

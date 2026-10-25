@@ -78,16 +78,20 @@ class StubProvider:
         reset_ok: bool = True,
         cleanup_ok: bool = True,
         warm_ok: bool = True,
+        probe_error: Exception | None = None,
     ) -> None:
         self._states = list(states or [])
         self.prepare_ok = prepare_ok
         self.reset_ok = reset_ok
         self.cleanup_ok = cleanup_ok
         self.warm_ok = warm_ok
+        self.probe_error = probe_error
         self.calls: list[str] = []
 
     def probe(self, env: EnvironmentRef, ctx: RunContext) -> EnvironmentProbe:
         self.calls.append("probe")
+        if self.probe_error is not None:
+            raise self.probe_error
         state = self._states.pop(0) if self._states else EnvironmentState.READY
         return EnvironmentProbe(state=state, detail="stub", observed_at=ctx.clock.utc_now())
 
@@ -172,15 +176,29 @@ def test_probe_same_state_only_refreshes_observation(
     assert service.get(ENV_ID).last_probe_at == T0 + timedelta(minutes=1)
 
 
-def test_illegal_probe_transition_is_rejected(
+def test_illegal_probe_transition_marks_unknown(
     env: tuple[sqlite3.Connection, VirtualClock, EnvironmentService],
 ) -> None:
     _connection, clock, service = env
     service.prepare(make_call(StubProvider(), clock))
     service.cleanup(make_call(StubProvider(), clock), keep_warm=False, warm_minutes=0)
-    with pytest.raises(EnvironmentStateError):
-        service.probe(make_call(StubProvider([EnvironmentState.READY]), clock))
-    assert service.get(ENV_ID).state is EnvironmentState.OFF
+    probe = service.probe(make_call(StubProvider([EnvironmentState.READY]), clock))
+    assert probe is not None and probe.state is EnvironmentState.READY
+    assert service.get(ENV_ID).state is EnvironmentState.UNKNOWN
+    last = state_events(_connection)[-1]
+    assert (last["from_state"], last["to_state"]) == ("off", "unknown")
+
+
+def test_probe_failure_marks_unknown_and_returns_none(
+    env: tuple[sqlite3.Connection, VirtualClock, EnvironmentService],
+) -> None:
+    _connection, clock, service = env
+    service.prepare(make_call(StubProvider(), clock))
+    probe = service.probe(make_call(StubProvider(probe_error=TimeoutError("探针超时")), clock))
+    assert probe is None
+    assert service.get(ENV_ID).state is EnvironmentState.UNKNOWN
+    last = state_events(_connection)[-1]
+    assert (last["from_state"], last["to_state"]) == ("ready", "unknown")
 
 
 def test_prepare_moves_unknown_to_ready(

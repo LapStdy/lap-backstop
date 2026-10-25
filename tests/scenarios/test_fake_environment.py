@@ -121,7 +121,11 @@ def test_slow_probe_advances_to_ready(
     connection, clock, service = env
     provider = FakeEnvironmentProvider()
     call = make_call(provider, clock, "slow", slow_probes=2)
-    states = [service.probe(call).state for _ in range(3)]
+    states: list[EnvironmentState] = []
+    for _ in range(3):
+        probe = service.probe(call)
+        assert probe is not None
+        states.append(probe.state)
     assert states == [
         EnvironmentState.BOOTING,
         EnvironmentState.BOOTING,
