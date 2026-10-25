@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
+from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 
 from contracts import TERMINAL_RUN_STATES, Clock, EventType, RunState
-from core.jobs.errors import IllegalRunTransitionError, RunNotFoundError
+from core.jobs.errors import IllegalRunTransitionError, JobRunError, RunNotFoundError
 from core.jobs.state_machine import can_transition, is_terminal
 from storage.db.transaction import transaction
 from storage.repositories.events import EventLog, StoredEvent
@@ -17,13 +20,39 @@ from storage.repositories.job_runs import (
     StateChange,
 )
 
+# docs/08 磁盘三级水位的字节阈值真源：warn 告警、guard 拒建、critical 停机。
+DISK_WARN_BYTES = 5 * 1024**3
+DISK_GUARD_BYTES = 2 * 1024**3
+DISK_CRITICAL_BYTES = 500 * 1024**2
+
+
+class DiskFullError(JobRunError):
+    """磁盘可用空间低于 2 GB 守护线，拒绝创建新运行（docs/08）。"""
+
+    code = "E_DISK"
+
+    def __init__(self, message: str, *, free_bytes: int) -> None:
+        super().__init__(message)
+        self.free_bytes = free_bytes
+
 
 class JobRunService:
-    """把状态机、仓储与事件日志拼成一次可回放的运行生命周期。"""
+    """把状态机、仓储与事件日志拼成一次可回放的运行生命周期。
 
-    def __init__(self, connection: sqlite3.Connection, clock: Clock) -> None:
+    ``disk_free`` 返回数据根所在卷的可用字节数；为 None 时 2 GB 守卫不生效，
+    由组合根（Supervisor）注入真实卷。
+    """
+
+    def __init__(
+        self,
+        connection: sqlite3.Connection,
+        clock: Clock,
+        *,
+        disk_free: Callable[[], int | None] | None = None,
+    ) -> None:
         self._connection = connection
         self._clock = clock
+        self._disk_free = disk_free
         self._runs = JobRunRepository(connection)
         self._events = EventLog(connection)
 
@@ -43,10 +72,19 @@ class JobRunService:
 
         Returns:
             (记录, 是否新建)；重复发生点命中幂等键时返回既有记录与 False。
+
+        Raises:
+            DiskFullError: 新建时磁盘低于 2 GB 守护线，本次插入整笔回滚（docs/08）。
         """
         with transaction(self._connection):
             record, created = self._runs.create_or_get(run)
             if created:
+                free = None if self._disk_free is None else self._disk_free()
+                if free is not None and free < DISK_GUARD_BYTES:
+                    raise DiskFullError(
+                        f"磁盘可用 {free} 字节，低于守护线 {DISK_GUARD_BYTES} 字节，拒绝创建新运行",
+                        free_bytes=free,
+                    )
                 self._events.append_run(
                     record.id,
                     EventType.RUN_CREATED,
@@ -218,6 +256,14 @@ class JobRunService:
             },
             at=at,
         )
+
+
+def disk_free_bytes(path: Path) -> int | None:
+    """path 所在卷的可用字节数；卷不可达（U 盘拔出等）返回 None。"""
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return None
 
 
 def _created_payload(

@@ -24,6 +24,8 @@ from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+
+_STABLE_DISK_FREE = 100 * 1024**3
 TEMPLATE_ID = "template-1"
 ENV_ID = "env-1"
 LEASE_TTL = timedelta(minutes=10)
@@ -111,7 +113,9 @@ def test_second_run_waits_for_environment_until_first_releases_lease(
     connection, clock, runs, data_root = env
     first = prepare_run(runs, key="first", priority=10)
     second = prepare_run(runs, key="second")
-    supervisor = Supervisor(connection, clock, make_registry(), data_root=data_root)
+    supervisor = Supervisor(
+        connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
 
     supervisor.tick()
     assert runs.get(first).state is RunState.SUCCEEDED
@@ -135,7 +139,9 @@ def test_expired_lease_is_handed_to_queued_run_and_holder_retries(
     LeaseService(connection, clock).acquire(first, (ENV_ID,), ttl=LEASE_TTL)
     second = prepare_run(runs, key="second")
 
-    supervisor = Supervisor(connection, clock, make_registry(), data_root=data_root)
+    supervisor = Supervisor(
+        connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
     clock.jump_to(T0 + LEASE_TTL + timedelta(minutes=1))
     supervisor.tick()
 
@@ -164,7 +170,9 @@ def test_exhausted_lease_recovery_marks_run_failed(
     ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
     LeaseService(connection, clock).acquire(run_id, (ENV_ID,), ttl=LEASE_TTL)
 
-    supervisor = Supervisor(connection, clock, make_registry(), data_root=data_root)
+    supervisor = Supervisor(
+        connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
     clock.jump_to(T0 + LEASE_TTL + timedelta(seconds=1))
     supervisor.tick()
 

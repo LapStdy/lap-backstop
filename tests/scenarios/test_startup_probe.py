@@ -28,6 +28,8 @@ from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 
 T0 = datetime(2026, 10, 25, 8, 0, tzinfo=UTC)
+
+_STABLE_DISK_FREE = 100 * 1024**3
 TEMPLATE_ID = "template-1"
 ENV_ID = "env-1"
 PLUGIN_ID = "probe"
@@ -122,7 +124,9 @@ def supervisor_for(
             verifier=FakeVerifier(),
         )
     )
-    return Supervisor(connection, clock, registry, data_root=data_root)
+    return Supervisor(
+        connection, clock, registry, data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
 
 
 def prepare_run(runs: JobRunService, *, key: str) -> str:

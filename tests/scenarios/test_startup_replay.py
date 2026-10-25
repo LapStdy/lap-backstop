@@ -21,6 +21,8 @@ from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 
 T0 = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
+
+_STABLE_DISK_FREE = 100 * 1024**3
 TEMPLATE_ID = "template-1"
 ENV_ID = "env-1"
 
@@ -87,7 +89,9 @@ def supervisor_for(
     clock: VirtualClock,
     data_root: Path,
 ) -> Supervisor:
-    return Supervisor(connection, clock, make_registry(), data_root=data_root)
+    return Supervisor(
+        connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
 
 
 def last_state_change(runs: JobRunService, run_id: str) -> tuple[str, str, str] | None:
