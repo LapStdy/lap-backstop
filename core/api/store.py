@@ -33,12 +33,18 @@ def put_settings(
     """整批写入配置项；事务边界由调用方包裹。"""
     moment = format_at(at)
     for key, value in values.items():
-        connection.execute(
-            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
-            "ON CONFLICT (key) DO UPDATE SET value = excluded.value, "
-            "updated_at = excluded.updated_at",
-            (key, json.dumps(value, ensure_ascii=False, sort_keys=True), moment),
-        )
+        payload = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        _upsert_setting(connection, key, payload, moment)
+
+
+def _upsert_setting(connection: sqlite3.Connection, key: str, value_json: str, moment: str) -> None:
+    """写入或覆盖一个配置项；settings 表以 key 为主键。"""
+    connection.execute(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT (key) DO UPDATE SET value = excluded.value, "
+        "updated_at = excluded.updated_at",
+        (key, value_json, moment),
+    )
 
 
 def bearer_token(connection: sqlite3.Connection) -> str | None:
@@ -64,11 +70,7 @@ def ensure_server_id(connection: sqlite3.Connection, *, at: datetime) -> str:
         if isinstance(value, str) and value:
             return value
     server_id = uuid4().hex
-    connection.execute(
-        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
-        "ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
-        (SERVER_ID_KEY, json.dumps(server_id), format_at(at)),
-    )
+    _upsert_setting(connection, SERVER_ID_KEY, json.dumps(server_id), format_at(at))
     return server_id
 
 
