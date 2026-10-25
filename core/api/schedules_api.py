@@ -1,4 +1,4 @@
-"""调度端点：列表、详情、新建（docs/03 端点表与 schedules 字段表）。
+"""调度端点：CRUD 与手动触发（docs/03 端点表、schedules 与 request_idempotency 字段表）。
 
 字段校验的规则：可选字段缺省取 config/defaults.toml 的 [scheduler] 基线；
 ``window_minutes <= deadline_minutes`` 违反按 E_CONFIG 拒绝（docs/03 保存校验）；
@@ -8,10 +8,11 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import timedelta
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
-from contracts import ContractError, ErrorCode
+from contracts import Clock, ContractError, ErrorCode
 from core.api import store
 from core.api.ctx import RequestCtx, body_object
 from core.api.fields import (
@@ -22,9 +23,13 @@ from core.api.fields import (
     require_timestamp,
     require_timezone,
 )
+from core.api.runs_api import run_json
 from core.api.wire import ApiResponse, check_if_match, content_etag
+from core.jobs.run_service import JobRunService
 from storage.db.transaction import transaction
 from storage.defaults import default
+from storage.repositories.job_runs import JobRunRecord, JobRunRepository, NewRun
+from storage.repositories.job_templates import JobTemplateRepository
 
 KINDS = frozenset({"cron", "at", "interval"})
 CATCH_UPS = frozenset({"run_once", "skip", "window"})
@@ -58,6 +63,51 @@ _INT_MINUTES = (
 def list_schedules(ctx: RequestCtx) -> ApiResponse:
     """调度列表，按创建时间排序。"""
     return ApiResponse(status=200, payload={"schedules": store.schedule_rows(ctx.connection)})
+
+
+def run_now(ctx: RequestCtx) -> ApiResponse:
+    """手动立即跑一次；必须带 Idempotency-Key，同一键重复提交返回同一运行。"""
+    row = _require_schedule(ctx)
+    key = ctx.headers.get("idempotency-key", "").strip()
+    if not key:
+        raise ContractError(ErrorCode.BAD_REQUEST, "缺少 Idempotency-Key 请求头")
+    if not JobTemplateRepository(ctx.connection).get(str(row["job_template_id"])):
+        raise ContractError(ErrorCode.NOT_FOUND, f"作业模板不存在：{row['job_template_id']}")
+    with transaction(ctx.connection):
+        record, created = _manual_run(ctx.connection, ctx.clock, row, key)
+    return ApiResponse(
+        status=201 if created else 200,
+        payload={"run": run_json(record)},
+    )
+
+
+def _manual_run(
+    connection: sqlite3.Connection,
+    clock: Clock,
+    row: dict[str, Any],
+    key: str,
+) -> tuple[JobRunRecord, bool]:
+    """事务内建手动运行并登记幂等键；键已命中时返回既有运行。"""
+    hit = store.run_now_run_id(connection, key)
+    if hit is not None:
+        record = JobRunRepository(connection).get(hit)
+        if record is not None:
+            return record, False
+    now = clock.utc_now()
+    record, created = JobRunService(connection, clock).create_scheduled(
+        NewRun(
+            template_id=str(row["job_template_id"]),
+            schedule_id=str(row["id"]),
+            scheduled_at=now,
+            created_at=now,
+            idempotency_key=f"manual:{key}",
+            priority=int(row["priority"]),
+            deadline_at=now + timedelta(minutes=int(row["deadline_minutes"])),
+            detail={"trigger": "manual"},
+        )
+    )
+    store.record_run_now(connection, key, record.id, at=now)
+    return record, created
 
 
 def get_schedule(ctx: RequestCtx) -> ApiResponse:
@@ -226,5 +276,6 @@ __all__ = [
     "get_schedule",
     "list_schedules",
     "put_schedule",
+    "run_now",
     "schedule_values",
 ]

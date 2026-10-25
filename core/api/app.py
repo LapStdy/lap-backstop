@@ -23,6 +23,7 @@ from core.api.schedules_api import (
     get_schedule,
     list_schedules,
     put_schedule,
+    run_now,
 )
 from core.api.system_api import get_settings, health, put_settings
 from core.api.templates_api import (
@@ -66,6 +67,7 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", ("runs",), list_runs),
     Route("GET", ("runs", "{id}"), get_run),
     Route("POST", ("runs", "{id}", "stop"), stop_run),
+    Route("POST", ("schedules", "{id}", "run"), run_now),
 )
 
 

@@ -88,6 +88,8 @@ __all__ = [
     "insert_template",
     "job_template_exists",
     "put_settings",
+    "record_run_now",
+    "run_now_run_id",
     "run_rows",
     "schedule_row",
     "schedule_rows",
@@ -192,6 +194,30 @@ def _template_json(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": str(row["created_at"]),
         "updated_at": str(row["updated_at"]),
     }
+
+
+def run_now_run_id(connection: sqlite3.Connection, key: str) -> str | None:
+    """按 Idempotency-Key 查 run_now 作用域命中的运行；未命中返回 None。"""
+    row = connection.execute(
+        "SELECT run_id FROM request_idempotency WHERE key = ? AND scope = 'run_now'",
+        (key,),
+    ).fetchone()
+    return None if row is None else str(row["run_id"])
+
+
+def record_run_now(
+    connection: sqlite3.Connection,
+    key: str,
+    run_id: str,
+    *,
+    at: datetime,
+) -> None:
+    """登记幂等键与命中的运行；键已存在时保留原映射。"""
+    connection.execute(
+        "INSERT INTO request_idempotency (key, scope, run_id, created_at) "
+        "VALUES (?, 'run_now', ?, ?) ON CONFLICT (key) DO NOTHING",
+        (key, run_id, format_at(at)),
+    )
 
 
 _RUN_COLUMNS = (
