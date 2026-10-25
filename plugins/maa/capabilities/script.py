@@ -194,7 +194,8 @@ def _drain(
     for text in chunk.lines:
         hit = parse(text)
         if hit is None:
-            unknown += 1 if text.strip() else 0
+            if text.strip():
+                unknown += 1
             continue
         # 原始行是验证器的证据材料；契约 Signal 没有独立字段，随载荷过境。
         signals.append(
