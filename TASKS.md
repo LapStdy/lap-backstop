@@ -7,6 +7,7 @@
 - [ ] pre-commit 钩子跑 `scripts/gate.py`，钩子失败不允许提交。
 - [ ] 崩溃恢复后对环境做一次 probe，状态不明进入 unknown 并等待下一次 probe（docs/09）。
 - [ ] 看门狗、单实例、doctor 自检、磁盘水位。
+- [ ] 打包件收尾：`scripts/build_app.py` 产出 `app\releases\<version>\` 并维护 `app\current` 联接，`doctor` 冒烟通过；serve 在打包件下的 worker 拉起、`backup` 与 `db check` 子命令在后续任务补齐。
 
 验收：fake 插件在虚拟时钟下跑通 30 天调度；崩溃恢复后状态一致；场景测试全绿。
 
