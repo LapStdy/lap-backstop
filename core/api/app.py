@@ -16,7 +16,7 @@ from pathlib import Path
 from contracts import Clock, ContractError, ErrorCode, Logger
 from core.api import store
 from core.api.ctx import Handler, RequestCtx
-from core.api.system_api import health
+from core.api.system_api import get_settings, health, put_settings
 from core.api.wire import ApiRequest, ApiResponse, decode_json, error_response
 from core.clock import SystemClock
 from core.logging import NullLogger
@@ -34,7 +34,11 @@ class Route:
     handler: Handler
 
 
-ROUTES: tuple[Route, ...] = (Route("GET", ("health",), health),)
+ROUTES: tuple[Route, ...] = (
+    Route("GET", ("health",), health),
+    Route("GET", ("settings",), get_settings),
+    Route("PUT", ("settings",), put_settings),
+)
 
 
 class ApiApp:

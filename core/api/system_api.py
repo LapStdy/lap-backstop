@@ -1,14 +1,16 @@
-"""系统端点：health 存活检查（docs/03：存活、版本、server_id、能力）。"""
+"""系统端点：health 存活检查与 settings 读写（docs/03 端点表）。"""
 
 from __future__ import annotations
 
+from contracts import ContractError, ErrorCode
 from core.api import store
 from core.api.ctx import RequestCtx
 from core.api.wire import ApiResponse
 from core.hostops.serve import executable_version
+from storage.db.transaction import transaction
 
 # 能力清单列出本构建已落地的端点组；SSE 与导出不在本卡。
-CAPABILITIES: tuple[str, ...] = ("health",)
+CAPABILITIES: tuple[str, ...] = ("health", "settings")
 
 
 def health(ctx: RequestCtx) -> ApiResponse:
@@ -25,4 +27,18 @@ def health(ctx: RequestCtx) -> ApiResponse:
     )
 
 
-__all__ = ["CAPABILITIES", "health"]
+def get_settings(ctx: RequestCtx) -> ApiResponse:
+    """全部配置项，value 按落库 JSON 原样返回。"""
+    return ApiResponse(status=200, payload={"settings": store.all_settings(ctx.connection)})
+
+
+def put_settings(ctx: RequestCtx) -> ApiResponse:
+    """整批写入配置项并回读全量，写后即可见。"""
+    if not isinstance(ctx.body, dict):
+        raise ContractError(ErrorCode.BAD_REQUEST, "settings 请求体必须是 JSON 对象")
+    with transaction(ctx.connection):
+        store.put_settings(ctx.connection, ctx.body, at=ctx.clock.utc_now())
+    return get_settings(ctx)
+
+
+__all__ = ["CAPABILITIES", "get_settings", "health", "put_settings"]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from core.api.server import ApiOptions, ApiServer, start_api_server
 from core.api.wire import (
     ApiRequest,
     ApiResponse,
@@ -12,10 +13,13 @@ from core.api.wire import (
 )
 
 __all__ = [
+    "ApiOptions",
     "ApiRequest",
     "ApiResponse",
+    "ApiServer",
     "content_etag",
     "decode_json",
     "encode_json",
     "error_response",
+    "start_api_server",
 ]
