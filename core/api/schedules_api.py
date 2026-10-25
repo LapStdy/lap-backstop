@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import datetime
 from typing import Any
 from uuid import NAMESPACE_URL, uuid4, uuid5
@@ -78,6 +79,42 @@ def create_schedule(ctx: RequestCtx) -> ApiResponse:
         payload={"schedule": row},
         etag=content_etag(row),
     )
+
+
+def put_schedule(ctx: RequestCtx) -> ApiResponse:
+    """整行替换修改；带 If-Match 时校验当前 ETag，不符按 E_CONFLICT 拒绝。"""
+    row = _require_schedule(ctx)
+    _check_if_match(ctx.headers.get("if-match"), content_etag(row))
+    values = schedule_values(body_object(ctx), existing=row)
+    _require_template(ctx, str(values["job_template_id"]))
+    with transaction(ctx.connection):
+        updated = store.update_schedule(
+            ctx.connection,
+            ctx.params["id"],
+            values,
+            at=ctx.clock.utc_now(),
+        )
+    if not updated:
+        raise ContractError(ErrorCode.NOT_FOUND, f"调度不存在：{ctx.params['id']}")
+    updated_row = _require_schedule(ctx)
+    return ApiResponse(
+        status=200,
+        payload={"schedule": updated_row},
+        etag=content_etag(updated_row),
+    )
+
+
+def delete_schedule(ctx: RequestCtx) -> ApiResponse:
+    """删除调度；仍被运行记录引用时按 E_CONFLICT 拒绝。"""
+    _require_schedule(ctx)
+    try:
+        with transaction(ctx.connection):
+            removed = store.delete_schedule(ctx.connection, ctx.params["id"])
+    except sqlite3.IntegrityError as error:
+        raise ContractError(ErrorCode.CONFLICT, "调度仍被运行记录引用，不能删除") from error
+    if not removed:
+        raise ContractError(ErrorCode.NOT_FOUND, f"调度不存在：{ctx.params['id']}")
+    return ApiResponse(status=204, payload=None)
 
 
 def schedule_values(body: dict[str, Any], existing: dict[str, Any] | None) -> dict[str, Any]:
@@ -161,6 +198,13 @@ def _new_schedule_id(idempotency_key: str | None) -> str:
     return uuid5(NAMESPACE_URL, f"schedule:{idempotency_key}").hex
 
 
+def _check_if_match(header: str | None, current: str) -> None:
+    """If-Match 校验：``*`` 匹配任意存在；否则必须等于当前 ETag。"""
+    if header is None or header == "*" or header == current:
+        return
+    raise ContractError(ErrorCode.CONFLICT, "If-Match 与当前版本不符，先重读再改")
+
+
 def _text(merged: dict[str, Any], key: str) -> str:
     value = merged.get(key)
     if not isinstance(value, str) or not value.strip():
@@ -231,7 +275,9 @@ def _timestamp(merged: dict[str, Any], key: str) -> str:
 
 __all__ = [
     "create_schedule",
+    "delete_schedule",
     "get_schedule",
     "list_schedules",
+    "put_schedule",
     "schedule_values",
 ]

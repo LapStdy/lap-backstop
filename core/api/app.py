@@ -16,7 +16,13 @@ from pathlib import Path
 from contracts import Clock, ContractError, ErrorCode, Logger
 from core.api import store
 from core.api.ctx import Handler, RequestCtx
-from core.api.schedules_api import create_schedule, get_schedule, list_schedules
+from core.api.schedules_api import (
+    create_schedule,
+    delete_schedule,
+    get_schedule,
+    list_schedules,
+    put_schedule,
+)
 from core.api.system_api import get_settings, health, put_settings
 from core.api.wire import ApiRequest, ApiResponse, decode_json, error_response
 from core.clock import SystemClock
@@ -42,6 +48,8 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", ("schedules",), list_schedules),
     Route("POST", ("schedules",), create_schedule),
     Route("GET", ("schedules", "{id}"), get_schedule),
+    Route("PUT", ("schedules", "{id}"), put_schedule),
+    Route("DELETE", ("schedules", "{id}"), delete_schedule),
 )
 
 

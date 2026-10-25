@@ -170,7 +170,7 @@ def _handler(app: ApiApp, counter: _RequestCounter) -> type[BaseHTTPRequestHandl
                 remaining -= len(chunk)
 
         def _write(self, response: ApiResponse) -> None:
-            body = encode_json(response.payload)
+            body = b"" if response.payload is None else encode_json(response.payload)
             self.send_response(response.status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             if response.etag is not None:
