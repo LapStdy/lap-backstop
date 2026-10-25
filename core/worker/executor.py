@@ -381,9 +381,7 @@ class WorkerExecutor:
                 "error_code": "E_CONFIG",
             }
         )
-        current = self._runs.get(run.id)
-        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
-            current = self._runs.transition(run.id, RunState.CLEANING, reason="template_missing")
+        self._hop_to_cleaning(run.id, reason="template_missing")
         return self._runs.transition(
             run.id,
             RunState.FAILED,
@@ -441,14 +439,18 @@ class WorkerExecutor:
             error_code=error_code,
         )
 
+    def _hop_to_cleaning(self, run_id: str, *, reason: str) -> None:
+        """执行或验证中的运行落终态前先经过 cleaning（docs/02 迁移表）。"""
+        current = self._runs.get(run_id)
+        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
+            self._runs.transition(run_id, RunState.CLEANING, reason=reason)
+
     def _abort_recovery(self, scope: RunScope, error_code: str, *, exhausted: bool) -> JobRunRecord:
         """停手：停脚本、清理、释放租约，把运行记成 failed。"""
         self._stop_script(scope)
         self._safe_cleanup(scope.call, run_id=scope.run_id, reason="recovery")
         self._safe_release(scope.run_id, reason="recovery")
-        current = self._runs.get(scope.run_id)
-        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
-            current = self._runs.transition(scope.run_id, RunState.CLEANING, reason="recovery")
+        self._hop_to_cleaning(scope.run_id, reason="recovery")
         result = "exhausted" if exhausted else "aborted"
         code = "E_RECOVERY_EXHAUSTED" if exhausted else error_code
         finished = self._runs.transition(
@@ -488,9 +490,7 @@ class WorkerExecutor:
             self._stop_script(scope)
             self._safe_cleanup(scope.call, run_id=scope.run_id, reason="cancelled")
         self._safe_release(scope.run_id, reason="cancelled")
-        current = self._runs.get(scope.run_id)
-        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
-            current = self._runs.transition(scope.run_id, RunState.CLEANING, reason="cancelled")
+        self._hop_to_cleaning(scope.run_id, reason="cancelled")
         return self._runs.transition(scope.run_id, RunState.CANCELLED, reason="cancelled")
 
     def _fail(self, scope: RunScope, error_code: str, reason: str) -> JobRunRecord:
@@ -498,9 +498,7 @@ class WorkerExecutor:
         self._stop_script(scope)
         self._safe_cleanup(scope.call, run_id=scope.run_id, reason=reason)
         self._safe_release(scope.run_id, reason=reason)
-        current = self._runs.get(scope.run_id)
-        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
-            current = self._runs.transition(scope.run_id, RunState.CLEANING, reason=reason)
+        self._hop_to_cleaning(scope.run_id, reason=reason)
         return self._runs.transition(
             scope.run_id,
             RunState.FAILED,
