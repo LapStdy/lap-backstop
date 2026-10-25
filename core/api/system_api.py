@@ -5,8 +5,8 @@ from __future__ import annotations
 from contracts import ContractError, ErrorCode
 from core.api import registry_store, run_store, store
 from core.api.ctx import RequestCtx
+from core.api.version import executable_version
 from core.api.wire import ApiResponse
-from core.hostops.serve import executable_version
 from storage.db.transaction import transaction
 
 
