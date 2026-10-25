@@ -5,6 +5,9 @@ description = "Windows 上的调度与监督平台：按时触发、就绪才执
 requires-python = ">=3.12"
 dependencies = []
 
+[project.scripts]
+lap-backstop = "core.__main__:main"
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
