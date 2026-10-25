@@ -16,6 +16,7 @@ from pathlib import Path
 from contracts import Clock, ContractError, ErrorCode, Logger
 from core.api import store
 from core.api.ctx import Handler, RequestCtx
+from core.api.runs_api import get_run, list_runs, stop_run
 from core.api.schedules_api import (
     create_schedule,
     delete_schedule,
@@ -62,6 +63,9 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", ("job-templates", "{id}"), get_template),
     Route("PUT", ("job-templates", "{id}"), put_template),
     Route("DELETE", ("job-templates", "{id}"), delete_template),
+    Route("GET", ("runs",), list_runs),
+    Route("GET", ("runs", "{id}"), get_run),
+    Route("POST", ("runs", "{id}", "stop"), stop_run),
 )
 
 

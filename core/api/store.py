@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
@@ -77,6 +78,7 @@ def ensure_server_id(connection: sqlite3.Connection, *, at: datetime) -> str:
 __all__ = [
     "SERVER_ID_KEY",
     "TOKEN_KEY",
+    "RunFilters",
     "all_settings",
     "bearer_token",
     "delete_schedule",
@@ -86,6 +88,7 @@ __all__ = [
     "insert_template",
     "job_template_exists",
     "put_settings",
+    "run_rows",
     "schedule_row",
     "schedule_rows",
     "template_row",
@@ -188,6 +191,68 @@ def _template_json(row: sqlite3.Row) -> dict[str, Any]:
         "enabled": bool(row["enabled"]),
         "created_at": str(row["created_at"]),
         "updated_at": str(row["updated_at"]),
+    }
+
+
+_RUN_COLUMNS = (
+    "id, template_id, schedule_id, scheduled_at, created_at, idempotency_key, "
+    "state, attempt, priority, deadline_at, started_at, finished_at, verdict_id, "
+    "error_code, detail"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class RunFilters:
+    """GET /runs 的过滤条件；时间按 created_at 过滤（docs/03：状态、时间、模板）。"""
+
+    state: str | None = None
+    template_id: str | None = None
+    since: str | None = None
+    until: str | None = None
+    limit: int = 100
+
+
+def run_rows(connection: sqlite3.Connection, filters: RunFilters) -> list[dict[str, Any]]:
+    """按过滤条件取运行列表，新的在前。"""
+    clauses: list[str] = []
+    params: list[Any] = []
+    if filters.state is not None:
+        clauses.append("state = ?")
+        params.append(filters.state)
+    if filters.template_id is not None:
+        clauses.append("template_id = ?")
+        params.append(filters.template_id)
+    if filters.since is not None:
+        clauses.append("created_at >= ?")
+        params.append(filters.since)
+    if filters.until is not None:
+        clauses.append("created_at <= ?")
+        params.append(filters.until)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = connection.execute(
+        f"SELECT {_RUN_COLUMNS} FROM job_runs{where} ORDER BY created_at DESC, id LIMIT ?",
+        (*params, filters.limit),
+    ).fetchall()
+    return [_run_json(row) for row in rows]
+
+
+def _run_json(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "id": str(row["id"]),
+        "template_id": str(row["template_id"]),
+        "schedule_id": optional_str(row["schedule_id"]),
+        "scheduled_at": optional_str(row["scheduled_at"]),
+        "created_at": str(row["created_at"]),
+        "idempotency_key": str(row["idempotency_key"]),
+        "state": str(row["state"]),
+        "attempt": int(row["attempt"]),
+        "priority": int(row["priority"]),
+        "deadline_at": optional_str(row["deadline_at"]),
+        "started_at": optional_str(row["started_at"]),
+        "finished_at": optional_str(row["finished_at"]),
+        "verdict_id": optional_str(row["verdict_id"]),
+        "error_code": optional_str(row["error_code"]),
+        "detail": json.loads(str(row["detail"])),
     }
 
 
