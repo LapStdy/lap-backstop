@@ -170,6 +170,43 @@ def test_migrate_requires_clock_when_backups_dir_given(tmp_path: Path) -> None:
         connection.close()
 
 
+def test_failing_migration_rolls_back_whole_version(tmp_path: Path) -> None:
+    connection = open_database(tmp_path / "state.db")
+    try:
+        base = [Migration(1, "base", _create_table("first"))]
+        assert migrate(connection, base) == 1
+
+        def broken(connection: sqlite3.Connection) -> None:
+            connection.execute("CREATE TABLE second (id TEXT PRIMARY KEY)")
+            raise sqlite3.OperationalError("注入的迁移故障")
+
+        with pytest.raises(sqlite3.OperationalError, match="注入的迁移故障"):
+            migrate(
+                connection,
+                [Migration(1, "base", _create_table("first")), Migration(2, "broken", broken)],
+            )
+        assert current_version(connection) == 1
+        tables = _user_tables(connection)
+        assert "first" in tables
+        assert "second" not in tables
+
+        fixed = [
+            Migration(1, "base", _create_table("first")),
+            Migration(2, "fixed", _create_table("second")),
+        ]
+        assert migrate(connection, fixed) == 2
+        assert "second" in _user_tables(connection)
+    finally:
+        connection.close()
+
+
+def _user_tables(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
+    ).fetchall()
+    return {str(row[0]) for row in rows}
+
+
 def _create_table(name: str) -> Callable[[sqlite3.Connection], None]:
     def up(connection: sqlite3.Connection) -> None:
         connection.execute(f"CREATE TABLE {name} (id TEXT PRIMARY KEY)")

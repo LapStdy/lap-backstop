@@ -14,6 +14,7 @@ from core.clock import VirtualClock
 from core.jobs.run_service import JobRunService
 from core.scheduler.scan import ScheduleScanner
 from storage import migrate, open_database
+from storage.repositories.schedules import ScheduleRepository
 
 T0 = datetime(2026, 10, 23, 0, 0, tzinfo=UTC)
 TEMPLATE_ID = "template-1"
@@ -191,3 +192,18 @@ def test_disabled_schedule_is_ignored(
     connection, _clock, _runs, scanner = env
     insert_schedule(connection, next_run_at=T0 + timedelta(hours=1), enabled=0)
     assert scanner.tick(T0 + timedelta(hours=4)) == ()
+
+
+def test_schedule_row_exposes_updated_at(env: Env) -> None:
+    connection, _clock, _runs, _scanner = env
+    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1))
+    repository = ScheduleRepository(connection)
+    before = repository.get(SCHEDULE_ID)
+    assert before is not None
+    assert before.updated_at == T0
+
+    later = T0 + timedelta(minutes=30)
+    repository.set_next_run(SCHEDULE_ID, T0 + timedelta(hours=2), updated_at=later)
+    after = repository.get(SCHEDULE_ID)
+    assert after is not None
+    assert after.updated_at == later

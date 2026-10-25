@@ -233,6 +233,22 @@ def test_global_events_get_monotonic_ids(connection: sqlite3.Connection) -> None
     assert second.id == "g:2"
 
 
+def test_event_log_rejects_wrong_scope(connection: sqlite3.Connection) -> None:
+    log = EventLog(connection)
+    with pytest.raises(ValueError, match="不是运行作用域事件"):
+        log.append_run("run-1", EventType.HOST_STATE, {"state": "running"}, at=NOW)
+    with pytest.raises(ValueError, match="不是全局事件"):
+        log.append_global(EventType.RUN_CREATED, {"run_id": "r1"}, at=NOW)
+
+
+def test_corrupted_detail_reports_database_error(connection: sqlite3.Connection) -> None:
+    repository = JobRunRepository(connection)
+    record, _ = JobRunService(connection, VirtualClock(NOW)).create_scheduled(make_run())
+    connection.execute("UPDATE job_runs SET detail = '[]' WHERE id = ?", (record.id,))
+    with pytest.raises(sqlite3.DatabaseError, match="detail 不是 JSON 对象"):
+        repository.get(record.id)
+
+
 def test_cas_transition_ignores_stale_source(connection: sqlite3.Connection) -> None:
     repository = JobRunRepository(connection)
     record, _ = JobRunService(connection, VirtualClock(NOW)).create_scheduled(make_run())
