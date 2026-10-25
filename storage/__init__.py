@@ -18,13 +18,13 @@ from storage.db.backup import (
     verify_snapshot,
 )
 from storage.db.connection import BUSY_TIMEOUT_MS, open_database
+from storage.db.integrity import verify_integrity
 from storage.db.migrations.runner import (
     Migration,
     MigrationError,
     current_version,
     execute_statements,
     migrate,
-    verify_integrity,
 )
 
 __all__ = [

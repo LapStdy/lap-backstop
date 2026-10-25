@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from contracts.context import Clock
+from storage.db.backup import create_pre_migrate_snapshot
 from storage.db.transaction import transaction
 
 UpFunction = Callable[[sqlite3.Connection], None]
@@ -103,21 +104,10 @@ def _prepare_and_snapshot(
     if backups_dir is not None and applied < ordered[-1].version:
         if clock is None:
             raise MigrationError("启用迁移前快照必须同时提供 clock")
-        # 延迟导入：backup 依赖本模块的 verify_integrity，顶层互导成环。
-        from storage.db.backup import create_pre_migrate_snapshot
-
         create_pre_migrate_snapshot(
             connection, backups_dir, version=ordered[-1].version, clock=clock
         )
     return ordered, applied
-
-
-def verify_integrity(connection: sqlite3.Connection) -> None:
-    """跑 ``PRAGMA integrity_check``，结果不是 ``ok`` 时抛错。"""
-    rows = connection.execute("PRAGMA integrity_check").fetchall()
-    results = [str(row[0]) for row in rows]
-    if results != ["ok"]:
-        raise sqlite3.DatabaseError("integrity_check 未通过：" + "；".join(results))
 
 
 def _require_contiguous(migrations: Sequence[Migration]) -> None:

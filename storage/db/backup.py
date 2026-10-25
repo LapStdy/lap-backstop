@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Literal, cast
 
 from contracts.context import Clock
-from storage.db.migrations.runner import verify_integrity
+from storage.db.integrity import verify_integrity
 from storage.repositories.iso_time import format_at, parse_at
 
 SnapshotKind = Literal["daily", "weekly", "pre-migrate"]
@@ -27,6 +27,8 @@ SnapshotKind = Literal["daily", "weekly", "pre-migrate"]
 _MANIFEST_SUFFIX = ".manifest.json"
 _SNAPSHOT_TIMESTAMP = "%Y%m%d-%H%M%S"
 _KINDS: tuple[SnapshotKind, ...] = ("daily", "weekly", "pre-migrate")
+# 导出文件名规则 {prefix}-{stamp}.json；构造与修剪必须共用同一形状。
+_EXPORT_PREFIXES: tuple[str, ...] = ("settings", "plugins")
 
 
 class BackupError(RuntimeError):
@@ -203,8 +205,8 @@ def export_configs(
     exports_dir.mkdir(parents=True, exist_ok=True)
     created_at = clock.utc_now().astimezone(UTC)
     stamp = created_at.strftime(_SNAPSHOT_TIMESTAMP)
-    settings_path = exports_dir / f"settings-{stamp}.json"
-    plugins_path = exports_dir / f"plugins-{stamp}.json"
+    settings_path = _export_path(exports_dir, "settings", stamp)
+    plugins_path = _export_path(exports_dir, "plugins", stamp)
     if settings_path.exists() or plugins_path.exists():
         raise BackupError(f"同名导出已存在，换一个时刻再导出：settings-{stamp}.json")
     values, plugins = _collect_export_data(connection)
@@ -299,12 +301,17 @@ def _prune_snapshots(backups_dir: Path, *, daily_keep: int, weekly_keep: int) ->
     return deleted
 
 
+def _export_path(exports_dir: Path, prefix: str, stamp: str) -> Path:
+    """导出文件路径；命名规则单点，修剪按同一形状反解。"""
+    return exports_dir / f"{prefix}-{stamp}.json"
+
+
 def _prune_exports(exports_dir: Path, *, export_keep: int) -> list[Path]:
     """配置导出按时间戳分组修剪，一组含 settings 与 plugins 两个文件。"""
     generations: dict[str, list[Path]] = {}
-    for prefix in ("settings-", "plugins-"):
-        for path in sorted(exports_dir.glob(f"{prefix}*.json")):
-            stamp = path.name.removesuffix(".json").removeprefix(prefix)
+    for prefix in _EXPORT_PREFIXES:
+        for path in sorted(exports_dir.glob(f"{prefix}-*.json")):
+            stamp = path.name.removesuffix(".json").removeprefix(f"{prefix}-")
             generations.setdefault(stamp, []).append(path)
     deleted: list[Path] = []
     for stamp in sorted(generations)[: max(len(generations) - export_keep, 0)]:
