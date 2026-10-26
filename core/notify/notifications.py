@@ -145,6 +145,18 @@ class NotificationFactory:
             body="\n".join(lines),
         )
 
+    def tailscale(self, payload: Mapping[str, Any]) -> Notification:
+        """Tailscale 未运行通知；detail 是 BackendState 或不可查原因。"""
+        detail = str(payload.get("detail", ""))
+        lines = ["结论：Tailscale 未运行，出网远程访问暂不可用，本机访问不受影响"]
+        if detail:
+            lines.append(f"详情：{detail}")
+        return Notification(
+            level=NotificationLevel.WARN,
+            title="Tailscale 未运行",
+            body="\n".join(lines),
+        )
+
     def _job_name(self, run: JobRunRecord | None) -> str:
         """作业名：模板在用名字，模板已删退回 template_id。"""
         if run is None:

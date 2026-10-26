@@ -1,9 +1,11 @@
-"""serve 挂载 API：token 门禁、监听设置、端口冲突退 4 与端点冒烟（docs/08 单实例）。"""
+"""serve 挂载 API：token 自生成、监听集合、端口冲突退 4 与端点冒烟（docs/08 单实例）。"""
 
 from __future__ import annotations
 
 import json
 import socket
+import sqlite3
+import subprocess
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
@@ -12,11 +14,19 @@ from typing import Any
 
 import pytest
 
-from core.api.store import TOKEN_KEY, put_settings
+from core.api.store import TOKEN_KEY, bearer_token, put_settings
 from core.clock import VirtualClock
 from core.hostops import instance
 from core.hostops.serve import ServeOptions, run_serve
+from core.hostops.tailscale import (
+    REMOTE_ENABLED_KEY,
+    TAILSCALE_BIND_FAILED_EVENT,
+    TAILSCALE_DOWN_EVENT,
+    remote_listen_plan,
+)
+from core.logging import NullLogger
 from storage import migrate, open_database
+from tests.fixtures.subprocess_fakes import completed
 from tests.integration.test_serve_shell import (
     autologon_registry,
     fake_task_runner,
@@ -83,6 +93,40 @@ def configure(root: Path, values: dict[str, Any]) -> None:
         connection.close()
 
 
+def stored_token(root: Path) -> str | None:
+    """读数据根里库的当前 token。"""
+    connection = open_database(root / "backstop.sqlite")
+    try:
+        return bearer_token(connection)
+    finally:
+        connection.close()
+
+
+def global_payloads(database: Path, event_name: str) -> list[dict[str, Any]]:
+    """读全局事件里指定 event 名的载荷，按写入顺序。"""
+    reader = sqlite3.connect(database)
+    try:
+        rows = reader.execute("SELECT payload FROM events_global ORDER BY seq").fetchall()
+    finally:
+        reader.close()
+    return [
+        json.loads(str(row[0]))
+        for row in rows
+        if json.loads(str(row[0])).get("event") == event_name
+    ]
+
+
+def scripted_tailscale(payload: bytes) -> Any:
+    """只应答 tailscale status 的假执行器；其余命令按不可用处理。"""
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[bytes]:
+        if tuple(command) == ("tailscale", "status", "--json"):
+            return completed(payload)
+        return completed(returncode=-1)
+
+    return run
+
+
 @pytest.fixture
 def data_root(tmp_path: Path) -> Path:
     """预置好 token 与随机端口的监听设置的数据根。"""
@@ -91,12 +135,36 @@ def data_root(tmp_path: Path) -> Path:
     return root
 
 
-def test_api_skipped_without_token(tmp_path: Path) -> None:
+def test_token_generated_when_missing_and_api_accepts_it(tmp_path: Path) -> None:
     root = tmp_path / "data"
-    configure(root, {})
+    configure(root, {"api.host": "127.0.0.1", "api.port": 0})
     logger = RecordingLogger()
-    assert run_serve(root, serve_options(log=logger)) == 0
-    assert "serve.api_skipped" in logger.events()
+    health: list[int] = []
+
+    def on_listening(host: str, port: int) -> None:
+        token = stored_token(root)
+        assert token is not None and len(token) >= 32
+        request = urllib.request.Request(
+            f"http://{host}:{port}/api/v1/health",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            health.append(response.status)
+
+    assert run_serve(root, serve_options(log=logger, on_api_listening=on_listening)) == 0
+    assert health == [200]
+    assert "serve.token_generated" in logger.events()
+    token = stored_token(root)
+    assert token is not None
+    # token 值不进任何日志行（docs/11）
+    assert all(token not in json.dumps(line, ensure_ascii=False) for line in logger.lines)
+
+
+def test_existing_token_is_kept(data_root: Path) -> None:
+    logger = RecordingLogger()
+    assert run_serve(data_root, serve_options(log=logger)) == 0
+    assert "serve.token_generated" not in logger.events()
+    assert stored_token(data_root) == TOKEN
 
 
 def test_serve_smokes_endpoints_over_mounted_api(data_root: Path) -> None:
@@ -139,3 +207,120 @@ def test_serve_port_conflict_exits_4_and_records_event(data_root: Path) -> None:
     assert "serve.port_conflict" in logger.events()
     assert "core.port_conflict" in global_events(data_root / "backstop.sqlite")
     assert not (data_root / "run" / instance.LOCK_FILENAME).exists()
+
+
+def test_port_conflict_with_remote_enabled_still_exits_4(data_root: Path) -> None:
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    configure(data_root, {"api.port": port, REMOTE_ENABLED_KEY: True})
+    logger = RecordingLogger()
+    needs_login = json.dumps({"BackendState": "NeedsLogin", "TailscaleIPs": []}).encode()
+    try:
+        code = run_serve(
+            data_root, serve_options(log=logger, tailscale_runner=scripted_tailscale(needs_login))
+        )
+    finally:
+        blocker.close()
+    assert code == 4
+    assert "core.port_conflict" in global_events(data_root / "backstop.sqlite")
+
+
+def test_remote_disabled_skips_tailscale_probe(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    configure(root, {TOKEN_KEY: TOKEN, "api.host": "127.0.0.1", "api.port": 0})
+    probes: list[list[str]] = []
+    primary: list[str] = []
+
+    def probe_runner(command: list[str]) -> subprocess.CompletedProcess[bytes]:
+        probes.append(command)
+        return completed(returncode=-1)
+
+    def on_listening(host: str, port: int) -> None:
+        primary.append(host)
+
+    options = serve_options(tailscale_runner=probe_runner, on_api_listening=on_listening)
+    assert run_serve(root, options) == 0
+    assert probes == []
+    assert primary == ["127.0.0.1"]
+
+
+def test_remote_enabled_without_tailscale_records_event_once(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    configure(
+        root, {TOKEN_KEY: TOKEN, "api.host": "127.0.0.1", "api.port": 0, REMOTE_ENABLED_KEY: True}
+    )
+    needs_login = json.dumps({"BackendState": "NeedsLogin", "TailscaleIPs": []}).encode()
+    assert run_serve(root, serve_options(tailscale_runner=scripted_tailscale(needs_login))) == 0
+    payloads = global_payloads(root / "backstop.sqlite", TAILSCALE_DOWN_EVENT)
+    assert payloads == [{"event": TAILSCALE_DOWN_EVENT, "detail": "NeedsLogin"}]
+
+
+def test_tailnet_bind_failure_degrades_to_loopback(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(1)
+    port = blocker.getsockname()[1]
+    blocker.close()
+    configure(
+        root,
+        {TOKEN_KEY: TOKEN, "api.host": "127.0.0.1", "api.port": port, REMOTE_ENABLED_KEY: True},
+    )
+    running = json.dumps({"BackendState": "Running", "TailscaleIPs": ["100.64.0.1"]}).encode()
+    health: list[int] = []
+
+    def on_listening(host: str, bound_port: int) -> None:
+        assert host == "127.0.0.1"
+        request = urllib.request.Request(
+            f"http://{host}:{bound_port}/api/v1/health",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            health.append(response.status)
+
+    options = serve_options(
+        tailscale_runner=scripted_tailscale(running), on_api_listening=on_listening
+    )
+    assert run_serve(root, options) == 0
+    assert health == [200]
+    database = root / "backstop.sqlite"
+    failures = global_payloads(database, TAILSCALE_BIND_FAILED_EVENT)
+    assert len(failures) == 1
+    assert "100.64.0.1" in failures[0]["detail"]
+    assert global_payloads(database, TAILSCALE_DOWN_EVENT) == []
+
+
+def test_remote_listen_plan_disabled_returns_empty() -> None:
+    """remote_enabled 关闭时不探测也不追加地址。"""
+    running = json.dumps({"BackendState": "Running", "TailscaleIPs": ["100.64.0.1"]}).encode()
+    plan = remote_listen_plan({}, scripted_tailscale(running), NullLogger())
+    assert plan == ((), None)
+
+
+def test_remote_listen_plan_running_returns_tailnet_addresses() -> None:
+    """remote_enabled 且 Running 时计划里只有 tailnet IPv4。"""
+    running = json.dumps(
+        {"BackendState": "Running", "TailscaleIPs": ["100.64.0.1", "fd7a:115c:a1e0::1"]}
+    ).encode()
+    plan = remote_listen_plan({REMOTE_ENABLED_KEY: True}, scripted_tailscale(running), NullLogger())
+    assert plan == (("100.64.0.1",), None)
+
+
+def test_remote_listen_plan_unavailable_returns_down_detail() -> None:
+    """Tailscale 不可查时只回环，detail 带不可查原因。"""
+    plan = remote_listen_plan(
+        {REMOTE_ENABLED_KEY: True}, lambda command: completed(returncode=-1), NullLogger()
+    )
+    assert plan == ((), "不可查：命令不可用")
+
+
+def test_remote_enabled_invalid_type_rejects_startup(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    configure(
+        root, {TOKEN_KEY: TOKEN, "api.host": "127.0.0.1", "api.port": 0, REMOTE_ENABLED_KEY: "yes"}
+    )
+    logger = RecordingLogger()
+    assert run_serve(root, serve_options(log=logger)) == 1
+    assert "serve.api_config_invalid" in logger.events()

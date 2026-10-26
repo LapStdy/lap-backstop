@@ -135,6 +135,62 @@ def test_malformed_content_length_rejected(server: ApiServer) -> None:
     assert status_line.startswith("HTTP/1.0 400"), status_line
 
 
+def test_extra_hosts_bind_and_serve(tmp_path: Path) -> None:
+    """追加地址与主地址各起一份监听，请求在任一地址都能应答。"""
+    connection = open_database(tmp_path / "multi.db")
+    try:
+        migrate(connection)
+        put_settings(connection, {TOKEN_KEY: TOKEN}, at=NOW)
+        handle = start_api_server(
+            connection,
+            ApiOptions(
+                host="127.0.0.1",
+                port=0,
+                extra_hosts=("127.0.0.2",),
+                clock=VirtualClock(NOW),
+            ),
+        )
+    finally:
+        connection.close()
+    try:
+        hosts = [host for host, _port in handle.addresses]
+        assert hosts == ["127.0.0.1", "127.0.0.2"]
+        # port=0 时追加地址跟随主地址的实际端口
+        second_port = handle.addresses[1][1]
+        req = urllib.request.Request(
+            f"http://127.0.0.2:{second_port}/api/v1/health",
+            headers={"Authorization": f"Bearer {TOKEN}"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            assert response.status == 200
+    finally:
+        handle.shutdown()
+
+
+def test_extra_host_bind_failure_degrades_without_raising(tmp_path: Path) -> None:
+    """追加地址不可绑定只记录失败，主监听照常；失败原因供事件落库。"""
+    connection = open_database(tmp_path / "degraded.db")
+    try:
+        migrate(connection)
+        put_settings(connection, {TOKEN_KEY: TOKEN}, at=NOW)
+        handle = start_api_server(
+            connection,
+            ApiOptions(
+                host="127.0.0.1",
+                port=0,
+                extra_hosts=("203.0.113.7",),
+                clock=VirtualClock(NOW),
+            ),
+        )
+    finally:
+        connection.close()
+    try:
+        assert handle.address[0] == "127.0.0.1"
+        assert [host for host, _error in handle.bind_failures] == ["203.0.113.7"]
+    finally:
+        handle.shutdown()
+
+
 def test_server_stops_after_request_limit(tmp_path: Path) -> None:
     connection = open_database(tmp_path / "limited.db")
     try:

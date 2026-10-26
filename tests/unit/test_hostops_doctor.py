@@ -1,4 +1,4 @@
-"""doctor：13 项检查的 PASS/WARN/FAIL 三态与退出码聚合，外部依赖全注入。"""
+"""doctor：14 项检查的 PASS/WARN/FAIL 三态与退出码聚合，外部依赖全注入。"""
 
 from __future__ import annotations
 
@@ -262,6 +262,89 @@ def test_check_tailscale_and_power(tmp_path: Path) -> None:
     assert "睡眠" in result.detail
 
 
+FIREWALL_QUERY: tuple[str, ...] = (
+    "netsh",
+    "advfirewall",
+    "firewall",
+    "show",
+    "rule",
+    f"name={doctor.FIREWALL_RULE_NAME}",
+)
+
+
+def firewall_block(enabled: str, direction: str, action: str, remote: str, port: str) -> str:
+    """构造一段 netsh show rule 的中文输出。"""
+    return (
+        f"规则名称:                            {doctor.FIREWALL_RULE_NAME}\n"
+        "----------------------------------------------------------------------\n"
+        f"已启用:                               {enabled}\n"
+        f"方向:                                 {direction}\n"
+        "配置文件:                             域, 专用, 公用\n"
+        "本地IP:                               Any\n"
+        f"远程IP:                               {remote}\n"
+        "协议:                                 TCP\n"
+        f"本地端口:                             {port}\n"
+        "远程端口:                             Any\n"
+        f"操作:                                 {action}\n"
+    )
+
+
+def test_check_inbound_firewall_rule_in_scope_passes(tmp_path: Path) -> None:
+    script = {
+        FIREWALL_QUERY: completed(
+            firewall_block("是", "入", "允许", "100.64.0.0/10,127.0.0.0/8", "8787").encode()
+        )
+    }
+    deps = make_deps(tmp_path, runner=scripted(script))
+    assert single(deps, 14).level is doctor.Level.PASS
+
+    # 英文字段名同样可解析
+    english = (
+        "Rule Name:                            lap-backstop-api\n"
+        "----------------------------------------------------------------------\n"
+        "Enabled:                              Yes\n"
+        "Direction:                            In\n"
+        "RemoteIP:                             100.64.0.0/10,127.0.0.0/8\n"
+        "Protocol:                             TCP\n"
+        "LocalPort:                            8787\n"
+        "Action:                               Allow\n"
+    )
+    script[FIREWALL_QUERY] = completed(english.encode())
+    assert single(deps, 14).level is doctor.Level.PASS
+
+    # 中文宿主控制台的 GBK 输出也能解出字段
+    script[FIREWALL_QUERY] = completed(
+        firewall_block("是", "入", "允许", "100.64.0.0/10,127.0.0.0/8", "8787").encode("gbk")
+    )
+    assert single(deps, 14).level is doctor.Level.PASS
+
+
+def test_check_inbound_firewall_missing_or_out_of_scope_warns(tmp_path: Path) -> None:
+    script: dict[tuple[str, ...], subprocess.CompletedProcess[bytes]] = {}
+    deps = make_deps(tmp_path, runner=scripted(script))
+    # 规则缺失（命令不可用是等价形态）
+    assert single(deps, 14).level is doctor.Level.WARN
+
+    script[FIREWALL_QUERY] = completed(firewall_block("是", "入", "允许", "Any", "8787").encode())
+    result = single(deps, 14)
+    assert result.level is doctor.Level.WARN
+    assert "超出回环与 tailnet" in result.detail
+
+    script[FIREWALL_QUERY] = completed(
+        firewall_block("否", "入", "允许", "100.64.0.0/10,127.0.0.0/8", "8787").encode()
+    )
+    result = single(deps, 14)
+    assert result.level is doctor.Level.WARN
+    assert "未启用" in result.detail
+
+    script[FIREWALL_QUERY] = completed(
+        firewall_block("是", "入", "允许", "100.64.0.0/10,127.0.0.0/8", "9999").encode()
+    )
+    result = single(deps, 14)
+    assert result.level is doctor.Level.WARN
+    assert "8787" in result.detail
+
+
 def test_exit_code_aggregation() -> None:
     def result(level: doctor.Level) -> doctor.CheckResult:
         return doctor.CheckResult(number=1, name="n", level=level, detail="")
@@ -278,7 +361,7 @@ def test_run_doctor_prints_each_check_and_summary(tmp_path: Path) -> None:
     stream = io.StringIO()
     code = doctor.run_doctor(tmp_path, app_root=tmp_path / "app", stream=stream)
     lines = stream.getvalue().splitlines()
-    assert len(lines) == 14  # 13 项 + 汇总
+    assert len(lines) == 15  # 14 项 + 汇总
     assert lines[-1].startswith("汇总：")
     # 库与目录健康，心跳、自动登录、计划任务等报 WARN：退出码 2
     assert code == 2

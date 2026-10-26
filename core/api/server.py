@@ -42,6 +42,8 @@ class ApiOptions:
 
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    # 与主地址同端口追加监听的地址（tailnet IPv4）；主地址失败仍按原口径抛错。
+    extra_hosts: tuple[str, ...] = ()
     clock: Clock = field(default_factory=SystemClock)
     log: Logger = field(default_factory=NullLogger)
     stop: threading.Event = field(default_factory=threading.Event)
@@ -75,27 +77,47 @@ class _RequestCounter:
 
 
 class ApiServer:
-    """已启动的服务句柄：实际监听地址与停机入口。"""
+    """已启动的服务句柄：全部监听地址、追加地址的失败记录与停机入口。"""
 
-    def __init__(self, http: ThreadingHTTPServer, thread: threading.Thread, options: ApiOptions):
-        self._http = http
-        self._thread = thread
+    def __init__(
+        self,
+        servers: list[tuple[ThreadingHTTPServer, threading.Thread]],
+        failures: tuple[tuple[str, str], ...],
+        options: ApiOptions,
+    ) -> None:
+        self._servers = servers
+        self._failures = failures
         self._options = options
 
     @property
     def address(self) -> tuple[str, int]:
-        """实际监听地址与端口；port=0 时取内核分配的端口。"""
-        host, port = self._http.server_address[:2]
+        """主监听地址与端口；port=0 时取内核分配的端口。"""
+        host, port = self._servers[0][0].server_address[:2]
         return str(host), int(port)
+
+    @property
+    def addresses(self) -> tuple[tuple[str, int], ...]:
+        """全部绑定成功的监听地址，主地址在最前。"""
+        return tuple(
+            (str(http.server_address[0]), int(http.server_address[1]))
+            for http, _thread in self._servers
+        )
+
+    @property
+    def bind_failures(self) -> tuple[tuple[str, str], ...]:
+        """未绑定成功的追加地址与原因；主地址绑定失败不会走到这里。"""
+        return self._failures
 
     def shutdown(self) -> None:
         """停止接收新请求并等服务线程退出；可重复调用。"""
         self._options.stop.set()
-        self._thread.join(timeout=10.0)
+        for _http, thread in self._servers:
+            thread.join(timeout=10.0)
 
     def wait_stopped(self, timeout: float = 10.0) -> None:
         """等服务线程自行退出；用于确认请求上限等停机条件已生效。"""
-        self._thread.join(timeout)
+        for _http, thread in self._servers:
+            thread.join(timeout)
 
 
 def start_api_server(
@@ -104,24 +126,48 @@ def start_api_server(
 ) -> ApiServer:
     """从既有连接引导并启动独立 API 服务，返回可停机的服务句柄。
 
+    主地址绑定失败抛 OSError，由调用方按退出码口径处置；追加地址绑定失败
+    只记日志跳过，不拖垮已成功的主监听（docs/08 Tailscale 一节）。
+
     Raises:
         ValueError: 传入的是内存或临时数据库；API 需要能跨线程打开的文件库。
+        OSError: 主监听地址绑定失败。
     """
     active = ApiOptions() if options is None else options
     database = _database_path(connection)
     ensure_server_id(connection, at=active.clock.utc_now())
     app = ApiApp(database, clock=active.clock, log=active.log)
     counter = _RequestCounter()
-    http = _ApiHttpServer((active.host, active.port), _handler(app, counter, active.stop))
-    http.timeout = POLL_INTERVAL_SECONDS
-    thread = threading.Thread(
-        target=_serve,
-        args=(http, counter, active),
-        daemon=True,
-        name="api-server",
-    )
-    thread.start()
-    return ApiServer(http, thread, active)
+    servers: list[tuple[ThreadingHTTPServer, threading.Thread]] = []
+    failures: list[tuple[str, str]] = []
+    for index, host in enumerate((active.host, *active.extra_hosts)):
+        # 追加地址与主地址共用实际端口：api.port=0 时全部跟随主地址拿到的随机端口。
+        port = active.port if index == 0 else int(servers[0][0].server_address[1])
+        try:
+            http = _ApiHttpServer((host, port), _handler(app, counter, active.stop))
+        except OSError as error:
+            if index == 0:
+                raise
+            failures.append((host, str(error)))
+            active.log.warn(
+                {
+                    "event": "api.extra_bind_failed",
+                    "host": host,
+                    "port": port,
+                    "error": str(error),
+                }
+            )
+            continue
+        http.timeout = POLL_INTERVAL_SECONDS
+        thread = threading.Thread(
+            target=_serve,
+            args=(http, counter, active),
+            daemon=True,
+            name="api-server" if index == 0 else f"api-server:{host}",
+        )
+        thread.start()
+        servers.append((http, thread))
+    return ApiServer(servers, tuple(failures), active)
 
 
 def _serve(http: ThreadingHTTPServer, counter: _RequestCounter, options: ApiOptions) -> None:
