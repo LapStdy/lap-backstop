@@ -1,14 +1,16 @@
-"""核心 supervisor：常驻循环里的调度、队列、租约、保温与启动恢复。
+"""核心 supervisor：常驻循环的推进顺序与调度决策。
 
-每次 tick 只推进一轮：建运行、收敛逾期、回收与续租租约、关闭到期保温、推进一个可执行运行。
-所有时间来自注入的 Clock，所有状态落在数据库；崩溃后按持久化状态重建（docs/02、docs/09）。
+每次 tick 只推进一轮：磁盘水位、调度扫描、逾期收敛、租约看护、保温关闭、推进一个可执行运行；
+顺序定在本模块，各步机制分别在 supervisor_disk、supervisor_leases、supervisor_environments
+与 supervisor_recovery。所有时间来自注入的 Clock，所有状态落在数据库；启动扫描按持久化状态
+重建（docs/02、docs/09）。
 """
 
 from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -20,10 +22,9 @@ from contracts import (
     RunState,
 )
 from core.environments.service import EnvironmentService
-from core.events.replay import ReplayError, RunSnapshot, replay_run
 from core.jobs.errors import RunNotFoundError
 from core.jobs.run_service import DiskFullError, JobRunService, disk_free_bytes
-from core.jobs.state_machine import can_transition, is_terminal
+from core.jobs.state_machine import is_terminal
 from core.logging import NullLogger
 from core.plugins.registry import PluginRegistry
 from core.resources.errors import ResourceBusyError
@@ -32,21 +33,12 @@ from core.scheduler.scan import ScheduleScanner
 from core.supervisor_disk import DiskWatermark
 from core.supervisor_environments import EnvironmentSupervision
 from core.supervisor_leases import LeaseSupervision
+from core.supervisor_recovery import StartupRecovery, retry_due, scheduled_due
 from core.worker.executor import CancelFlag, WorkerExecutor
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
 from storage.repositories.job_templates import JobTemplateRepository
-from storage.repositories.leases import LeaseRow
 from storage.repositories.schedules import ScheduleRepository
-
-_ORPHAN_STATES = frozenset(
-    {
-        RunState.PREPARING,
-        RunState.EXECUTING,
-        RunState.VERIFYING,
-        RunState.CLEANING,
-    }
-)
 
 
 class Supervisor:
@@ -84,6 +76,7 @@ class Supervisor:
             clock,
             log=self._log,
         )
+        self._startup_recovery = StartupRecovery(self._runs, self._leases, clock, log=self._log)
         self._environment_watch = EnvironmentSupervision(
             EnvironmentService(connection, clock),
             registry,
@@ -97,7 +90,7 @@ class Supervisor:
         """启动扫描：重建运行、回收孤儿租约，最后对状态不明的环境各探一次。"""
         settled: list[JobRunRecord] = []
         for run in self._runs.non_terminal():
-            snapshot = self._replay(run)
+            snapshot = self._startup_recovery.replay(run)
             if snapshot is not None and snapshot.attempt != run.attempt:
                 self._log.warn(
                     {
@@ -107,15 +100,15 @@ class Supervisor:
                         "stream_attempt": snapshot.attempt,
                     }
                 )
-            settled.extend(self._settle_startup(run, snapshot))
+            settled.extend(self._startup_recovery.settle_startup(run, snapshot))
         for lease in self._leases.active():
             try:
                 run = self._runs.get(lease.run_id)
             except RunNotFoundError:
-                self._release_orphan(lease)
+                self._startup_recovery.release_orphan(lease)
                 continue
             if is_terminal(run.state):
-                self._release_orphan(lease)
+                self._startup_recovery.release_orphan(lease)
         self._environment_watch.probe_environments()
         return tuple(settled)
 
@@ -175,68 +168,6 @@ class Supervisor:
         """
         return self._environment_watch.reset(environment_id)
 
-    def _replay(self, run: JobRunRecord) -> RunSnapshot | None:
-        """回放事件流重建快照；流损坏不拦启动，返回 None 由调用方按表状态兜底。"""
-        try:
-            return replay_run(self._runs.events(run.id))
-        except ReplayError as error:
-            self._log.warn(
-                {"event": "supervisor.replay_failed", "run_id": run.id, "error": str(error)}
-            )
-            return None
-
-    def _settle_startup(
-        self,
-        run: JobRunRecord,
-        snapshot: RunSnapshot | None,
-    ) -> tuple[JobRunRecord, ...]:
-        """决策用事件流回放出的状态；落地前先探表状态能否迁移。
-
-        撕裂（表与事件流不一致）只告警不动表：绕过状态机硬迁会写出与流矛盾的
-        被拒迁移记录，让这条流从此回放不了，留给人工处置。
-        """
-        state = run.state if snapshot is None else snapshot.state
-        if state in _ORPHAN_STATES:
-            return self._settle_to(run, RunState.UNKNOWN, stream_state=state)
-        if state is RunState.SCHEDULED or (
-            state is RunState.RECOVERING and _retry_due(run, self._clock.utc_now())
-        ):
-            return self._settle_to(run, RunState.QUEUED, stream_state=state)
-        return ()
-
-    def _settle_to(
-        self,
-        run: JobRunRecord,
-        target: RunState,
-        *,
-        stream_state: RunState,
-    ) -> tuple[JobRunRecord, ...]:
-        if run.state is not target and not can_transition(run.state, target):
-            self._log.warn(
-                {
-                    "event": "supervisor.startup_state_conflict",
-                    "run_id": run.id,
-                    "table_state": run.state.value,
-                    "stream_state": stream_state.value,
-                }
-            )
-            return ()
-        if target is RunState.QUEUED:
-            return (self._runs.enqueue(run.id),)
-        return (self._runs.transition(run.id, target, reason="startup_recovery"),)
-
-    def _release_orphan(self, lease: LeaseRow) -> None:
-        try:
-            self._leases.release(lease.run_id, reason="startup_orphan")
-        except Exception as error:
-            self._log.warn(
-                {
-                    "event": "supervisor.orphan_release_failed",
-                    "run_id": lease.run_id,
-                    "error": str(error),
-                }
-            )
-
     def _dispatch(self, now: datetime) -> None:
         """推进一个可执行运行：优先排队，其次到点的 waiting 与 recovering。"""
         queued = self._runs.next_queued(limit=1)
@@ -247,10 +178,10 @@ class Supervisor:
             if run.state is RunState.SCHEDULED:
                 self._runs.enqueue(run.id)
                 return
-            if run.state is RunState.WAITING and _scheduled_due(run, now):
+            if run.state is RunState.WAITING and scheduled_due(run, now):
                 self._execute(run)
                 return
-            if run.state is RunState.RECOVERING and _retry_due(run, now):
+            if run.state is RunState.RECOVERING and retry_due(run, now):
                 self._execute(run)
                 return
 
@@ -280,23 +211,6 @@ class Supervisor:
             {"event": event, "payload": dict(payload)},
             at=self._clock.utc_now(),
         )
-
-
-def _retry_at(run: JobRunRecord) -> datetime | None:
-    value = run.detail.get("retry_at")
-    if not isinstance(value, str):
-        return None
-    moment = datetime.fromisoformat(value)
-    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
-
-
-def _retry_due(run: JobRunRecord, now: datetime) -> bool:
-    retry_at = _retry_at(run)
-    return retry_at is None or retry_at <= now
-
-
-def _scheduled_due(run: JobRunRecord, now: datetime) -> bool:
-    return run.scheduled_at is None or run.scheduled_at <= now
 
 
 __all__ = ["Supervisor"]
