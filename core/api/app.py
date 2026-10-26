@@ -9,7 +9,6 @@ from __future__ import annotations
 import hmac
 import sqlite3
 import threading
-import time
 from collections.abc import Iterator
 from contextlib import closing
 from dataclasses import dataclass
@@ -110,7 +109,7 @@ class ApiApp:
 
     def handle(self, request: ApiRequest) -> ApiResponse:
         """处理一次请求；任何失败都映射成错误响应并写一行请求日志。"""
-        started = time.monotonic()
+        started = self._clock.monotonic()
         response = self._safe_handle(request)
         self._log.info(
             {
@@ -118,7 +117,7 @@ class ApiApp:
                 "method": request.method,
                 "path": request.path,
                 "status": response.status,
-                "duration_ms": int((time.monotonic() - started) * 1000),
+                "duration_ms": int((self._clock.monotonic() - started) * 1000),
             }
         )
         return response

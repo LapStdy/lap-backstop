@@ -121,7 +121,9 @@ def _stop_reason(ctx: RequestCtx) -> str:
     if not isinstance(ctx.body, dict):
         raise ContractError(ErrorCode.BAD_REQUEST, "请求体必须是 JSON 对象")
     value = ctx.body.get("reason")
-    return "user_cancel" if not isinstance(value, str) or not value else value
+    if isinstance(value, str) and value:
+        return value
+    return "user_cancel"
 
 
 def _require_run(ctx: RequestCtx) -> JobRunRecord:

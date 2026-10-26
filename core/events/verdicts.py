@@ -103,10 +103,6 @@ class VerdictService:
             )
         return verdict_id, effective
 
-    def status_of(self, verdict: Verdict) -> VerdictStatus:
-        """结论状态原样返回；保留给调用方做映射。"""
-        return verdict.status
-
     def _checked(self, run_id: str, verdict: Verdict, policy: Mapping[str, Any]) -> Verdict:
         """核对证据引用与模板要求，返回回填策略 id 后的结论。"""
         policy_id, required = _verification_policy(policy)

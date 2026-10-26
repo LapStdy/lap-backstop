@@ -23,6 +23,7 @@ from contracts import (
 )
 from core.environments.service import EnvironmentCall, EnvironmentService
 from core.events.replay import ReplayError, RunSnapshot, replay_run
+from core.jobs.errors import RunNotFoundError
 from core.jobs.run_service import (
     DISK_CRITICAL_BYTES,
     DISK_GUARD_BYTES,
@@ -59,6 +60,9 @@ _HOLDING_LEASE_STATES = frozenset(
         RunState.WAITING,
         RunState.EXECUTING,
         RunState.VERIFYING,
+        # docs/09：租约持有到 cleanup 完成；cleaning 期间同样续租，
+        # 不让长 cleanup 因 TTL 过期被回收后把运行标成 failed。
+        RunState.CLEANING,
     }
 )
 _ORPHAN_STATES = frozenset(
@@ -124,8 +128,12 @@ class Supervisor:
                 )
             settled.extend(self._settle_startup(run, snapshot))
         for lease in self._leases.active():
-            run = self._runs.get(lease.run_id)
-            if run is None or is_terminal(run.state):
+            try:
+                run = self._runs.get(lease.run_id)
+            except RunNotFoundError:
+                self._release_orphan(lease)
+                continue
+            if is_terminal(run.state):
                 self._release_orphan(lease)
         self._probe_environments()
         return tuple(settled)
@@ -319,9 +327,15 @@ class Supervisor:
             self._lease_lost(lease)
 
     def _lease_lost(self, lease: LeaseRow) -> None:
-        """租约过期：按恢复预算把运行送回 recovering，预算耗尽记 failed。"""
-        run = self._runs.get(lease.run_id)
-        if run is None or is_terminal(run.state):
+        """租约过期：按恢复预算把运行送回 recovering，预算耗尽记 failed。
+
+        租约在而运行行缺失属库损坏，回收动作在 expire 里已完成，这里无运行可处置。
+        """
+        try:
+            run = self._runs.get(lease.run_id)
+        except RunNotFoundError:
+            return
+        if is_terminal(run.state):
             return
         if not can_transition(run.state, RunState.RECOVERING):
             if can_transition(run.state, RunState.FAILED):

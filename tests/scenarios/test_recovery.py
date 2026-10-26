@@ -10,7 +10,13 @@ from pathlib import Path
 
 import pytest
 
-from contracts import RunState, VerdictStatus
+from contracts import (
+    RunContext,
+    RunState,
+    ScriptHandle,
+    ScriptRef,
+    VerdictStatus,
+)
 from core.clock import VirtualClock
 from core.jobs.run_service import JobRunService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
@@ -212,3 +218,24 @@ def test_disabled_reset_falls_back_to_retry(
     result = make_executor(connection, clock, data_root, provider=provider).execute(run_id)
     assert result.state is RunState.RECOVERING
     assert "reset" not in provider.calls
+
+
+def test_plugin_emit_of_kernel_event_fails_the_call(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """docs/03：插件只能写 run.signal；写内核事件时本次调用按 E_PLUGIN 失败。"""
+
+    class KernelEventScript(FakeScriptAdapter):
+        def launch(self, script: ScriptRef, ctx: RunContext) -> ScriptHandle:
+            ctx.emit("plugin.loaded", {})
+            raise AssertionError("emit 不应放行内核事件")
+
+    connection, clock, runs, data_root = env
+    insert_template(connection, "instant", recovery={"max_attempts": 3})
+    run_id = prepare_run(connection, runs)
+    executor = make_executor(connection, clock, data_root, script=KernelEventScript())
+    result = executor.execute(run_id)
+    # E_PLUGIN 未归类进恢复类别，按 system 处置：默认动作 abort，直接落 failed。
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_PLUGIN"
+    assert "plugin.loaded" not in event_types(connection, run_id)

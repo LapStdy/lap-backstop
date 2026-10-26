@@ -43,6 +43,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 CONFIG_REL = Path("config") / "gui.new.json"
 
@@ -93,32 +94,37 @@ def fail(msg: str) -> None:
 
 
 def resolve_config(maa_dir: str) -> Path:
-    d = Path(maa_dir).expanduser().resolve()
-    if not (d / "MAA.exe").exists():
-        fail(f"{d} 下没有 MAA.exe，--maa-dir 要指向 MAA 目录")
-    return d / CONFIG_REL
+    root = Path(maa_dir).expanduser().resolve()
+    if not (root / "MAA.exe").exists():
+        fail(f"{root} 下没有 MAA.exe，--maa-dir 要指向 MAA 目录")
+    return root / CONFIG_REL
 
 
 def maa_running(maa_dir: Path) -> bool:
-    """该目录下的 MAA.exe 是否在跑（同名进程但从别的目录起的也算，保守拒绝）。"""
+    """MAA.exe 是否在跑；同名进程从别的目录起的也算，保守拒绝。
+
+    查询不可用或超时同样按「在跑」处置：写配置的前提是 MAA 必须没在跑，
+    查不出来时放行等于绕过这个前提。
+    """
     try:
-        out = subprocess.run(
+        completed = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq MAA.exe", "/FO", "CSV", "/NH"],
             capture_output=True,
             text=True,
             timeout=15,
-        ).stdout
-    except OSError:
-        return False
-    return "MAA.exe" in out
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return True
+    return "MAA.exe" in completed.stdout
 
 
-def load(cfg_path: Path) -> dict:
+def load(cfg_path: Path) -> dict[str, Any]:
     with cfg_path.open(encoding="utf-8") as f:
         return json.load(f)
 
 
-def save(cfg_path: Path, data: dict, *, backup: bool = True) -> None:
+def save(cfg_path: Path, data: dict[str, Any], *, backup: bool = True) -> None:
     if backup and cfg_path.exists():
         stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
         cfg_path.with_name(cfg_path.name + f".{stamp}.bak").write_bytes(cfg_path.read_bytes())
@@ -129,7 +135,7 @@ def save(cfg_path: Path, data: dict, *, backup: bool = True) -> None:
     os.replace(tmp, cfg_path)
 
 
-def current_profile(data: dict) -> tuple[str, dict]:
+def current_profile(data: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     name = data.get("Current") or "Default"
     confs = data.get("Configurations") or {}
     if name not in confs:
@@ -137,21 +143,21 @@ def current_profile(data: dict) -> tuple[str, dict]:
     return name, confs[name]
 
 
-def task_queue(cfg: dict) -> list:
+def task_queue(cfg: dict[str, Any]) -> list[dict[str, Any]]:
     q = cfg.get("TaskQueue")
     if not isinstance(q, list):
         fail("该配置没有 TaskQueue 列表")
     return q
 
 
-def parse_value(text: str):
+def parse_value(text: str) -> object:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         return text
 
 
-def default_task(data: dict, type_name: str, name: str | None) -> dict:
+def default_task(data: dict[str, Any], type_name: str, name: str | None) -> dict[str, Any]:
     """优先复制现有同类任务（保留 MAA 的字段与默认值），没有就造最小骨架。"""
     for conf in (data.get("Configurations") or {}).values():
         for t in conf.get("TaskQueue") or []:
@@ -163,7 +169,7 @@ def default_task(data: dict, type_name: str, name: str | None) -> dict:
     return {"$type": type_name, "Name": name or "", "IsEnable": True}
 
 
-def cmd_profiles(data: dict, _args) -> None:
+def cmd_profiles(data: dict[str, Any], _args: argparse.Namespace) -> None:
     cur = data.get("Current")
     for name, conf in (data.get("Configurations") or {}).items():
         mark = "*" if name == cur else " "
@@ -171,14 +177,14 @@ def cmd_profiles(data: dict, _args) -> None:
         print(f"{mark} {name}  （{n} 个任务）")
 
 
-def cmd_use(data: dict, args) -> None:
+def cmd_use(data: dict[str, Any], args: argparse.Namespace) -> None:
     if args.name not in (data.get("Configurations") or {}):
         fail(f"没有配置 {args.name!r}")
     data["Current"] = args.name
     print(f"当前配置 -> {args.name}")
 
 
-def cmd_new(data: dict, args) -> None:
+def cmd_new(data: dict[str, Any], args: argparse.Namespace) -> None:
     confs = data.setdefault("Configurations", {})
     if args.name in confs:
         fail(f"配置 {args.name!r} 已存在")
@@ -189,7 +195,7 @@ def cmd_new(data: dict, args) -> None:
     print(f"已创建配置 {args.name}（复制自 {data.get('Current')}）")
 
 
-def cmd_tasks(data: dict, _args) -> None:
+def cmd_tasks(data: dict[str, Any], _args: argparse.Namespace) -> None:
     name, conf = current_profile(data)
     print(f"配置：{name}")
     for i, t in enumerate(conf.get("TaskQueue") or []):
@@ -197,7 +203,7 @@ def cmd_tasks(data: dict, _args) -> None:
         print(f"{i:>2} [{state}] {t.get('$type', '?'):<18} {t.get('Name') or ''}")
 
 
-def cmd_add(data: dict, args) -> None:
+def cmd_add(data: dict[str, Any], args: argparse.Namespace) -> None:
     if args.type not in TASK_TYPES:
         fail(f"未知任务类型 {args.type!r}，可用：{', '.join(sorted(TASK_TYPES))}")
     _, conf = current_profile(data)
@@ -212,7 +218,7 @@ def cmd_add(data: dict, args) -> None:
     print(f"已添加 {args.type} 到位置 {i}（名字：{task.get('Name') or '（空）'}）")
 
 
-def cmd_rm(data: dict, args) -> None:
+def cmd_rm(data: dict[str, Any], args: argparse.Namespace) -> None:
     _, conf = current_profile(data)
     q = task_queue(conf)
     if not 0 <= args.index < len(q):
@@ -221,7 +227,7 @@ def cmd_rm(data: dict, args) -> None:
     print(f"已删除 {args.index}: {t.get('$type')} {t.get('Name') or ''}")
 
 
-def cmd_move(data: dict, args) -> None:
+def cmd_move(data: dict[str, Any], args: argparse.Namespace) -> None:
     _, conf = current_profile(data)
     q = task_queue(conf)
     if not (0 <= args.index < len(q) and 0 <= args.to < len(q)):
@@ -230,7 +236,7 @@ def cmd_move(data: dict, args) -> None:
     print(f"已移动 {args.index} -> {args.to}")
 
 
-def cmd_set(data: dict, args) -> None:
+def cmd_set(data: dict[str, Any], args: argparse.Namespace) -> None:
     _, conf = current_profile(data)
     q = task_queue(conf)
     if not 0 <= args.index < len(q):
@@ -242,7 +248,7 @@ def cmd_set(data: dict, args) -> None:
     print(f"已设置任务 {args.index} 的 {args.field} = {json.dumps(value, ensure_ascii=False)}")
 
 
-def cmd_show(data: dict, args) -> None:
+def cmd_show(data: dict[str, Any], args: argparse.Namespace) -> None:
     _, conf = current_profile(data)
     q = task_queue(conf)
     if not 0 <= args.index < len(q):
@@ -250,7 +256,7 @@ def cmd_show(data: dict, args) -> None:
     print(json.dumps(q[args.index], ensure_ascii=False, indent=2))
 
 
-def cmd_post_actions(data: dict, args) -> None:
+def cmd_post_actions(data: dict[str, Any], args: argparse.Namespace) -> None:
     names = [x.strip() for x in args.value.split(",") if x.strip()]
     bad = [x for x in names if x not in POST_ACTIONS]
     if bad:
@@ -260,14 +266,14 @@ def cmd_post_actions(data: dict, args) -> None:
     print("PostActions = " + (", ".join(names) or "None"))
 
 
-def cmd_run_directly(data: dict, args) -> None:
+def cmd_run_directly(data: dict[str, Any], args: argparse.Namespace) -> None:
     _, conf = current_profile(data)
     v = parse_value(args.value)
     conf.setdefault("Gui", {}).setdefault("StartUpSettings", {})["RunDirectly"] = bool(v)
     print(f"RunDirectly = {bool(v)}")
 
 
-def cmd_title_prefix(data: dict, args) -> None:
+def cmd_title_prefix(data: dict[str, Any], args: argparse.Namespace) -> None:
     _, conf = current_profile(data)
     conf.setdefault("Gui", {})["WindowTitlePrefix"] = args.value
     print(f"WindowTitlePrefix = {args.value!r}")

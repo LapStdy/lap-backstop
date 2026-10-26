@@ -226,10 +226,7 @@ class _Server:
         return call(*leading(args), context, *trailing(args))
 
     def _capability(self, name: str) -> object | None:
-        value = getattr(self._plugin, name, None)
-        if value is None:
-            return None
-        return value
+        return getattr(self._plugin, name, None)
 
     def _context(self, payload: rpc.ContextPayload, call_id: int) -> RunContext:
         return RunContext(

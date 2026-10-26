@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
-from contracts import RunContext
+from contracts import PLUGIN_EVENTS, EventType, RunContext
 from core.plugins.errors import WorkerPayloadError
 
 PROTOCOL_VERSION: Final = 1
@@ -45,6 +45,37 @@ class ContextPayload:
     evidence_dir: Path
     deadline_at: datetime
     secrets: Mapping[str, str]
+
+
+def plugin_event(name: str) -> EventType:
+    """插件只能写 PLUGIN_EVENTS 里的事件；其余事件由内核写（docs/03）。
+
+    Raises:
+        WorkerPayloadError: 事件名不存在或不属于插件可写集合。
+    """
+    try:
+        event = EventType(name)
+    except ValueError as error:
+        raise WorkerPayloadError(f"未知事件类型：{name}") from error
+    if event not in PLUGIN_EVENTS:
+        raise WorkerPayloadError(f"插件不能写内核事件：{name}")
+    return event
+
+
+def check_plugin_payload(event: EventType, payload: Mapping[str, Any]) -> None:
+    """校验插件事件载荷；run.signal 必须带非空 kind 与对象形态 payload。
+
+    Raises:
+        WorkerPayloadError: 载荷不符合 docs/03 对 run.signal 的要求。
+    """
+    if event is not EventType.RUN_SIGNAL:
+        return
+    kind = payload.get("kind")
+    if not isinstance(kind, str) or not kind:
+        raise WorkerPayloadError("run.signal 的 kind 必须是非空字符串")
+    signal_payload = payload.get("payload", {})
+    if not isinstance(signal_payload, Mapping):
+        raise WorkerPayloadError("run.signal 的 payload 必须是对象")
 
 
 def encode_line(message: Mapping[str, Any]) -> str:

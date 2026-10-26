@@ -235,7 +235,7 @@ def _normalize(merged: dict[str, Any]) -> None:
         merged["expr"] = str(_interval_minutes(merged))
     else:
         merged["at"] = require_timestamp(merged, "at")
-    if int(merged["window_minutes"]) > int(merged["deadline_minutes"]):
+    if merged["window_minutes"] > merged["deadline_minutes"]:
         raise ContractError(ErrorCode.CONFIG, "window_minutes 不能超过 deadline_minutes")
 
 

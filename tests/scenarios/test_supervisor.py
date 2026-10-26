@@ -175,6 +175,28 @@ def test_expired_lease_moves_run_to_recovering(
     assert leases.active_for_run(run_id) == ()
 
 
+def test_cleaning_run_holds_lease_across_renewal_ticks(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """docs/09：租约一直持有到 cleanup 完成；cleaning 中的长清理靠周期续租保住。"""
+    connection, clock, runs, data_root = env
+    insert_template(connection)
+    run_id = prepare_run(connection, runs)
+    runs.enqueue(run_id)
+    ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+    leases = LeaseService(connection, clock)
+    leases.acquire(run_id, (ENV_ID,), ttl=timedelta(minutes=10))
+    runs.transition(run_id, RunState.PREPARING)
+    runs.transition(run_id, RunState.EXECUTING)
+    runs.transition(run_id, RunState.CLEANING)
+    supervisor = supervisor_for(connection, clock, data_root)
+    for _ in range(11):
+        clock.advance(timedelta(minutes=1))
+        supervisor.tick()
+    assert runs.get(run_id).state is RunState.CLEANING
+    assert len(leases.active_for_run(run_id)) == 1
+
+
 def test_expired_warm_window_closes_environment(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
