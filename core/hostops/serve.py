@@ -45,6 +45,7 @@ from core.hostops import heartbeat, instance, tasks, watchdog
 from core.hostops.doctor import WINLOGON_KEY, RegistryGet, registry_get
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
+from core.notify.service import NotifyService
 from core.plugins.registry import PluginRegistry
 from core.supervisor import Supervisor
 from storage import MigrationError, migrate, open_database
@@ -54,7 +55,8 @@ from storage.repositories.events import EventLog
 TICK_INTERVAL_SECONDS = 1.0
 AUTOLOGON_CHECKED_EVENT = "host.autologon_checked"
 TASKS_REGISTERED_EVENT = "host.tasks_registered"
-WATCHDOG_GAVE_UP_EVENT = "host.watchdog_gave_up"
+# 事件名的属主是 watchdog 模块；这里保留同名导出，供既有引用方使用。
+WATCHDOG_GAVE_UP_EVENT = watchdog.WATCHDOG_GAVE_UP_EVENT
 PORT_CONFLICT_EVENT = "core.port_conflict"
 API_HOST_KEY = "api.host"
 API_PORT_KEY = "api.port"
@@ -125,7 +127,7 @@ class HeartbeatWriter:
 
 
 class ServeLoop:
-    """tick 循环：每轮推进一次 Supervisor，到心跳间隔写一次心跳。"""
+    """tick 循环：每轮推进一次 Supervisor，追一次通知，到心跳间隔写一次心跳。"""
 
     def __init__(
         self,
@@ -133,11 +135,13 @@ class ServeLoop:
         runs: JobRunService,
         writer: HeartbeatWriter,
         options: ServeOptions,
+        notify: NotifyService | None = None,
     ) -> None:
         self._supervisor = supervisor
         self._runs = runs
         self._writer = writer
         self._options = options
+        self._notify = notify
         self._last_heartbeat_at: datetime | None = None
 
     def run(self) -> int:
@@ -147,12 +151,22 @@ class ServeLoop:
             self._options.max_ticks is None or ticks < self._options.max_ticks
         ):
             self._supervisor.tick()
+            self._poll_notify()
             if self._supervisor.is_disk_critical:
                 return EXIT_DISK_LOW
             ticks += 1
             self._write_heartbeat_if_due()
             self._options.stop.wait(self._options.tick_interval_seconds)
         return EXIT_OK
+
+    def _poll_notify(self) -> None:
+        """通知轮询：任何失败只记日志，通知故障不拖垮核心循环。"""
+        if self._notify is None:
+            return
+        try:
+            self._notify.poll()
+        except Exception as error:
+            self._options.log.error({"event": "notify.poll_failed", "error": str(error)})
 
     def _write_heartbeat_if_due(self) -> None:
         """到点写心跳；写失败保留上次时刻，下一轮立刻重试。"""
@@ -282,9 +296,13 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
     """库、迁移、启动扫描、API 挂载与 tick 循环；打开失败与运行期错误都记日志退 1。"""
     connection: sqlite3.Connection | None = None
     api_server: ApiServer | None = None
+    notify: NotifyService | None = None
     try:
         connection = open_database(data_root / "backstop.sqlite")
         migrate(connection)
+        # 通知游标在启动扫描与启动事件落库之前定桩：崩溃收尾（运行置 unknown）与
+        # 看门狗停手补报都要进通知，重启不能漏报。
+        notify = NotifyService(connection, options.clock, data_root=data_root, log=options.log)
         supervisor = Supervisor(
             connection,
             options.clock,
@@ -305,12 +323,20 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             pid=os.getpid(),
             version=executable_version(),
         )
-        loop = ServeLoop(supervisor, JobRunService(connection, options.clock), writer, options)
+        loop = ServeLoop(
+            supervisor,
+            JobRunService(connection, options.clock),
+            writer,
+            options,
+            notify=notify,
+        )
         return loop.run()
     except (OSError, sqlite3.Error, MigrationError) as error:
         options.log.error({"event": "serve.run_failed", "error": str(error)})
         return EXIT_ERROR
     finally:
+        if notify is not None:
+            notify.close()
         if api_server is not None:
             api_server.shutdown()
         if connection is not None:

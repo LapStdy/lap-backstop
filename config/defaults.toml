@@ -38,3 +38,16 @@ priority = 0
 deadline_minutes = 180
 preheat_minutes = 0
 keep_warm_minutes = 0
+
+[notify]
+# 外部通知渠道；enabled=false 时其余键不生效也不校验（缺省关闭不报错，docs/06）。
+# token 对 ServerChan 是 SendKey、对钉钉是加签密钥、对 ntfy 是访问令牌。
+# webhook 供钉钉机器人使用；url 供 ntfy 主题地址使用，也可覆盖 ServerChan 官方接口。
+# enabled: bool；channel: serverchan/dingtalk/ntfy；timeout_seconds: 秒，>0；
+# attempts: 总尝试次数，≥1；backoff_seconds: 秒序列，每项 ≥0；use_proxy: bool。
+enabled = false
+channel = "serverchan"
+timeout_seconds = 10
+attempts = 3
+backoff_seconds = [5, 30]
+use_proxy = false

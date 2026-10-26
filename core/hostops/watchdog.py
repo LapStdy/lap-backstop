@@ -32,6 +32,8 @@ CORE_TASK_NAME = "lap-backstop-core"
 ACTION_NONE = "none"
 ACTION_START_REQUESTED = "start_requested"
 ACTION_GAVE_UP = "gave_up"
+# 停手补报事件名；看门狗只留标记，由核心启动时以 core.event 补写（docs/08）。
+WATCHDOG_GAVE_UP_EVENT = "host.watchdog_gave_up"
 
 # 单次检查 3 秒内必须结束（docs/08 自约束）：给 schtasks 留的窗口比它更小。
 _SCHEDULING_TIMEOUT_SECONDS = 2.0
@@ -380,6 +382,7 @@ __all__ = [
     "LOCK_FILENAME",
     "LOG_FILENAME",
     "STATE_FILENAME",
+    "WATCHDOG_GAVE_UP_EVENT",
     "WATCHDOG_MUTEX_NAME",
     "CheckInputs",
     "CheckPolicy",
