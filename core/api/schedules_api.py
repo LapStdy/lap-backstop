@@ -233,7 +233,8 @@ def _normalize(merged: dict[str, Any]) -> None:
         merged["expr"] = require_text(merged, "expr")
     elif kind == "interval":
         merged["expr"] = str(_interval_minutes(merged))
-    else:
+    # 字段表把 at 定义为带时区的 RFC3339 文本：kind=at 必填；其余 kind 给了非空值也照此校验。
+    if kind == "at" or merged.get("at") is not None:
         merged["at"] = require_timestamp(merged, "at")
     if merged["window_minutes"] > merged["deadline_minutes"]:
         raise ContractError(ErrorCode.CONFIG, "window_minutes 不能超过 deadline_minutes")

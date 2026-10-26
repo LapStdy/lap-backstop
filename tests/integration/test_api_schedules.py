@@ -146,6 +146,31 @@ def test_create_rejects_bad_timezone_kind_and_template(app: ApiApp) -> None:
     assert "job_template_id" in str(body_of(bad_template)["error"]["message"])
 
 
+def test_create_rejects_at_field_not_rfc3339_for_any_kind(app: ApiApp) -> None:
+    """at 的字段表类型是带时区的 RFC3339 文本；kind 不是 at 时出现，同样按该类型校验。"""
+    bad_text = call(app, "POST", "/api/v1/schedules", body={**MINIMAL, "at": "not-a-time"})
+    assert bad_text.status == 400
+    assert error_code_of(bad_text) == "E_BAD_REQUEST"
+    bad_type = call(app, "POST", "/api/v1/schedules", body={**MINIMAL, "at": 123})
+    assert bad_type.status == 400
+    assert error_code_of(bad_type) == "E_BAD_REQUEST"
+
+
+def test_create_at_kind_requires_timestamp(app: ApiApp) -> None:
+    """kind=at 必填带时区的 RFC3339 文本；合法值落库后原偏移回显。"""
+    missing = call(
+        app,
+        "POST",
+        "/api/v1/schedules",
+        body={"name": "定点跑", "kind": "at", "job_template_id": TEMPLATE_ID},
+    )
+    assert missing.status == 400
+    body = {**MINIMAL, "kind": "at", "at": "2026-10-27T10:00:00+08:00"}
+    created = call(app, "POST", "/api/v1/schedules", body=body)
+    assert created.status == 201
+    assert body_of(created)["schedule"]["at"] == "2026-10-27T10:00:00+08:00"
+
+
 def test_get_and_list_roundtrip(app: ApiApp) -> None:
     created = call(app, "POST", "/api/v1/schedules", body=MINIMAL)
     schedule_id = body_of(created)["schedule"]["id"]
