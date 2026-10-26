@@ -1,4 +1,4 @@
-"""通知服务集成测试的共用素材：假渠道、fixtures、事件注入与落库断言。"""
+"""通知测试的共用素材：假渠道、本地假服务、fixtures、事件注入与落库断言。"""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from contracts import EventType, Notification, RunContext
@@ -36,6 +37,51 @@ class StubChannel:
         if self.results:
             return self.results.pop(0)
         return DeliveryResult(ok=True)
+
+
+class FakeServer:
+    """可脚本化的本地假渠道：按剧本应答并记录收到的请求。"""
+
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+        self.status = 200
+        self.body = b"{}"
+        self.delay_seconds = 0.0
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(self))
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+        self._thread.start()
+
+    @property
+    def base_url(self) -> str:
+        host = str(self._server.server_address[0])
+        port = int(str(self._server.server_address[1]))
+        return f"http://{host}:{port}"
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _make_handler(owner: FakeServer) -> type[BaseHTTPRequestHandler]:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            raw = self.rfile.read(length)
+            owner.requests.append(
+                {"path": self.path, "headers": dict(self.headers.items()), "body": raw}
+            )
+            if owner.delay_seconds > 0:
+                time.sleep(owner.delay_seconds)
+            self.send_response(owner.status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(owner.body)))
+            self.end_headers()
+            self.wfile.write(owner.body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    return Handler
 
 
 def insert_template(connection: sqlite3.Connection) -> None:
