@@ -31,4 +31,5 @@
 | 编号 | 日期 | 债务 | 原因 | 影响 | 归还期限 | 状态 |
 |---|---|---|---|---|---|---|
 | D-001 | 2026-10-24 | 执行器在核心进程同步跑完整运行（`core/worker/executor.py`），长运行占住 supervisor 的 tick | 本轮隔离先落在插件调用层（ADR 0010），阶段编排留在核心 | API/SSE 接入后，一次长运行期间接口会卡住 | P3 客户端与远程前 | 未还 |
-| D-002 | 2026-10-27 | `core/supervisor.py` 540 行，连续两次超 docs/11 模块上限 500 | 环境动作端点在既有 509 行基础上加 31 行；拆分属独立重构，不混入本功能卡 | 改动热点继续膨胀，tick 主循环可读性与可测性下降 | 下一张内核重构卡 | 未还 |
+| D-002 | 2026-10-27 | `core/supervisor.py` 540 行，连续两次超 docs/11 模块上限 500 | 环境动作端点在既有 509 行基础上加 31 行；拆分属独立重构，不混入本功能卡 | 改动热点继续膨胀，tick 主循环可读性与可测性下降 | 下一张内核重构卡 | 已还（2026-10-27 归还：supervisor.py 216 行；新增 supervisor_disk 103 行、supervisor_environments 167 行、supervisor_leases 126 行、supervisor_recovery 129 行） |
+| D-003 | 2026-10-27 | `tests/unit/test_hostops_doctor.py` 的 `test_check_lock_and_mutex` 与 `test_run_doctor_prints_each_check_and_summary` 依赖本机当刻状态（全局命名互斥量与心跳、计划任务等检查项） | 断言绑定开发机稳定态；故障注入用例会持有 60 秒全局互斥量 | 并行跑 gate 或机器状态变化时误报红，需人工复跑甄别 | 下一张测试整备卡 | 未还 |

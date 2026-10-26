@@ -16,12 +16,8 @@ from core.clock import VirtualClock
 from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeOptions
 from core.jobs.run_service import JobRunService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
-from core.supervisor import (
-    DISK_CRITICAL_EVENT,
-    DISK_FULL_GUARD_EVENT,
-    DISK_LOW_EVENT,
-    Supervisor,
-)
+from core.supervisor import Supervisor
+from core.supervisor_disk import DISK_CRITICAL_EVENT, DISK_FULL_GUARD_EVENT, DISK_LOW_EVENT
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
