@@ -32,8 +32,12 @@ def _stop_wait(stop: threading.Event) -> Wait:
 
 @dataclass(frozen=True, slots=True)
 class PendingDelivery:
-    """一条待投递通知；run_id 为 None 表示无运行归属（看门狗、环境）。"""
+    """一条待投递通知；run_id 为 None 表示无运行归属（看门狗、环境）。
 
+    notification_id 是账目行的主键：入账与终态更新按它对上同一行。
+    """
+
+    notification_id: str
     notification: Notification
     run_id: str | None
     channel: str
@@ -43,6 +47,7 @@ class PendingDelivery:
 class DeliveryOutcome:
     """一次投递任务的终态：成功，或重试耗尽/停机放弃。"""
 
+    notification_id: str
     run_id: str | None
     channel: str
     ok: bool
@@ -86,9 +91,10 @@ def deliver_one(
     Returns:
         终态结果；attempts 字段是实际尝试的次数，停机打断时小于配置值。
     """
+    notification_id = item.notification_id
     send = snapshot.send
     if send is None:
-        return DeliveryOutcome(item.run_id, item.channel, False, "渠道不可用", 0)
+        return DeliveryOutcome(notification_id, item.run_id, item.channel, False, "渠道不可用", 0)
     last_error = "停机放弃投递"
     tried = 0
     for attempt in range(1, snapshot.attempts + 1):
@@ -97,12 +103,12 @@ def deliver_one(
         tried = attempt
         result = send(item.notification)
         if result.ok:
-            return DeliveryOutcome(item.run_id, item.channel, True, "", attempt)
+            return DeliveryOutcome(notification_id, item.run_id, item.channel, True, "", attempt)
         last_error = _error_of(result)
         if attempt == snapshot.attempts or stop.is_set():
             break
         wait(snapshot.backoff_seconds[min(attempt - 1, len(snapshot.backoff_seconds) - 1)])
-    return DeliveryOutcome(item.run_id, item.channel, False, last_error, tried)
+    return DeliveryOutcome(notification_id, item.run_id, item.channel, False, last_error, tried)
 
 
 class DeliveryWorker:

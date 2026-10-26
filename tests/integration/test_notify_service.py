@@ -303,3 +303,87 @@ def test_environment_degraded_does_not_notify(
     )
     service.poll()
     assert stub.sent == []
+
+
+def test_successful_delivery_records_pending_then_sent(
+    connection: sqlite3.Connection,
+    stub: Any,
+    service_factory: Callable[..., Any],
+) -> None:
+    run_id = create_run(connection, "notify:ledger-sent")
+    service = service_factory()
+    append_run_event(
+        connection,
+        run_id,
+        EventType.RUN_FINISHED,
+        {"run_id": run_id, "status": "succeeded", "duration_ms": 1000},
+    )
+    service.poll()
+    rows = _ledger_rows(connection)
+    assert len(rows) == 1
+    assert rows[0]["run_id"] == run_id
+    assert rows[0]["channel"] == "serverchan"
+    assert rows[0]["status"] == "pending"
+    assert rows[0]["attempts"] == 0
+    assert rows[0]["sent_at"] is None
+    assert rows[0]["error"] is None
+    assert stub.delivered.wait(2.0)
+    assert record_outcomes_within(service, lambda: _ledger_status(connection) == "sent")
+    row = _ledger_rows(connection)[0]
+    assert row["status"] == "sent"
+    assert row["attempts"] == 1
+    assert row["sent_at"] is not None
+    assert row["error"] is None
+
+
+def test_exhausted_delivery_records_failed_row(
+    connection: sqlite3.Connection,
+    stub: Any,
+    service_factory: Callable[..., Any],
+) -> None:
+    run_id = create_run(connection, "notify:ledger-failed")
+    stub.results = [DeliveryResult(ok=False, error_code="E_NOTIFY", detail="HTTP 500")] * 3
+    waits: list[float] = []
+    service = service_factory(waits=waits)
+    append_run_event(
+        connection,
+        run_id,
+        EventType.RUN_FINISHED,
+        {"run_id": run_id, "status": "failed", "duration_ms": 1000},
+    )
+    service.poll()
+    assert wait_until(lambda: len(stub.sent) == 3 and len(waits) == 2)
+    assert record_outcomes_within(service, lambda: _ledger_status(connection) == "failed")
+    row = _ledger_rows(connection)[0]
+    assert row["status"] == "failed"
+    assert row["attempts"] == 3
+    assert "HTTP 500" in str(row["error"])
+    assert row["sent_at"] is None
+
+
+def test_disabled_notify_writes_no_ledger_rows(
+    connection: sqlite3.Connection,
+    stub: Any,
+    service_factory: Callable[..., Any],
+) -> None:
+    service = service_factory(settings={"notify.enabled": False})
+    run_id = create_run(connection, "notify:ledger-off")
+    append_run_event(
+        connection,
+        run_id,
+        EventType.RUN_FINISHED,
+        {"run_id": run_id, "status": "succeeded", "duration_ms": 1000},
+    )
+    service.poll()
+    service.poll()
+    assert stub.sent == []
+    assert _ledger_rows(connection) == []
+
+
+def _ledger_rows(connection: sqlite3.Connection) -> list[sqlite3.Row]:
+    return connection.execute("SELECT * FROM notifications ORDER BY id").fetchall()
+
+
+def _ledger_status(connection: sqlite3.Connection) -> str | None:
+    row = connection.execute("SELECT status FROM notifications").fetchone()
+    return None if row is None else str(row["status"])

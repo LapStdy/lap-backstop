@@ -82,6 +82,12 @@ class CheckStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class NotificationStatus(StrEnum):
+    PENDING = "pending"
+    SENT = "sent"
+    FAILED = "failed"
+
+
 class EvidenceKind(StrEnum):
     SCREENSHOT = "screenshot"
     LOG = "log"

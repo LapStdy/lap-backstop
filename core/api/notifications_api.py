@@ -1,12 +1,48 @@
-"""通知端点：按当前配置做一次真实测试投递（docs/03 POST /notifications/test）。"""
+"""通知端点：投递记录列表（GET /notifications）与测试投递（POST /notifications/test）。"""
 
 from __future__ import annotations
 
+from typing import Final
+
 from contracts import ContractError, ErrorCode
-from core.api import store
+from core.api import notifications_store, store
 from core.api.ctx import RequestCtx
 from core.api.wire import ApiResponse
 from core.notify.selftest import build_kernel_delivery_context, deliver_test_notification
+
+DEFAULT_LIMIT: Final[int] = 100
+MAX_LIMIT: Final[int] = 500
+
+
+def list_notifications(ctx: RequestCtx) -> ApiResponse:
+    """通知记录列表；过滤与截断口径见 docs/03 端点表，端点只读、不写事件。"""
+    return ApiResponse(
+        status=200,
+        payload={
+            "notifications": notifications_store.notification_rows(ctx.connection, _filters(ctx))
+        },
+    )
+
+
+def _filters(ctx: RequestCtx) -> notifications_store.NotificationFilters:
+    """解析过滤参数；认识的参数按 docs/03 口径收敛，不认识的忽略。"""
+    query = ctx.query
+    return notifications_store.NotificationFilters(
+        run_id=query.get("run_id"),
+        status=query.get("status"),
+        limit=_limit(query.get("limit")),
+    )
+
+
+def _limit(raw: str | None) -> int:
+    """limit 收敛到 1..500：缺省与非整数按默认，小于 1 按 1，大于上限按上限。"""
+    if raw is None:
+        return DEFAULT_LIMIT
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_LIMIT
+    return max(1, min(value, MAX_LIMIT))
 
 
 def post_notification_test(ctx: RequestCtx) -> ApiResponse:
@@ -40,4 +76,4 @@ def post_notification_test(ctx: RequestCtx) -> ApiResponse:
     return ApiResponse(status=200, payload=payload)
 
 
-__all__ = ["post_notification_test"]
+__all__ = ["list_notifications", "post_notification_test"]

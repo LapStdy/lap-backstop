@@ -16,7 +16,9 @@ from core.notify.delivery import (
 )
 
 NOTIFICATION = Notification(level=NotificationLevel.INFO, title="t", body="b")
-ITEM = PendingDelivery(notification=NOTIFICATION, run_id="r1", channel="serverchan")
+ITEM = PendingDelivery(
+    notification_id="n-1", notification=NOTIFICATION, run_id="r1", channel="serverchan"
+)
 
 
 def _send_script(results: list[DeliveryResult], calls: list[Notification]) -> Any:
@@ -168,6 +170,7 @@ def test_worker_delivers_and_reports_outcome() -> None:
             "serverchan",
             1,
         )
+        assert outcomes[0].notification_id == "n-1"
     finally:
         worker.close(join_timeout=5.0)
     assert len(calls) == 1
