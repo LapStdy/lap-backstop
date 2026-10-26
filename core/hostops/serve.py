@@ -41,6 +41,7 @@ from core.api.server import (
 from core.api.store import all_settings, bearer_token, ensure_token
 from core.api.version import executable_version
 from core.clock import SystemClock
+from core.events.maintenance import GlobalEventsPruner
 from core.hostops import heartbeat, instance, tailscale, tasks, watchdog
 from core.hostops.doctor import WINLOGON_KEY, RegistryGet, registry_get
 from core.jobs.run_service import JobRunService
@@ -128,7 +129,7 @@ class HeartbeatWriter:
 
 
 class ServeLoop:
-    """tick 循环：每轮推进一次 Supervisor，追一次通知，到心跳间隔写一次心跳。"""
+    """tick 循环：每轮推进一次 Supervisor、追一次通知、按日闸门清一次全局事件，到心跳间隔写心跳。"""
 
     def __init__(
         self,
@@ -137,12 +138,20 @@ class ServeLoop:
         writer: HeartbeatWriter,
         options: ServeOptions,
         notify: NotifyService | None = None,
+        pruner: GlobalEventsPruner | None = None,
     ) -> None:
+        """装配循环部件；协作对象传 None 即关闭对应侧工作。
+
+        构造参数超过上限 4 属评审已说明的例外：supervisor、runs、writer、
+        options 是循环的既定部件，notify 与 pruner 是两个可选协作对象，
+        测试按需注入，语义互不重叠。
+        """
         self._supervisor = supervisor
         self._runs = runs
         self._writer = writer
         self._options = options
         self._notify = notify
+        self._pruner = pruner
         self._last_heartbeat_at: datetime | None = None
 
     def run(self) -> int:
@@ -153,6 +162,7 @@ class ServeLoop:
         ):
             self._supervisor.tick()
             self._poll_notify()
+            self._prune_global_events()
             if self._supervisor.is_disk_critical:
                 return EXIT_DISK_LOW
             ticks += 1
@@ -168,6 +178,17 @@ class ServeLoop:
             self._notify.poll()
         except Exception as error:
             self._options.log.error({"event": "notify.poll_failed", "error": str(error)})
+
+    def _prune_global_events(self) -> None:
+        """全局事件保留清理：任何失败只记日志，维护故障不拖垮核心循环。"""
+        if self._pruner is None:
+            return
+        try:
+            self._pruner.run_once()
+        except Exception as error:
+            self._options.log.error(
+                {"event": "maintenance.global_events_prune_failed", "error": str(error)}
+            )
 
     def _write_heartbeat_if_due(self) -> None:
         """到点写心跳；写失败保留上次时刻，下一轮立刻重试。"""
@@ -331,6 +352,7 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             writer,
             options,
             notify=notify,
+            pruner=GlobalEventsPruner(connection, options.clock, log=options.log),
         )
         return loop.run()
     except (OSError, sqlite3.Error, MigrationError) as error:

@@ -14,8 +14,12 @@ from contracts import (
     global_event_id,
     run_event_id,
 )
+from storage.db.transaction import transaction
 from storage.repositories.iso_time import format_at, parse_at
 from storage.repositories.json_columns import dump_json, load_json_object
+
+# docs/03 保留表定口径：全局事件只保留最近 1000 条。
+GLOBAL_EVENTS_KEEP = 1000
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,6 +122,38 @@ class EventLog:
             )
             for row in rows
         )
+
+    def prune_global(self, *, keep: int = GLOBAL_EVENTS_KEEP) -> int:
+        """把全局事件收敛到最近 ``keep`` 条，返回删除的条数。
+
+        按序号范围删除最旧的超限行：定位保留窗口起点的 seq 后整段删除，
+        不做全表扫描；窗口内行的 seq 原样保留，AUTOINCREMENT 不回退。
+        重复调用是幂等的：第二次返回 0。
+
+        Args:
+            keep: 保留条数，至少 1。
+
+        Returns:
+            实际删除的条数；表不超过保留条数时为 0。
+
+        Raises:
+            ValueError: keep 小于 1。
+            sqlite3.Error: 删除失败，事务整体回滚。
+        """
+        if keep < 1:
+            raise ValueError(f"keep 必须 ≥ 1，收到 {keep}")
+        with transaction(self._connection):
+            row = self._connection.execute(
+                "SELECT seq FROM events_global ORDER BY seq DESC LIMIT 1 OFFSET ?",
+                (keep - 1,),
+            ).fetchone()
+            if row is None:
+                return 0
+            cursor = self._connection.execute(
+                "DELETE FROM events_global WHERE seq < ?",
+                (int(row[0]),),
+            )
+            return int(cursor.rowcount)
 
     def _next_run_seq(self, run_id: str) -> int:
         row = self._connection.execute(
