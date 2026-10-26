@@ -39,6 +39,10 @@ deadline_minutes = 180
 preheat_minutes = 0
 keep_warm_minutes = 0
 
+[api]
+# 远程监听开关：为 true 时启动阶段探测 Tailscale 并追加 tailnet 地址（docs/08）。
+remote_enabled = false
+
 [notify]
 # 外部通知渠道；enabled=false 时其余键不生效也不校验（缺省关闭不报错，docs/06）。
 # token 对 ServerChan 是 SendKey、对钉钉是加签密钥、对 ntfy 是访问令牌。
