@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TypedDict
 
+from contracts import TERMINAL_RUN_STATES, RunState
 from storage.repositories.iso_time import format_at
 from storage.repositories.sql import optional_str
 
@@ -86,16 +87,7 @@ class RunSummaryJson(TypedDict):
     error_code: str | None
 
 
-_ACTIVE_STATES = (
-    "scheduled",
-    "queued",
-    "preparing",
-    "waiting",
-    "executing",
-    "verifying",
-    "cleaning",
-    "recovering",
-)
+_ACTIVE_STATES = tuple(state.value for state in RunState if state not in TERMINAL_RUN_STATES)
 
 
 def active_run_rows(connection: sqlite3.Connection) -> list[RunJson]:

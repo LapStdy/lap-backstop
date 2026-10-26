@@ -15,6 +15,7 @@ from contracts import Clock, ContractError, ErrorCode, RunState
 from core.api import run_store
 from core.api.ctx import RequestCtx
 from core.api.fields import require_timestamp
+from core.api.run_store import RunJson
 from core.api.wire import ApiResponse, FileBody
 from core.events.evidence import EvidenceService
 from core.jobs.errors import IllegalRunTransitionError, RunNotFoundError
@@ -115,8 +116,8 @@ def _content_type(path: str) -> str:
     return _CONTENT_TYPES.get(PurePosixPath(path).suffix.lower(), DEFAULT_CONTENT_TYPE)
 
 
-def run_json(record: JobRunRecord) -> dict[str, Any]:
-    """JobRunRecord 的 JSON 形态。"""
+def run_json(record: JobRunRecord) -> RunJson:
+    """运行行（docs/03 job_runs 字段表）的 JSON 形态；详情与列表共用同一形态。"""
     return {
         "id": record.id,
         "template_id": record.template_id,
