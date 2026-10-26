@@ -76,9 +76,9 @@ def main(argv: list[str] | None = None) -> int:
     from core.hostops.tasks import register_registered_tasks
 
     data_root = Path(arguments.data_root)
-    ok, detail = register_registered_tasks(data_root, registered_at=SystemClock().utc_now())
-    print(detail)
-    return EXIT_OK if ok else EXIT_ERROR
+    registration = register_registered_tasks(data_root, registered_at=SystemClock().utc_now())
+    print(registration.detail)
+    return EXIT_OK if registration.ok else EXIT_ERROR
 
 
 def _run_watchdog_check(data_root: Path) -> int:
