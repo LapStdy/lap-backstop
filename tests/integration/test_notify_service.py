@@ -13,6 +13,7 @@ from typing import Any
 
 from contracts import EventType, EvidenceKind, EvidenceSource, NotificationLevel
 from contracts.types import DeliveryResult
+from core.hostops.tailscale import TAILSCALE_DOWN_EVENT
 from core.hostops.watchdog import WATCHDOG_GAVE_UP_EVENT
 from storage.repositories.evidence import EvidenceRepository, EvidenceRow
 from tests.notify_support import (
@@ -228,6 +229,42 @@ def test_watchdog_gave_up_notifies_without_run(
     assert record_outcomes_within(service, lambda: len(core_events(connection, "notify.sent")) == 1)
     assert core_events(connection, "notify.sent")[0]["payload"]["channel"] == "serverchan"
     assert run_event_payloads(connection, EventType.NOTIFY_SENT) == []
+
+
+def test_tailscale_down_notifies_without_run(
+    connection: sqlite3.Connection,
+    stub: Any,
+    service_factory: Callable[..., Any],
+) -> None:
+    service = service_factory()
+    append_global_event(
+        connection,
+        EventType.HOST_EVENT,
+        {"event": TAILSCALE_DOWN_EVENT, "detail": "NeedsLogin"},
+    )
+    service.poll()
+    assert stub.delivered.wait(2.0)
+    notification = stub.sent[0]
+    assert notification.level is NotificationLevel.WARN
+    assert notification.title == "Tailscale 未运行"
+    assert "NeedsLogin" in notification.body
+    assert record_outcomes_within(service, lambda: len(core_events(connection, "notify.sent")) == 1)
+    assert run_event_payloads(connection, EventType.NOTIFY_SENT) == []
+
+
+def test_tailscale_down_is_silent_when_channel_disabled(
+    connection: sqlite3.Connection,
+    stub: Any,
+    service_factory: Callable[..., Any],
+) -> None:
+    service = service_factory(settings={"notify.enabled": False})
+    append_global_event(
+        connection,
+        EventType.HOST_EVENT,
+        {"event": TAILSCALE_DOWN_EVENT, "detail": "Stopped"},
+    )
+    service.poll()
+    assert stub.sent == []
 
 
 def test_environment_failed_notifies(

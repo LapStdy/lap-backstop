@@ -30,6 +30,7 @@ from contracts import (
 )
 from contracts.types import DeliveryResult
 from core.api.store import all_settings
+from core.hostops import tailscale
 from core.hostops.watchdog import WATCHDOG_GAVE_UP_EVENT
 from core.logging import NullLogger
 from core.notify.channels import build_channel
@@ -222,7 +223,7 @@ class NotifyService:
             self._notify_run(str(row["run_id"]), str(row["type"]), _payload_of(row["payload"]))
 
     def _notify_global(self, event_type: str, payload: Mapping[str, Any]) -> None:
-        """全局事件映射：环境 failed 与看门狗停手；两者都无运行归属。"""
+        """全局事件映射：环境 failed、看门狗停手与 Tailscale 未运行；都无运行归属。"""
         if event_type == EventType.ENV_STATE_CHANGED.value and (
             payload.get("to_state") == EnvironmentState.FAILED.value
         ):
@@ -231,6 +232,10 @@ class NotifyService:
             payload.get("event") == WATCHDOG_GAVE_UP_EVENT
         ):
             self._submit(self._notifications.watchdog(payload), run_id=None)
+        elif event_type == EventType.HOST_EVENT.value and (
+            payload.get("event") == tailscale.TAILSCALE_DOWN_EVENT
+        ):
+            self._submit(self._notifications.tailscale(payload), run_id=None)
 
     def _notify_run(self, run_id: str, event_type: str, payload: Mapping[str, Any]) -> None:
         """运行事件映射：运行结束与恢复停手；同一运行只推先到的一条。"""
