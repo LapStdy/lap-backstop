@@ -38,10 +38,10 @@ from core.api.server import (
     ApiServer,
     start_api_server,
 )
-from core.api.store import all_settings, bearer_token
+from core.api.store import all_settings, bearer_token, ensure_token
 from core.api.version import executable_version
 from core.clock import SystemClock
-from core.hostops import heartbeat, instance, tasks, watchdog
+from core.hostops import heartbeat, instance, tailscale, tasks, watchdog
 from core.hostops.doctor import WINLOGON_KEY, RegistryGet, registry_get
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
@@ -78,6 +78,7 @@ class ServeOptions:
     register_tasks: bool = True
     task_runner: tasks.Runner = field(default_factory=lambda: subprocess.run)
     registry_get: RegistryGet = field(default_factory=lambda: registry_get)
+    tailscale_runner: tailscale.Runner = field(default_factory=lambda: tailscale.default_runner)
     on_api_listening: Callable[[str, int], None] | None = None
 
 
@@ -233,11 +234,12 @@ def _record_events(
     events: Iterable[tuple[str, str]],
     *,
     at: datetime,
+    event_type: EventType = EventType.CORE_EVENT,
 ) -> None:
-    """把启动事件作为全局核心事件落库；写不进说明库有故障，由调用方处置。"""
+    """把启动事件作为全局事件落库；写不进说明库有故障，由调用方处置。"""
     log = EventLog(connection)
     for event, detail in events:
-        log.append_global(EventType.CORE_EVENT, {"event": event, "detail": detail}, at=at)
+        log.append_global(event_type, {"event": event, "detail": detail}, at=at)
 
 
 def run_serve(data_root: Path, options: ServeOptions | None = None) -> int:
@@ -343,27 +345,81 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             connection.close()
 
 
+@dataclass(frozen=True, slots=True)
+class ListenPlan:
+    """一次启动的监听计划：主地址、端口与追加监听的 tailnet 地址。"""
+
+    host: str
+    port: int
+    extra_hosts: tuple[str, ...] = ()
+
+
 def _start_api(
     connection: sqlite3.Connection,
     options: ServeOptions,
 ) -> tuple[ApiServer | None, int | None]:
-    """按 settings 挂载 API；未配 token 不启动，端口被占退 4 并写 core.port_conflict。"""
-    if bearer_token(connection) is None:
-        options.log.warn(
-            {"event": "serve.api_skipped", "reason": "settings 未配置 api.token，本进程不监听"}
-        )
-        return None, None
+    """按 settings 挂载 API：无 token 先自生成，端口被占退 4，tailnet 绑定失败降级。"""
+    _ensure_token_logged(connection, options)
     try:
-        host, port = _api_listen(all_settings(connection))
+        settings = all_settings(connection)
+        host, port = _api_listen(settings)
+        extra_hosts, down_detail = tailscale.remote_listen_plan(
+            settings, options.tailscale_runner, options.log
+        )
     except ValueError as error:
         options.log.error({"event": "serve.api_config_invalid", "error": str(error)})
         return None, EXIT_ERROR
+    if down_detail is not None:
+        _record_events(
+            connection,
+            [(tailscale.TAILSCALE_DOWN_EVENT, down_detail)],
+            at=options.clock.utc_now(),
+            event_type=EventType.HOST_EVENT,
+        )
+        options.log.warn({"event": "serve.tailscale_down", "detail": down_detail})
+    # api.host 直接配成 tailnet 地址时不再重复追加，避免同一地址绑两次。
+    plan = tailscale.ListenPlan(host, port, tuple(extra for extra in extra_hosts if extra != host))
+    server = _bind_api(connection, options, plan)
+    if server is None:
+        return None, EXIT_PORT_CONFLICT
+    tailscale.record_bind_degradation(
+        connection, failures=server.bind_failures, at=options.clock.utc_now()
+    )
+    bound_hosts = {bound_host for bound_host, _bound_port in server.addresses}
+    options.log.info(
+        {
+            "event": "serve.api_listening",
+            "host": plan.host,
+            "port": plan.port,
+            "extra_hosts": [extra for extra in plan.extra_hosts if extra in bound_hosts],
+        }
+    )
+    if options.on_api_listening is not None:
+        options.on_api_listening(*server.address)
+    return server, None
+
+
+def _ensure_token_logged(connection: sqlite3.Connection, options: ServeOptions) -> None:
+    """无可用 token 时生成并落库；日志只记已生成，不记值（docs/11）。"""
+    if bearer_token(connection) is not None:
+        return
+    ensure_token(connection, at=options.clock.utc_now())
+    options.log.info({"event": "serve.token_generated", "detail": "已生成访问令牌"})
+
+
+def _bind_api(
+    connection: sqlite3.Connection,
+    options: ServeOptions,
+    plan: tailscale.ListenPlan,
+) -> ApiServer | None:
+    """启动 API 服务；主地址端口被占写 core.port_conflict 返回 None，其余 OSError 上抛。"""
     try:
-        server = start_api_server(
+        return start_api_server(
             connection,
             ApiOptions(
-                host=host,
-                port=port,
+                host=plan.host,
+                port=plan.port,
+                extra_hosts=plan.extra_hosts,
                 clock=options.clock,
                 log=options.log,
                 stop=options.stop,
@@ -375,17 +431,18 @@ def _start_api(
             raise
         _record_events(
             connection,
-            [(PORT_CONFLICT_EVENT, f"{host}:{port} 已被其它进程监听：{error}")],
+            [(PORT_CONFLICT_EVENT, f"{plan.host}:{plan.port} 已被其它进程监听：{error}")],
             at=options.clock.utc_now(),
         )
         options.log.error(
-            {"event": "serve.port_conflict", "host": host, "port": port, "error": str(error)}
+            {
+                "event": "serve.port_conflict",
+                "host": plan.host,
+                "port": plan.port,
+                "error": str(error),
+            }
         )
-        return None, EXIT_PORT_CONFLICT
-    options.log.info({"event": "serve.api_listening", "host": host, "port": port})
-    if options.on_api_listening is not None:
-        options.on_api_listening(*server.address)
-    return server, None
+        return None
 
 
 def _api_listen(settings: Mapping[str, Any]) -> tuple[str, int]:

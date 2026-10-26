@@ -6,6 +6,7 @@ SQL 结果直接映射成端点应答的 snake_case JSON 结构。
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 from collections.abc import Mapping
 from datetime import datetime
@@ -16,6 +17,8 @@ from storage.repositories.iso_time import format_at
 
 TOKEN_KEY = "api.token"
 SERVER_ID_KEY = "server.id"
+# 32 字节熵的 URL-safe 随机值（43 字符）：离线穷举不可行（docs/08 鉴权）。
+TOKEN_BYTES = 32
 
 
 def all_settings(connection: sqlite3.Connection) -> dict[str, Any]:
@@ -74,11 +77,27 @@ def ensure_server_id(connection: sqlite3.Connection, *, at: datetime) -> str:
     return server_id
 
 
+def ensure_token(connection: sqlite3.Connection, *, at: datetime) -> str:
+    """取 Bearer token；未配置时生成强随机值落库，已有配置原样返回。
+
+    与 ensure_server_id 同一幂等口径：settings 里已有可用 token（非空字符串）
+    不覆盖。生成值只经返回值交给调用方，不进日志、不进事件。
+    """
+    existing = bearer_token(connection)
+    if existing is not None:
+        return existing
+    token = secrets.token_urlsafe(TOKEN_BYTES)
+    put_settings(connection, {TOKEN_KEY: token}, at=at)
+    return token
+
+
 __all__ = [
     "SERVER_ID_KEY",
+    "TOKEN_BYTES",
     "TOKEN_KEY",
     "all_settings",
     "bearer_token",
     "ensure_server_id",
+    "ensure_token",
     "put_settings",
 ]
