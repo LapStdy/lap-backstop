@@ -345,15 +345,6 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             connection.close()
 
 
-@dataclass(frozen=True, slots=True)
-class ListenPlan:
-    """一次启动的监听计划：主地址、端口与追加监听的 tailnet 地址。"""
-
-    host: str
-    port: int
-    extra_hosts: tuple[str, ...] = ()
-
-
 def _start_api(
     connection: sqlite3.Connection,
     options: ServeOptions,
