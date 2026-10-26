@@ -17,9 +17,9 @@ from pathlib import Path
 from contracts import Clock, ContractError, ErrorCode, Logger
 from core.api import store
 from core.api.ctx import Handler, RequestCtx
-from core.api.events_api import StreamOptions, stream_frames
+from core.api.events_api import StreamOptions, stream_frames, stream_run_frames
 from core.api.notifications_api import post_notification_test
-from core.api.runs_api import get_run, list_runs, stop_run
+from core.api.runs_api import get_run, list_runs, require_run, stop_run
 from core.api.schedules_api import (
     create_schedule,
     delete_schedule,
@@ -142,6 +142,26 @@ class ApiApp:
         """全局事件流的 SSE 帧迭代器；传输层鉴权后逐帧写出，游标由帧携带。"""
         return stream_frames(
             self._database,
+            StreamOptions(clock=self._clock, stop=stop, last_event_id=last_event_id),
+        )
+
+    def run_event_frames(
+        self,
+        run_id: str,
+        last_event_id: str | None,
+        *,
+        stop: threading.Event,
+    ) -> Iterator[bytes]:
+        """单运行事件流的 SSE 帧迭代器；未知运行按 404 口径在开流前拒绝。
+
+        Raises:
+            ContractError: 运行不存在，错误码 E_NOT_FOUND。
+        """
+        with closing(open_database(self._database)) as connection:
+            require_run(connection, self._clock, run_id)
+        return stream_run_frames(
+            self._database,
+            run_id,
             StreamOptions(clock=self._clock, stop=stop, last_event_id=last_event_id),
         )
 
