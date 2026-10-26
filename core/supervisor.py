@@ -14,15 +14,12 @@ from typing import Any
 
 from contracts import (
     Clock,
-    EnvironmentRef,
-    EnvironmentState,
     EventType,
     Logger,
     PhaseResult,
-    RunContext,
     RunState,
 )
-from core.environments.service import EnvironmentCall, EnvironmentService
+from core.environments.service import EnvironmentService
 from core.events.replay import ReplayError, RunSnapshot, replay_run
 from core.jobs.errors import RunNotFoundError
 from core.jobs.run_service import DiskFullError, JobRunService, disk_free_bytes
@@ -34,9 +31,9 @@ from core.resources.errors import ResourceBusyError
 from core.resources.service import LeaseService
 from core.scheduler.scan import ScheduleScanner
 from core.supervisor_disk import DiskWatermark
+from core.supervisor_environments import EnvironmentSupervision
 from core.worker.executor import CancelFlag, WorkerExecutor
 from storage.defaults import default
-from storage.repositories.environments import EnvironmentRow
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
 from storage.repositories.job_templates import JobTemplateRepository
@@ -64,9 +61,6 @@ _ORPHAN_STATES = frozenset(
         RunState.CLEANING,
     }
 )
-# 崩溃只让中间态失真：off 是稳定关机、ready 可被下一次运行直接复用，
-# 其余状态都可能是崩溃瞬间的半程，启动时必须重新探测（docs/09）。
-_STARTUP_PROBE_SKIP = frozenset({EnvironmentState.OFF, EnvironmentState.READY})
 
 
 class Supervisor:
@@ -94,12 +88,19 @@ class Supervisor:
         self._scanner = ScheduleScanner(connection, clock, self._runs)
         self._templates = JobTemplateRepository(connection)
         self._schedules = ScheduleRepository(connection)
-        self._environments = EnvironmentService(connection, clock)
         self._leases = LeaseService(connection, clock)
         self._events = EventLog(connection)
         self._cancel_flags: dict[str, CancelFlag] = {}
         self._last_renew_at: datetime | None = None
         self._disk_watermark = DiskWatermark(self._disk_free, self._log, self._emit_global)
+        self._environment_watch = EnvironmentSupervision(
+            EnvironmentService(connection, clock),
+            registry,
+            clock,
+            data_root=data_root,
+            log=self._log,
+            emit_global=self._emit_global,
+        )
 
     def startup(self) -> tuple[JobRunRecord, ...]:
         """启动扫描：重建运行、回收孤儿租约，最后对状态不明的环境各探一次。"""
@@ -124,7 +125,7 @@ class Supervisor:
                 continue
             if is_terminal(run.state):
                 self._release_orphan(lease)
-        self._probe_environments()
+        self._environment_watch.probe_environments()
         return tuple(settled)
 
     def tick(self) -> None:
@@ -148,7 +149,7 @@ class Supervisor:
         self._runs.fail_overdue(now)
         self._expire_leases(now)
         self._renew_leases(now)
-        self._close_warm(now)
+        self._environment_watch.close_warm(now)
         self._dispatch(now)
 
     @property
@@ -172,8 +173,7 @@ class Supervisor:
             EnvironmentStateError: 状态机拒绝，如环境 busy。
             PluginError: provider 缺失或未声明 environment 能力。
         """
-        row = self._environments.get(environment_id)
-        return self._environments.prepare(self._environment_call(row, "prepare"))
+        return self._environment_watch.prepare(environment_id)
 
     def reset_environment(self, environment_id: str) -> PhaseResult:
         """手动复位：任何状态先回 booting，成功后仍等探针确认 ready。
@@ -182,8 +182,7 @@ class Supervisor:
             EnvironmentNotFoundError: 环境不存在。
             PluginError: provider 缺失或未声明 environment 能力。
         """
-        row = self._environments.get(environment_id)
-        return self._environments.reset(self._environment_call(row, "reset"))
+        return self._environment_watch.reset(environment_id)
 
     def _replay(self, run: JobRunRecord) -> RunSnapshot | None:
         """回放事件流重建快照；流损坏不拦启动，返回 None 由调用方按表状态兜底。"""
@@ -247,35 +246,6 @@ class Supervisor:
                 }
             )
 
-    def _probe_environments(self) -> None:
-        """启动探测与运行恢复互相独立：不管运行重建结果如何，中间态环境各探一次。
-
-        只挂在启动扫描上，tick 不探测；探后仍 unknown 的等下一次启动再判，本轮不补探。
-        """
-        now = self._clock.utc_now()
-        for row in self._environments.list_all():
-            if row.state in _STARTUP_PROBE_SKIP:
-                continue
-            try:
-                provider = self._registry.environment(row.provider_id)
-            except Exception as error:
-                self._log.warn(
-                    {
-                        "event": "supervisor.probe_provider_missing",
-                        "environment_id": row.id,
-                        "error": str(error),
-                    }
-                )
-                self._environments.mark_unknown(row.id, detail=f"探针不可用：{error}")
-                continue
-            call = EnvironmentCall(
-                environment_id=row.id,
-                provider=provider,
-                ref=EnvironmentRef(id=row.id, provider_id=row.provider_id),
-                ctx=self._standalone_context(row, now, "probe"),
-            )
-            self._environments.probe(call)
-
     def _expire_leases(self, now: datetime) -> None:
         for lease in self._leases.expire(now):
             self._lease_lost(lease)
@@ -335,64 +305,6 @@ class Supervisor:
             self._leases.renew(lease.run_id)
             renewed.add(lease.run_id)
 
-    def _close_warm(self, now: datetime) -> None:
-        for row in self._environments.warm_expired(now):
-            self._close_environment(row, now)
-
-    def _close_environment(self, row: EnvironmentRow, now: datetime) -> None:
-        try:
-            provider = self._registry.environment(row.provider_id)
-            call = EnvironmentCall(
-                environment_id=row.id,
-                provider=provider,
-                ref=EnvironmentRef(id=row.id, provider_id=row.provider_id),
-                ctx=self._standalone_context(row, now, "warm"),
-            )
-            self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
-        except Exception as error:
-            self._log.warn(
-                {
-                    "event": "supervisor.warm_close_failed",
-                    "environment_id": row.id,
-                    "error": str(error),
-                }
-            )
-
-    def _environment_call(self, row: EnvironmentRow, action: str) -> EnvironmentCall:
-        """环境动作的调用件：provider 按环境行解析，上下文无运行归属。"""
-        return EnvironmentCall(
-            environment_id=row.id,
-            provider=self._registry.environment(row.provider_id),
-            ref=EnvironmentRef(id=row.id, provider_id=row.provider_id),
-            ctx=self._standalone_context(row, self._clock.utc_now(), action),
-        )
-
-    def _standalone_context(
-        self,
-        row: EnvironmentRow,
-        now: datetime,
-        purpose: str,
-    ) -> RunContext:
-        """无运行归属的内核动作（保温关闭、启动探测）给插件的最小上下文；不接受证据。"""
-        run_id = f"{purpose}:{row.id}"
-        return RunContext(
-            run_id=run_id,
-            attempt=0,
-            template_id="",
-            plugin_id=row.provider_id,
-            environment_id=row.id,
-            config={},
-            work_dir=self._data_root / "work" / run_id,
-            evidence_dir=self._data_root / "evidence" / run_id,
-            deadline_at=now,
-            cancel=CancelFlag(),
-            clock=self._clock,
-            secrets={},
-            log=self._log,
-            emit=self._emit_global,
-            record_evidence=_reject_evidence,
-        )
-
     def _dispatch(self, now: datetime) -> None:
         """推进一个可执行运行：优先排队，其次到点的 waiting 与 recovering。"""
         queued = self._runs.next_queued(limit=1)
@@ -445,11 +357,6 @@ class Supervisor:
             return RecoveryPolicy.from_mapping(template.recovery_policy)
         except ValueError:
             return RecoveryPolicy()
-
-
-def _reject_evidence(kind: str, path: Path, summary: str) -> str:
-    """拒绝证据写入：无运行归属的动作没有可挂靠的运行与证据目录。"""
-    raise ValueError("无运行归属的内核动作不接收证据")
 
 
 def _retry_at(run: JobRunRecord) -> datetime | None:
