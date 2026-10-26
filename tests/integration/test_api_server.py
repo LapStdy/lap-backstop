@@ -20,6 +20,9 @@ from storage import migrate, open_database
 
 NOW = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)
 TOKEN = "secret-token"
+# 宿主的 http_proxy 只让行 127.0.0.1，追加地址 127.0.0.2 会被送去代理而连不上；
+# 测试只打本机监听，一律绕开代理，避免环境变量决定测试成败。
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 @pytest.fixture
@@ -53,7 +56,7 @@ def request(
         headers={"Authorization": f"Bearer {TOKEN}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with _OPENER.open(req, timeout=10) as response:
             return (
                 response.status,
                 json.loads(response.read().decode("utf-8")),
@@ -161,7 +164,7 @@ def test_extra_hosts_bind_and_serve(tmp_path: Path) -> None:
             f"http://127.0.0.2:{second_port}/api/v1/health",
             headers={"Authorization": f"Bearer {TOKEN}"},
         )
-        with urllib.request.urlopen(req, timeout=10) as response:
+        with _OPENER.open(req, timeout=10) as response:
             assert response.status == 200
     finally:
         handle.shutdown()
