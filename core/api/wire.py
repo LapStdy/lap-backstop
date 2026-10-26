@@ -59,15 +59,6 @@ class FileBody:
     stream: BinaryIO
 
 
-@dataclass(frozen=True, slots=True)
-class BinaryBody:
-    """内存字节应答体：内容类型与可选下载文件名，用于当场生成的产物。"""
-
-    content_type: str
-    data: bytes
-    filename: str | None = None
-
-
 def decode_json(body: bytes) -> object:
     """解析请求体。
 
