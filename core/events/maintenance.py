@@ -16,7 +16,7 @@ from contracts import Clock, EventType, Logger
 from core.api.store import put_settings
 from core.logging import NullLogger
 from storage.db.transaction import transaction
-from storage.repositories.events import GLOBAL_EVENTS_KEEP, EventLog
+from storage.repositories.events import EventLog
 
 GLOBAL_EVENTS_PRUNED_ON_KEY = "maintenance.global_events_pruned_on"
 GLOBAL_EVENTS_PRUNED_EVENT = "core.global_events_pruned"
@@ -39,7 +39,6 @@ class GlobalEventsPruner:
         clock: Clock,
         *,
         log: Logger | None = None,
-        keep: int = GLOBAL_EVENTS_KEEP,
     ) -> None:
         """创建清理器；执行与否只看 settings 里的日期键，进程内不记状态。
 
@@ -47,12 +46,10 @@ class GlobalEventsPruner:
             connection: 内核单写连接。
             clock: 「今天」与事件落库时间的唯一来源。
             log: 结构化日志；不落事件载荷。
-            keep: 保留条数，口径来自 docs/03 保留表。
         """
         self._connection = connection
         self._clock = clock
         self._log: Logger = NullLogger() if log is None else log
-        self._keep = keep
         self._events = EventLog(connection)
 
     def run_once(self) -> PruneOutcome | None:
@@ -71,7 +68,7 @@ class GlobalEventsPruner:
         if _pruned_on(self._connection) == today:
             return None
         with transaction(self._connection):
-            deleted = self._events.prune_global(keep=self._keep)
+            deleted = self._events.prune_global()
             retained = _count_global(self._connection)
             moment = self._clock.utc_now()
             put_settings(

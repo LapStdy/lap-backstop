@@ -139,6 +139,12 @@ class ServeLoop:
         notify: NotifyService | None = None,
         pruner: GlobalEventsPruner | None = None,
     ) -> None:
+        """装配循环部件；协作对象传 None 即关闭对应侧工作。
+
+        构造参数超过上限 4 属评审已说明的例外：supervisor、runs、writer、
+        options 是循环的既定部件，notify 与 pruner 是两个可选协作对象，
+        测试按需注入，语义互不重叠。
+        """
         self._supervisor = supervisor
         self._runs = runs
         self._writer = writer
