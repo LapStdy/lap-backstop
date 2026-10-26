@@ -18,6 +18,7 @@ from contracts import (
     EnvironmentState,
     EventType,
     Logger,
+    PhaseResult,
     RunContext,
     RunState,
 )
@@ -231,6 +232,27 @@ class Supervisor:
             flag.cancel()
         return self._runs.get(run_id)
 
+    def prepare_environment(self, environment_id: str) -> PhaseResult:
+        """手动预热：与 tick 调度无关，不建运行、不改运行状态（docs/09 预热）。
+
+        Raises:
+            EnvironmentNotFoundError: 环境不存在。
+            EnvironmentStateError: 状态机拒绝，如环境 busy。
+            PluginError: provider 缺失或未声明 environment 能力。
+        """
+        row = self._environments.get(environment_id)
+        return self._environments.prepare(self._environment_call(row, "prepare"))
+
+    def reset_environment(self, environment_id: str) -> PhaseResult:
+        """手动复位：任何状态先回 booting，成功后仍等探针确认 ready。
+
+        Raises:
+            EnvironmentNotFoundError: 环境不存在。
+            PluginError: provider 缺失或未声明 environment 能力。
+        """
+        row = self._environments.get(environment_id)
+        return self._environments.reset(self._environment_call(row, "reset"))
+
     def _replay(self, run: JobRunRecord) -> RunSnapshot | None:
         """回放事件流重建快照；流损坏不拦启动，返回 None 由调用方按表状态兜底。"""
         try:
@@ -403,6 +425,15 @@ class Supervisor:
                     "error": str(error),
                 }
             )
+
+    def _environment_call(self, row: EnvironmentRow, action: str) -> EnvironmentCall:
+        """环境动作的调用件：provider 按环境行解析，上下文无运行归属。"""
+        return EnvironmentCall(
+            environment_id=row.id,
+            provider=self._registry.environment(row.provider_id),
+            ref=EnvironmentRef(id=row.id, provider_id=row.provider_id),
+            ctx=self._standalone_context(row, self._clock.utc_now(), action),
+        )
 
     def _standalone_context(
         self,

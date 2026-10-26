@@ -18,6 +18,7 @@ from pathlib import Path
 from contracts import Clock, ContractError, ErrorCode, Logger
 from core.api import store
 from core.api.ctx import Handler, RequestCtx
+from core.api.environments_api import post_environment_prepare, post_environment_reset
 from core.api.events_api import StreamOptions, stream_frames, stream_run_frames
 from core.api.export_api import get_export
 from core.api.hostops_api import post_tasks_register
@@ -52,6 +53,7 @@ from core.api.templates_api import (
 )
 from core.api.wire import ApiRequest, ApiResponse, decode_json, error_response
 from core.clock import SystemClock
+from core.environments.actions import EnvironmentActions
 from core.hostops.tasks import Runner
 from core.logging import NullLogger
 from storage import open_database
@@ -96,6 +98,8 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", ("schedules", "{id}", "run"), run_now),
     Route("GET", ("environments",), list_environments),
     Route("GET", ("environments", "{id}"), get_environment),
+    Route("POST", ("environments", "{id}", "prepare"), post_environment_prepare),
+    Route("POST", ("environments", "{id}", "reset"), post_environment_reset),
     Route("GET", ("plugins",), list_plugins),
     Route("GET", ("plugins", "{id}"), get_plugin),
     Route("GET", ("resources",), list_resources),
@@ -113,11 +117,13 @@ class ApiApp:
         clock: Clock | None = None,
         log: Logger | None = None,
         task_runner: Runner = subprocess.run,
+        environment_actions: EnvironmentActions | None = None,
     ) -> None:
         self._database = database
         self._clock: Clock = SystemClock() if clock is None else clock
         self._log: Logger = NullLogger() if log is None else log
         self._task_runner: Runner = task_runner
+        self._environment_actions = environment_actions
         self._routes = ROUTES
         self._capabilities = tuple(
             sorted({route.segments[0] for route in ROUTES} | {EVENTS_CAPABILITY})
@@ -225,6 +231,7 @@ class ApiApp:
             body=body,
             data_root=self._database.parent,
             task_runner=self._task_runner,
+            environment_actions=self._environment_actions,
         )
         return route.handler(context)
 

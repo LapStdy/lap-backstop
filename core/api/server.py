@@ -21,6 +21,7 @@ from core.api.app import API_PREFIX, EVENTS_CAPABILITY, ApiApp
 from core.api.store import ensure_server_id
 from core.api.wire import ApiRequest, ApiResponse, FileBody, encode_json, error_response
 from core.clock import SystemClock
+from core.environments.actions import EnvironmentActions
 from core.hostops import tasks
 from core.logging import NullLogger
 
@@ -56,6 +57,8 @@ class ApiOptions:
     stop: threading.Event = field(default_factory=threading.Event)
     # 重新注册计划任务端点的执行件；测试注入假 runner，不真跑 schtasks。
     task_runner: tasks.Runner = field(default_factory=lambda: subprocess.run)
+    # 内核环境动作；serve 装配注入，缺省时动作端点按未接入应答（409）。
+    environment_actions: EnvironmentActions | None = None
     max_requests: int | None = None
 
 
@@ -145,7 +148,13 @@ def start_api_server(
     active = ApiOptions() if options is None else options
     database = _database_path(connection)
     ensure_server_id(connection, at=active.clock.utc_now())
-    app = ApiApp(database, clock=active.clock, log=active.log, task_runner=active.task_runner)
+    app = ApiApp(
+        database,
+        clock=active.clock,
+        log=active.log,
+        task_runner=active.task_runner,
+        environment_actions=active.environment_actions,
+    )
     counter = _RequestCounter()
     servers: list[tuple[ThreadingHTTPServer, threading.Thread]] = []
     failures: list[tuple[str, str]] = []
