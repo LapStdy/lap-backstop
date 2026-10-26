@@ -1,7 +1,9 @@
 """通知服务：尾随核心事件流，把关键事件交给 NotificationFactory 拼通知并投递。
 
-poll() 由 serve 每轮调用：刷新渠道配置、追读新事件、排队投递、
-把投递结果落成 notify.sent / notify.failed（运行内）或 core.event（无运行归属）。
+poll() 由 serve 每轮调用：刷新渠道配置、追读新事件、排队投递（同时在
+notifications 表入账 pending）、把投递结果落成账目终态与
+notify.sent / notify.failed（运行内）或 core.event（无运行归属）事件。
+账目写入只发生在 poll() 所在线程；投递工作线程不碰数据库（docs/11 并发）。
 只读既有事件流，不改事件语义；投递结果用契约里现成的事件类型。
 推送口径（docs/06、docs/07）：运行结束、停手、环境 failed 各推一次；
 同一运行只推一条（恢复停手与运行结束合并，先到先推）。
@@ -17,6 +19,7 @@ from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
+from uuid import uuid4
 
 from contracts import (
     Clock,
@@ -43,6 +46,7 @@ from core.notify.delivery import (
 from core.notify.notifications import NotificationFactory
 from core.notify.selftest import build_kernel_delivery_context, deliver_test_notification
 from storage.repositories.events import EventLog
+from storage.repositories.notifications import NotificationRepository
 
 _EVENTS_PER_POLL: Final[int] = 200
 _NOTIFIED_RUNS_LIMIT: Final[int] = 1000
@@ -98,6 +102,7 @@ class NotifyService:
         )
         self._events = EventLog(connection)
         self._notifications = NotificationFactory(connection)
+        self._ledger = NotificationRepository(connection)
         self._stop = threading.Event()
         self._config: NotifyConfig | None = None
         self._channel: Notifier | None = None
@@ -109,7 +114,7 @@ class NotifyService:
         self._worker.start()
 
     def poll(self) -> None:
-        """一轮通知推进：刷新配置、追新事件、落投递结果。数据库故障向上抛。"""
+        """一轮通知推进：刷新配置、追新事件、入账并落投递结果。数据库故障向上抛。"""
         self._refresh_config()
         if self._config is not None and self._config.enabled:
             self._tail_events()
@@ -221,7 +226,7 @@ class NotifyService:
             self._submit(notification, run_id=run_id)
 
     def _submit(self, notification: Notification, *, run_id: str | None) -> None:
-        """排队投递；渠道未就绪（关闭、非法配置）时静默丢弃。"""
+        """入账 pending 并排队投递；渠道未就绪（关闭、非法配置）时不入账也不排队。"""
         config = self._config
         if config is None or not config.enabled or self._channel is None:
             return
@@ -229,8 +234,15 @@ class NotifyService:
             if len(self._notified_runs) >= _NOTIFIED_RUNS_LIMIT:
                 self._notified_runs.clear()
             self._notified_runs.add(run_id)
+        notification_id = uuid4().hex
+        self._ledger.insert_pending(notification_id, run_id, config.channel)
         self._worker.submit(
-            PendingDelivery(notification=notification, run_id=run_id, channel=config.channel)
+            PendingDelivery(
+                notification_id=notification_id,
+                notification=notification,
+                run_id=run_id,
+                channel=config.channel,
+            )
         )
 
     def _record_outcomes(self) -> None:
@@ -243,7 +255,17 @@ class NotifyService:
                 self._log.warn({"event": "notify.outcome_record_failed", "error": str(error)})
 
     def _record_outcome(self, outcome: DeliveryOutcome, *, at: datetime) -> None:
-        """投递成功记 notify.sent，耗尽记 notify.failed；无运行归属走 core.event。"""
+        """先落账目终态，再记 notify.sent / notify.failed；无运行归属的事件走 core.event。
+
+        账与事件是同一次结果的两个落点：账供查询（notifications 表），
+        事件供回放与证据；任一写失败由 _record_outcomes 统一告警。
+        """
+        if outcome.ok:
+            self._ledger.mark_sent(outcome.notification_id, attempts=outcome.attempts, at=at)
+        else:
+            self._ledger.mark_failed(
+                outcome.notification_id, attempts=outcome.attempts, error=outcome.error
+            )
         if outcome.run_id is not None:
             payload: dict[str, object] = (
                 {"run_id": outcome.run_id, "channel": outcome.channel, "result": "ok"}
