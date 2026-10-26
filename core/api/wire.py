@@ -10,6 +10,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import BinaryIO
 
 from contracts import ContractError, ErrorCode, http_status
 
@@ -32,6 +33,17 @@ class ApiResponse:
     status: int
     payload: object
     etag: str | None = None
+    # 文件应答与 payload 互斥；传输层按它切换到分块写出的二进制形态。
+    file: FileBody | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class FileBody:
+    """二进制文件应答体：流按块写出，不整读进内存；以 inline 形式下发。"""
+
+    content_type: str
+    length: int
+    stream: BinaryIO
 
 
 def decode_json(body: bytes) -> object:
@@ -81,6 +93,7 @@ def check_if_match(header: str | None, current: str) -> None:
 __all__ = [
     "ApiRequest",
     "ApiResponse",
+    "FileBody",
     "check_if_match",
     "content_etag",
     "decode_json",

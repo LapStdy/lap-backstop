@@ -1,4 +1,4 @@
-"""运行端点：列表、详情与叫停（docs/03 端点表与 job_runs 字段表）。
+"""运行端点：列表、详情、叫停与证据文件（docs/03 端点表与 job_runs 字段表）。
 
 状态迁移与事件写入复用 core/jobs 的 JobRunService；本层只做过滤解析与 JSON 形态。
 """
@@ -7,13 +7,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
-from typing import Any
+from pathlib import PurePosixPath
+from typing import Any, Final
 
 from contracts import ContractError, ErrorCode, RunState
 from core.api import run_store
 from core.api.ctx import RequestCtx
 from core.api.fields import require_timestamp
-from core.api.wire import ApiResponse
+from core.api.wire import ApiResponse, FileBody
+from core.events.evidence import EvidenceService
 from core.jobs.errors import IllegalRunTransitionError, RunNotFoundError
 from core.jobs.run_service import JobRunService
 from storage.repositories.evidence import EvidenceRepository, EvidenceRow
@@ -22,6 +24,18 @@ from storage.repositories.run_phases import RunPhaseRepository, RunPhaseRow
 from storage.repositories.verdicts import VerdictRepository, VerdictRow
 
 MAX_PAGE_SIZE = 500
+
+_CONTENT_TYPES: Final[Mapping[str, str]] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".json": "application/json",
+    ".log": "text/plain; charset=utf-8",
+    ".txt": "text/plain; charset=utf-8",
+    ".zip": "application/zip",
+}
+DEFAULT_CONTENT_TYPE: Final = "application/octet-stream"
+# 410 是保留策略的结果，不产生错误码（docs/03），只带可读说明。
+EVIDENCE_GONE_MESSAGE: Final = "证据文件已按保留策略清理，记录仍可查询"
 
 
 def list_runs(ctx: RequestCtx) -> ApiResponse:
@@ -60,6 +74,44 @@ def stop_run(ctx: RequestCtx) -> ApiResponse:
     except IllegalRunTransitionError as error:
         raise ContractError(ErrorCode.CONFLICT, str(error)) from error
     return ApiResponse(status=200, payload={"run": run_json(record)})
+
+
+def get_evidence_file(ctx: RequestCtx) -> ApiResponse:
+    """按证据 id 取回证据文件字节；只认本运行的证据，不跨运行泄露。
+
+    记录不存在、不属于该运行或路径越界都按 E_NOT_FOUND 返回 404，不回显路径；
+    记录在而文件已被保留策略删除时返回 410 与可读说明（docs/03：不产生错误码）。
+
+    Raises:
+        ContractError: 运行或证据不存在，错误码 E_NOT_FOUND。
+    """
+    _require_run(ctx)
+    service = EvidenceService(ctx.connection, ctx.data_root / "evidence", ctx.clock)
+    try:
+        found = service.open_file(ctx.params["id"], ctx.params["name"])
+    except FileNotFoundError:
+        return ApiResponse(
+            status=410,
+            payload={"error": {"message": EVIDENCE_GONE_MESSAGE}},
+        )
+    except ValueError:
+        # 越界路径按不存在处理：不回显解析后的位置，与记录缺失同口径
+        found = None
+    if found is None:
+        raise ContractError(ErrorCode.NOT_FOUND, f"证据不存在：{ctx.params['name']}")
+    return ApiResponse(
+        status=200,
+        payload=None,
+        file=FileBody(
+            content_type=_content_type(found.path),
+            length=found.size,
+            stream=found.stream,
+        ),
+    )
+
+
+def _content_type(path: str) -> str:
+    return _CONTENT_TYPES.get(PurePosixPath(path).suffix.lower(), DEFAULT_CONTENT_TYPE)
 
 
 def run_json(record: JobRunRecord) -> dict[str, Any]:
@@ -176,4 +228,4 @@ def _verdict_json(item: VerdictRow) -> dict[str, Any]:
     }
 
 
-__all__ = ["get_run", "list_runs", "run_json", "stop_run"]
+__all__ = ["get_evidence_file", "get_run", "list_runs", "run_json", "stop_run"]

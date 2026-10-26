@@ -3,14 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
+from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 from uuid import uuid4
 
 from contracts import Clock, EventType, EvidenceKind, EvidenceSource
 from storage.db.transaction import transaction
 from storage.repositories.events import EventLog
 from storage.repositories.evidence import EvidenceRepository, EvidenceRow
+
+
+@dataclass(frozen=True, slots=True)
+class EvidenceFile:
+    """已定位的证据文件；流由调用方负责关闭。"""
+
+    path: str
+    stream: BinaryIO
+    size: int
 
 
 class EvidenceService:
@@ -78,6 +90,28 @@ class EvidenceService:
         """某个运行的全部证据。"""
         return self._evidence.for_run(run_id)
 
+    def open_file(self, run_id: str, evidence_id: str) -> EvidenceFile | None:
+        """打开某运行的一条证据文件供读取，与写入共用同一路径判定。
+
+        Returns:
+            打开的文件流、存储路径与大小；记录不存在返回 None。
+
+        Raises:
+            ValueError: 记录的路径逃出证据根目录。
+            FileNotFoundError: 记录在而文件已被保留策略删除。
+        """
+        record = self._evidence.get_for_run(run_id, evidence_id)
+        if record is None:
+            return None
+        absolute = self._resolve(Path(record.path))
+        stream = absolute.open("rb")
+        try:
+            size = os.fstat(stream.fileno()).st_size
+        except OSError:
+            stream.close()
+            raise
+        return EvidenceFile(path=record.path, stream=stream, size=size)
+
     def known_ids(self, run_id: str) -> frozenset[str]:
         """某个运行已登记的证据 id。"""
         return self._evidence.known_ids(run_id)
@@ -90,4 +124,4 @@ class EvidenceService:
         return resolved
 
 
-__all__ = ["EvidenceService"]
+__all__ = ["EvidenceFile", "EvidenceService"]
