@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -26,33 +26,19 @@ from core.jobs.run_service import DiskFullError, JobRunService, disk_free_bytes
 from core.jobs.state_machine import can_transition, is_terminal
 from core.logging import NullLogger
 from core.plugins.registry import PluginRegistry
-from core.recovery.policy import RecoveryPolicy
 from core.resources.errors import ResourceBusyError
 from core.resources.service import LeaseService
 from core.scheduler.scan import ScheduleScanner
 from core.supervisor_disk import DiskWatermark
 from core.supervisor_environments import EnvironmentSupervision
+from core.supervisor_leases import LeaseSupervision
 from core.worker.executor import CancelFlag, WorkerExecutor
-from storage.defaults import default
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
 from storage.repositories.job_templates import JobTemplateRepository
 from storage.repositories.leases import LeaseRow
 from storage.repositories.schedules import ScheduleRepository
 
-_RENEW_INTERVAL = timedelta(seconds=int(default("leases", "renew_interval_seconds")))
-_LEASE_RECOVER_DELAY = timedelta(seconds=int(default("leases", "recover_delay_seconds")))
-_HOLDING_LEASE_STATES = frozenset(
-    {
-        RunState.PREPARING,
-        RunState.WAITING,
-        RunState.EXECUTING,
-        RunState.VERIFYING,
-        # docs/09：租约持有到 cleanup 完成；cleaning 期间同样续租，
-        # 不让长 cleanup 因 TTL 过期被回收后把运行标成 failed。
-        RunState.CLEANING,
-    }
-)
 _ORPHAN_STATES = frozenset(
     {
         RunState.PREPARING,
@@ -86,13 +72,18 @@ class Supervisor:
         )
         self._runs = JobRunService(connection, clock, disk_free=self._disk_free)
         self._scanner = ScheduleScanner(connection, clock, self._runs)
-        self._templates = JobTemplateRepository(connection)
         self._schedules = ScheduleRepository(connection)
         self._leases = LeaseService(connection, clock)
         self._events = EventLog(connection)
         self._cancel_flags: dict[str, CancelFlag] = {}
-        self._last_renew_at: datetime | None = None
         self._disk_watermark = DiskWatermark(self._disk_free, self._log, self._emit_global)
+        self._lease_watch = LeaseSupervision(
+            self._runs,
+            self._leases,
+            JobTemplateRepository(connection),
+            clock,
+            log=self._log,
+        )
         self._environment_watch = EnvironmentSupervision(
             EnvironmentService(connection, clock),
             registry,
@@ -147,8 +138,8 @@ class Supervisor:
                 }
             )
         self._runs.fail_overdue(now)
-        self._expire_leases(now)
-        self._renew_leases(now)
+        self._lease_watch.expire(now)
+        self._lease_watch.renew(now)
         self._environment_watch.close_warm(now)
         self._dispatch(now)
 
@@ -246,65 +237,6 @@ class Supervisor:
                 }
             )
 
-    def _expire_leases(self, now: datetime) -> None:
-        for lease in self._leases.expire(now):
-            self._lease_lost(lease)
-
-    def _lease_lost(self, lease: LeaseRow) -> None:
-        """租约过期：按恢复预算把运行送回 recovering，预算耗尽记 failed。
-
-        租约在而运行行缺失属库损坏，回收动作在 expire 里已完成，这里无运行可处置。
-        """
-        try:
-            run = self._runs.get(lease.run_id)
-        except RunNotFoundError:
-            return
-        if is_terminal(run.state):
-            return
-        if not can_transition(run.state, RunState.RECOVERING):
-            if can_transition(run.state, RunState.FAILED):
-                self._runs.transition(
-                    run.id,
-                    RunState.FAILED,
-                    reason="lease_expired",
-                    error_code="E_RESOURCE_LEASE_LOST",
-                )
-            return
-        decision = self._policy_for(run).decide(
-            error_code="E_RESOURCE_LEASE_LOST",
-            attempt=run.attempt,
-        )
-        if decision.exhausted:
-            self._runs.transition(
-                run.id,
-                RunState.FAILED,
-                reason="lease_expired",
-                error_code="E_RESOURCE_LEASE_LOST",
-            )
-            return
-        retry_at = self._clock.utc_now() + _LEASE_RECOVER_DELAY
-        self._runs.mark_recovering(
-            run.id,
-            next_attempt=decision.next_attempt,
-            retry_at=retry_at,
-            error_code="E_RESOURCE_LEASE_LOST",
-        )
-
-    def _renew_leases(self, now: datetime) -> None:
-        """每 60 秒给仍持有租约的活动运行续租，不依赖 worker 存活。"""
-        if self._last_renew_at is not None and now - self._last_renew_at < _RENEW_INTERVAL:
-            return
-        self._last_renew_at = now
-        renewed: set[str] = set()
-        for lease in self._leases.active():
-            if lease.run_id in renewed:
-                continue
-            run = self._runs.get(lease.run_id)
-            if run is None or run.state not in _HOLDING_LEASE_STATES:
-                continue
-            self._leases.renew(lease.run_id)
-            renewed.add(lease.run_id)
-
     def _dispatch(self, now: datetime) -> None:
         """推进一个可执行运行：优先排队，其次到点的 waiting 与 recovering。"""
         queued = self._runs.next_queued(limit=1)
@@ -348,15 +280,6 @@ class Supervisor:
             {"event": event, "payload": dict(payload)},
             at=self._clock.utc_now(),
         )
-
-    def _policy_for(self, run: JobRunRecord) -> RecoveryPolicy:
-        template = self._templates.get(run.template_id)
-        if template is None:
-            return RecoveryPolicy()
-        try:
-            return RecoveryPolicy.from_mapping(template.recovery_policy)
-        except ValueError:
-            return RecoveryPolicy()
 
 
 def _retry_at(run: JobRunRecord) -> datetime | None:
