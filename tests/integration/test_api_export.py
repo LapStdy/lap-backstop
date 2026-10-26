@@ -22,6 +22,7 @@ from storage import migrate, open_database
 NOW = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)
 TOKEN = "secret-token"
 NOTIFY_TOKEN = "SCT-secret-9x"
+NOTIFY_URL = "https://ntfy.sh/topic-secret"
 EXPORT_PATH = "/api/v1/export"
 FILENAME_PATTERN = r"lap-backstop-export-\d{8}-\d{6}\.zip"
 ENTRY_NAMES = frozenset(
@@ -50,7 +51,12 @@ def database(tmp_path: Path) -> Iterator[Path]:
         migrate(connection)
         put_settings(
             connection,
-            {TOKEN_KEY: TOKEN, "notify.token": NOTIFY_TOKEN, "api.host": "127.0.0.1"},
+            {
+                TOKEN_KEY: TOKEN,
+                "notify.token": NOTIFY_TOKEN,
+                "notify.url": NOTIFY_URL,
+                "api.host": "127.0.0.1",
+            },
             at=NOW,
         )
         connection.execute(
@@ -154,9 +160,12 @@ def test_export_hides_token_and_credentials(app: ApiApp) -> None:
     entries = entries_of(response)
     assert TOKEN_KEY not in entries["settings.json"]["values"]
     assert "notify.token" not in entries["settings.json"]["values"]
+    # ntfy 主题地址等同凭据，一并过滤
+    assert "notify.url" not in entries["settings.json"]["values"]
     assert response.binary is not None
     assert TOKEN.encode("utf-8") not in response.binary.data
     assert NOTIFY_TOKEN.encode("utf-8") not in response.binary.data
+    assert NOTIFY_URL.encode("utf-8") not in response.binary.data
 
 
 def test_export_twice_returns_valid_zips(app: ApiApp) -> None:
