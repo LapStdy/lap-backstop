@@ -23,6 +23,9 @@ from core.clock import SystemClock
 from core.logging import NullLogger
 
 EVENTS_PATH = f"{API_PREFIX}/{EVENTS_CAPABILITY}"
+# 单运行流路径的两端：/api/v1/runs/<id>/events，id 不含斜杠。
+RUN_EVENTS_PREFIX = f"{API_PREFIX}/runs/"
+RUN_EVENTS_SUFFIX = "/events"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8787
@@ -207,9 +210,15 @@ class _HandlerMethods(BaseHTTPRequestHandler):
 
     def _respond(self) -> None:
         try:
-            if self.command == "GET" and urlsplit(self.path).path == EVENTS_PATH:
-                self._stream_events()
-                return
+            if self.command == "GET":
+                path = urlsplit(self.path).path
+                if path == EVENTS_PATH:
+                    self._stream_events()
+                    return
+                run_id = _run_events_run_id(path)
+                if run_id is not None:
+                    self._stream_events(run_id)
+                    return
             response = self.app.handle(self._read_request())
             self._write(response)
         except ContractError as error:
@@ -220,19 +229,27 @@ class _HandlerMethods(BaseHTTPRequestHandler):
             self.counter.bump()
             self.close_connection = True
 
-    def _stream_events(self) -> None:
-        """SSE 长连接：鉴权后逐帧写出事件流，停机事件或客户端断开时收尾。"""
+    def _stream_events(self, run_id: str | None = None) -> None:
+        """SSE 长连接：鉴权后逐帧写出事件流，停机事件或客户端断开时收尾。
+
+        run_id 为 None 推全局两表并集；否则只推该运行的事件，开流前先按 404
+        口径确认运行存在。
+        """
         last_event_id = self.headers.get("Last-Event-ID")
         if last_event_id is not None:
             _require_event_id(last_event_id)
         self.app.authorize(
             ApiRequest("GET", urlsplit(self.path).path, {}, self._lowered_headers(), b"")
         )
+        if run_id is None:
+            frames = self.app.event_frames(last_event_id, stop=self.stop)
+        else:
+            frames = self.app.run_event_frames(run_id, last_event_id, stop=self.stop)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.end_headers()
-        for frame in self.app.event_frames(last_event_id, stop=self.stop):
+        for frame in frames:
             self.wfile.write(frame)
             self.wfile.flush()
 
@@ -300,6 +317,16 @@ def _handler(
         (_HandlerMethods,),
         {"app": app, "counter": counter, "stop": stop},
     )
+
+
+def _run_events_run_id(path: str) -> str | None:
+    """``GET /api/v1/runs/<id>/events`` 里的运行 id；非该形态返回 None 交回普通路由。"""
+    if not path.startswith(RUN_EVENTS_PREFIX) or not path.endswith(RUN_EVENTS_SUFFIX):
+        return None
+    run_id = path[len(RUN_EVENTS_PREFIX) : -len(RUN_EVENTS_SUFFIX)]
+    if not run_id or "/" in run_id:
+        return None
+    return run_id
 
 
 def _require_event_id(event_id: str) -> None:

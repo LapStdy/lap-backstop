@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
-from contracts import ContractError, ErrorCode, RunState
+from contracts import Clock, ContractError, ErrorCode, RunState
 from core.api import run_store
 from core.api.ctx import RequestCtx
 from core.api.fields import require_timestamp
@@ -126,12 +127,21 @@ def _stop_reason(ctx: RequestCtx) -> str:
     return "user_cancel"
 
 
-def _require_run(ctx: RequestCtx) -> JobRunRecord:
-    service = JobRunService(ctx.connection, ctx.clock)
+def require_run(connection: sqlite3.Connection, clock: Clock, run_id: str) -> JobRunRecord:
+    """取运行，不存在按 404 口径拒绝；普通端点与流式端点共用这一份判定。
+
+    Raises:
+        ContractError: 运行不存在，错误码 E_NOT_FOUND。
+    """
+    service = JobRunService(connection, clock)
     try:
-        return service.get(ctx.params["id"])
+        return service.get(run_id)
     except RunNotFoundError as error:
-        raise ContractError(ErrorCode.NOT_FOUND, f"运行不存在：{ctx.params['id']}") from error
+        raise ContractError(ErrorCode.NOT_FOUND, f"运行不存在：{run_id}") from error
+
+
+def _require_run(ctx: RequestCtx) -> JobRunRecord:
+    return require_run(ctx.connection, ctx.clock, ctx.params["id"])
 
 
 def _iso(moment: datetime | None) -> str | None:
@@ -176,4 +186,4 @@ def _verdict_json(item: VerdictRow) -> dict[str, Any]:
     }
 
 
-__all__ = ["get_run", "list_runs", "run_json", "stop_run"]
+__all__ = ["get_run", "list_runs", "require_run", "run_json", "stop_run"]
