@@ -13,6 +13,7 @@ from typing import Any
 
 from contracts import Clock, ContractError, ErrorCode
 from core.api.wire import ApiResponse
+from core.environments.actions import EnvironmentActions
 from core.hostops.tasks import Runner
 
 
@@ -31,6 +32,8 @@ class RequestCtx:
     data_root: Path
     # 计划任务注册执行件；生产默认 subprocess.run，测试注入假 runner。
     task_runner: Runner
+    # 内核环境动作；进程内测试与 serve 装配都注入，缺省时动作端点按未接入应答。
+    environment_actions: EnvironmentActions | None = None
 
 
 Handler = Callable[[RequestCtx], ApiResponse]

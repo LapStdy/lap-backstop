@@ -41,9 +41,11 @@ from core.api.server import (
 from core.api.store import all_settings, bearer_token, ensure_token
 from core.api.version import executable_version
 from core.clock import SystemClock
+from core.environments.actions import EnvironmentActions
 from core.events.maintenance import GlobalEventsPruner
 from core.hostops import heartbeat, instance, tailscale, tasks, watchdog
 from core.hostops.doctor import WINLOGON_KEY, RegistryGet, registry_get
+from core.hostops.environment_actions import SupervisorEnvironmentActions
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
 from core.notify.service import NotifyService
@@ -338,7 +340,9 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
         setup_at = options.clock.utc_now()
         events = _host_setup_events(data_root, options, at=setup_at)
         _record_events(connection, events, at=setup_at)
-        api_server, exit_code = _start_api(connection, options)
+        api_server, exit_code = _start_api(
+            connection, options, SupervisorEnvironmentActions(supervisor)
+        )
         if exit_code is not None:
             return exit_code
         writer = HeartbeatWriter(
@@ -371,6 +375,7 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
 def _start_api(
     connection: sqlite3.Connection,
     options: ServeOptions,
+    environment_actions: EnvironmentActions,
 ) -> tuple[ApiServer | None, int | None]:
     """按 settings 挂载 API：无 token 先自生成，端口被占退 4，tailnet 绑定失败降级。"""
     _ensure_token_logged(connection, options)
@@ -393,7 +398,7 @@ def _start_api(
         options.log.warn({"event": "serve.tailscale_down", "detail": down_detail})
     # api.host 直接配成 tailnet 地址时不再重复追加，避免同一地址绑两次。
     plan = tailscale.ListenPlan(host, port, tuple(extra for extra in extra_hosts if extra != host))
-    server = _bind_api(connection, options, plan)
+    server = _bind_api(connection, options, plan, environment_actions)
     if server is None:
         return None, EXIT_PORT_CONFLICT
     tailscale.record_bind_degradation(
@@ -425,6 +430,7 @@ def _bind_api(
     connection: sqlite3.Connection,
     options: ServeOptions,
     plan: tailscale.ListenPlan,
+    environment_actions: EnvironmentActions,
 ) -> ApiServer | None:
     """启动 API 服务；主地址端口被占写 core.port_conflict 返回 None，其余 OSError 上抛。"""
     try:
@@ -438,6 +444,7 @@ def _bind_api(
                 log=options.log,
                 stop=options.stop,
                 task_runner=options.task_runner,
+                environment_actions=environment_actions,
             ),
         )
     except OSError as error:
