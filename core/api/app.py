@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 import sqlite3
+import subprocess
 import threading
 from collections.abc import Iterator
 from contextlib import closing
@@ -18,6 +19,8 @@ from contracts import Clock, ContractError, ErrorCode, Logger
 from core.api import store
 from core.api.ctx import Handler, RequestCtx
 from core.api.events_api import StreamOptions, stream_frames, stream_run_frames
+from core.api.export_api import get_export
+from core.api.hostops_api import post_tasks_register
 from core.api.notifications_api import post_notification_test
 from core.api.runs_api import get_evidence_file, get_run, list_runs, require_run, stop_run
 from core.api.schedules_api import (
@@ -49,6 +52,7 @@ from core.api.templates_api import (
 )
 from core.api.wire import ApiRequest, ApiResponse, decode_json, error_response
 from core.clock import SystemClock
+from core.hostops.tasks import Runner
 from core.logging import NullLogger
 from storage import open_database
 
@@ -72,6 +76,8 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", ("settings",), get_settings),
     Route("PUT", ("settings",), put_settings),
     Route("POST", ("notifications", "test"), post_notification_test),
+    Route("POST", ("host", "tasks", "register"), post_tasks_register),
+    Route("GET", ("export",), get_export),
     Route("GET", ("schedules",), list_schedules),
     Route("POST", ("schedules",), create_schedule),
     Route("GET", ("schedules", "{id}"), get_schedule),
@@ -105,10 +111,12 @@ class ApiApp:
         *,
         clock: Clock | None = None,
         log: Logger | None = None,
+        task_runner: Runner = subprocess.run,
     ) -> None:
         self._database = database
         self._clock: Clock = SystemClock() if clock is None else clock
         self._log: Logger = NullLogger() if log is None else log
+        self._task_runner: Runner = task_runner
         self._routes = ROUTES
         self._capabilities = tuple(
             sorted({route.segments[0] for route in ROUTES} | {EVENTS_CAPABILITY})
@@ -215,6 +223,7 @@ class ApiApp:
             capabilities=self._capabilities,
             body=body,
             data_root=self._database.parent,
+            task_runner=self._task_runner,
         )
         return route.handler(context)
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import locale
+import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
@@ -92,12 +94,52 @@ def test_register_task_passes_schtasks_arguments(tmp_path: Path) -> None:
     runner, calls = fake_runner()
     xml_path = tmp_path / "definition.xml"
     xml_path.write_text("<Task />", encoding="utf-16")
-    assert tasks.register_task("lap-backstop-core", xml_path, runner=runner) is True
+    outcome = tasks.register_task("lap-backstop-core", xml_path, runner=runner)
+    assert outcome.ok is True
+    assert outcome.detail == "已注册"
     assert calls == [
         ["schtasks", "/create", "/f", "/tn", "lap-backstop-core", "/xml", str(xml_path)]
     ]
     failing, _ = fake_runner(returncode=1)
-    assert tasks.register_task("lap-backstop-core", xml_path, runner=failing) is False
+    outcome = tasks.register_task("lap-backstop-core", xml_path, runner=failing)
+    assert outcome.ok is False
+    # 假 runner 不带 stderr，原因落到退出码上，不让失败原因空着
+    assert outcome.detail == "schtasks 退出码 1"
+
+
+def test_register_task_reports_stderr_and_timeout(tmp_path: Path) -> None:
+    xml_path = tmp_path / "definition.xml"
+    xml_path.write_text("<Task />", encoding="utf-16")
+
+    def denied(_command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(_command, 1, b"", "拒绝访问".encode())
+
+    outcome = tasks.register_task("lap-backstop-core", xml_path, runner=denied)
+    assert outcome.ok is False
+    assert "拒绝访问" in outcome.detail
+
+    def slow(_command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(cmd=_command, timeout=10.0)
+
+    outcome = tasks.register_task("lap-backstop-core", xml_path, runner=slow)
+    assert outcome.ok is False
+    assert "超时" in outcome.detail
+
+
+def test_register_task_decodes_stderr_in_system_encoding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    xml_path = tmp_path / "definition.xml"
+    xml_path.write_text("<Task />", encoding="utf-16")
+    monkeypatch.setattr(locale, "getencoding", lambda: "gbk")
+
+    def denied(_command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        # schtasks 在中文 Windows 上按系统区域输出，GBK 字节不是合法 UTF-8
+        return subprocess.CompletedProcess(_command, 1, b"", "拒绝访问".encode("gbk"))
+
+    outcome = tasks.register_task("lap-backstop-core", xml_path, runner=denied)
+    assert outcome.ok is False
+    assert "拒绝访问" in outcome.detail
 
 
 def test_startup_actions_cover_frozen_and_source_modes(
@@ -119,19 +161,25 @@ def test_startup_actions_cover_frozen_and_source_modes(
 
 def test_register_registered_tasks_reports_outcome(tmp_path: Path) -> None:
     runner, calls = fake_runner()
-    ok, detail = tasks.register_registered_tasks(
+    registration = tasks.register_registered_tasks(
         tmp_path, runner=runner, registered_at=REGISTERED_AT
     )
-    assert ok is True
-    assert tasks.TASK_CORE in detail
-    assert tasks.TASK_WATCHDOG in detail
+    assert registration.ok is True
+    assert tasks.TASK_CORE in registration.detail
+    assert tasks.TASK_WATCHDOG in registration.detail
+    # 逐任务结果各带成功确认
+    assert all(outcome.ok and outcome.detail == "已注册" for outcome in registration.outcomes)
     # P0 只注册两个动作型任务，且先写定义文件再注册
     assert len(calls) == 2
     tasks_dir = tmp_path / tasks.TASKS_DIRNAME
     assert (tasks_dir / f"{tasks.TASK_CORE}.xml").is_file()
     failing, _ = fake_runner(returncode=1)
-    ok, detail = tasks.register_registered_tasks(
+    registration = tasks.register_registered_tasks(
         tmp_path, runner=failing, registered_at=REGISTERED_AT
     )
-    assert ok is False
-    assert "注册失败" in detail
+    assert registration.ok is False
+    assert "注册失败" in registration.detail
+    assert {outcome.name for outcome in registration.outcomes if not outcome.ok} == {
+        tasks.TASK_CORE,
+        tasks.TASK_WATCHDOG,
+    }

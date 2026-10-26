@@ -9,6 +9,7 @@ backup 的生成器就绪但不注册（backup 子命令未发布）；preheat �
 
 from __future__ import annotations
 
+import locale
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -22,6 +23,8 @@ TASK_CORE = "lap-backstop-core"
 TASK_WATCHDOG = "lap-backstop-watchdog"
 TASK_BACKUP = "lap-backstop-backup"
 TASK_PREHEAT = "lap-backstop-preheat"
+# 注册结果的落点事件（docs/03 host.event 取值表）；serve 启动与本端点共用。
+TASKS_REGISTERED_EVENT = "host.tasks_registered"
 
 # P0 注册清单：动作只依赖本命令行（docs/08 计划任务一节）；backup 与 preheat 后补。
 REGISTERED_TASKS = (TASK_CORE, TASK_WATCHDOG)
@@ -177,8 +180,39 @@ def write_definitions(
     return written
 
 
-def register_task(name: str, xml_path: Path, *, runner: Runner = subprocess.run) -> bool:
-    """用 schtasks 覆盖式注册一个任务；返回注册是否成功。
+@dataclass(frozen=True, slots=True)
+class TaskRegisterOutcome:
+    """一个任务的一次注册结果；detail 是人可读的成功确认或失败原因。"""
+
+    name: str
+    ok: bool
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class TaskRegistration:
+    """一次批量注册的结果：逐任务明细与汇总口径（serve 启动与手动注册共用）。"""
+
+    outcomes: tuple[TaskRegisterOutcome, ...]
+
+    @property
+    def ok(self) -> bool:
+        """全部任务注册成功才算成功。"""
+        return all(outcome.ok for outcome in self.outcomes)
+
+    @property
+    def detail(self) -> str:
+        """一句话汇总，作为 host.tasks_registered 事件的 detail。"""
+        failed = [outcome.name for outcome in self.outcomes if not outcome.ok]
+        if failed:
+            return "注册失败：" + "、".join(failed)
+        return "已注册并写入定义：" + "、".join(outcome.name for outcome in self.outcomes)
+
+
+def register_task(
+    name: str, xml_path: Path, *, runner: Runner = subprocess.run
+) -> TaskRegisterOutcome:
+    """用 schtasks 覆盖式注册一个任务，返回结果与失败原因。
 
     覆盖式（/f）即修复：定义文件是唯一真源，注册结果以它为准。超时按失败
     处理，下次 serve 启动会再修复。
@@ -191,8 +225,27 @@ def register_task(name: str, xml_path: Path, *, runner: Runner = subprocess.run)
             timeout=_REGISTER_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return False
-    return completed.returncode == 0
+        return TaskRegisterOutcome(name, False, "schtasks 超时")
+    if completed.returncode == 0:
+        return TaskRegisterOutcome(name, True, "已注册")
+    return TaskRegisterOutcome(name, False, _failure_reason(completed))
+
+
+def _failure_reason(completed: subprocess.CompletedProcess[bytes]) -> str:
+    """失败原因：stderr 优先，空输出落到退出码。
+
+    schtasks 的输出编码跟系统区域走（中文 Windows 是 GBK），先按 UTF-8
+    试读，失败再用系统区域编码，仍不行才降级为替换字符。
+    """
+    stderr = completed.stderr.strip()
+    if not stderr:
+        return f"schtasks 退出码 {completed.returncode}"
+    for encoding in ("utf-8", locale.getencoding()):
+        try:
+            return stderr.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return stderr.decode("utf-8", errors="replace")
 
 
 def startup_actions(data_root: Path) -> dict[str, TaskAction]:
@@ -220,11 +273,11 @@ def register_registered_tasks(
     *,
     runner: Runner = subprocess.run,
     registered_at: datetime,
-) -> tuple[bool, str]:
-    """生成 P0 注册清单的任务定义并注册；返回总体结果与一句话详情。
+) -> TaskRegistration:
+    """生成 P0 注册清单的任务定义并逐个注册，返回明细与汇总。
 
-    供 serve 启动与 ``lap-backstop tasks register`` 手动入口共用，结果写成
-    ``host.tasks_registered`` 事件的 detail。
+    供 serve 启动、``lap-backstop tasks register`` 手动入口与设置页重新注册
+    端点共用；汇总口径只有这一份，写成 ``host.tasks_registered`` 事件的 detail。
     """
     tasks_dir = data_root / TASKS_DIRNAME
     actions = startup_actions(data_root)
@@ -233,11 +286,9 @@ def register_registered_tasks(
         {name: actions[name] for name in REGISTERED_TASKS},
         registered_at=registered_at,
     )
-    outcomes = {name: register_task(name, path, runner=runner) for name, path in written.items()}
-    failed = [name for name, ok in outcomes.items() if not ok]
-    if failed:
-        return False, "注册失败：" + "、".join(failed)
-    return True, f"已注册并写入定义：{'、'.join(outcomes)}"
+    return TaskRegistration(
+        tuple(register_task(name, path, runner=runner) for name, path in written.items())
+    )
 
 
 def _render(spec: TaskSpec) -> str:
@@ -256,11 +307,14 @@ def _render(spec: TaskSpec) -> str:
 __all__ = [
     "REGISTERED_TASKS",
     "TASKS_DIRNAME",
+    "TASKS_REGISTERED_EVENT",
     "TASK_BACKUP",
     "TASK_CORE",
     "TASK_PREHEAT",
     "TASK_WATCHDOG",
     "TaskAction",
+    "TaskRegisterOutcome",
+    "TaskRegistration",
     "TaskSpec",
     "backup_task_xml",
     "core_task_xml",

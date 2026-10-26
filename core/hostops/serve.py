@@ -55,7 +55,8 @@ from storage.repositories.events import EventLog
 
 TICK_INTERVAL_SECONDS = 1.0
 AUTOLOGON_CHECKED_EVENT = "host.autologon_checked"
-TASKS_REGISTERED_EVENT = "host.tasks_registered"
+# 事件名的属主是 tasks 模块；这里保留同名导出，供既有引用方使用。
+TASKS_REGISTERED_EVENT = tasks.TASKS_REGISTERED_EVENT
 # 事件名的属主是 watchdog 模块；这里保留同名导出，供既有引用方使用。
 WATCHDOG_GAVE_UP_EVENT = watchdog.WATCHDOG_GAVE_UP_EVENT
 PORT_CONFLICT_EVENT = "core.port_conflict"
@@ -241,12 +242,12 @@ def _host_setup_events(
             )
         )
     if options.register_tasks:
-        _ok, detail = tasks.register_registered_tasks(
+        registration = tasks.register_registered_tasks(
             data_root,
             runner=options.task_runner,
             registered_at=at,
         )
-        events.append((TASKS_REGISTERED_EVENT, detail))
+        events.append((TASKS_REGISTERED_EVENT, registration.detail))
     return events
 
 
@@ -436,6 +437,7 @@ def _bind_api(
                 clock=options.clock,
                 log=options.log,
                 stop=options.stop,
+                task_runner=options.task_runner,
             ),
         )
     except OSError as error:

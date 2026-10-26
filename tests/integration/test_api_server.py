@@ -17,6 +17,7 @@ from core.api.server import MAX_BODY_BYTES, ApiOptions, ApiServer, start_api_ser
 from core.api.store import TOKEN_KEY, put_settings
 from core.clock import VirtualClock
 from storage import migrate, open_database
+from tests.fixtures.subprocess_fakes import fake_runner
 
 NOW = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)
 TOKEN = "secret-token"
@@ -136,6 +137,45 @@ def test_malformed_content_length_rejected(server: ApiServer) -> None:
         sock.sendall(raw)
         status_line = sock.recv(1024).decode("utf-8", errors="replace")
     assert status_line.startswith("HTTP/1.0 400"), status_line
+
+
+def test_export_delivers_zip_with_download_headers(server: ApiServer) -> None:
+    host, port = server.address
+    request = urllib.request.Request(
+        f"http://{host}:{port}/api/v1/export",
+        headers={"Authorization": f"Bearer {TOKEN}"},
+    )
+    with _OPENER.open(request, timeout=10) as response:
+        body = response.read()
+        headers = {key.lower(): value for key, value in response.headers.items()}
+    assert response.status == 200
+    assert body.startswith(b"PK")
+    assert headers["content-type"] == "application/zip"
+    filename = headers["content-disposition"].split('"')[1]
+    assert filename.startswith("lap-backstop-export-") and filename.endswith(".zip")
+
+
+def test_tasks_register_uses_injected_task_runner(tmp_path: Path) -> None:
+    """ApiOptions 的执行件注入要穿过传输层到达注册端点；假 runner 不真跑。"""
+    connection = open_database(tmp_path / "state.db")
+    try:
+        migrate(connection)
+        put_settings(connection, {TOKEN_KEY: TOKEN}, at=NOW)
+        runner, calls = fake_runner()
+        handle = start_api_server(
+            connection,
+            ApiOptions(host="127.0.0.1", port=0, clock=VirtualClock(NOW), task_runner=runner),
+        )
+    finally:
+        connection.close()
+    try:
+        status, payload, _ = request(handle, "POST", "/api/v1/host/tasks/register")
+        assert status == 200
+        assert payload["ok"] is True
+        assert len(calls) == 2
+        assert all(call[0] == "schtasks" for call in calls)
+    finally:
+        handle.shutdown()
 
 
 def test_extra_hosts_bind_and_serve(tmp_path: Path) -> None:
