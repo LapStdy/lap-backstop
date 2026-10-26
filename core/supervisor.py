@@ -25,14 +25,7 @@ from contracts import (
 from core.environments.service import EnvironmentCall, EnvironmentService
 from core.events.replay import ReplayError, RunSnapshot, replay_run
 from core.jobs.errors import RunNotFoundError
-from core.jobs.run_service import (
-    DISK_CRITICAL_BYTES,
-    DISK_GUARD_BYTES,
-    DISK_WARN_BYTES,
-    DiskFullError,
-    JobRunService,
-    disk_free_bytes,
-)
+from core.jobs.run_service import DiskFullError, JobRunService, disk_free_bytes
 from core.jobs.state_machine import can_transition, is_terminal
 from core.logging import NullLogger
 from core.plugins.registry import PluginRegistry
@@ -40,6 +33,7 @@ from core.recovery.policy import RecoveryPolicy
 from core.resources.errors import ResourceBusyError
 from core.resources.service import LeaseService
 from core.scheduler.scan import ScheduleScanner
+from core.supervisor_disk import DiskWatermark
 from core.worker.executor import CancelFlag, WorkerExecutor
 from storage.defaults import default
 from storage.repositories.environments import EnvironmentRow
@@ -51,10 +45,6 @@ from storage.repositories.schedules import ScheduleRepository
 
 _RENEW_INTERVAL = timedelta(seconds=int(default("leases", "renew_interval_seconds")))
 _LEASE_RECOVER_DELAY = timedelta(seconds=int(default("leases", "recover_delay_seconds")))
-# docs/08 磁盘水位的事件名；字节阈值真源在 run_service。
-DISK_LOW_EVENT = "host.disk_low"
-DISK_FULL_GUARD_EVENT = "host.disk_full_guard"
-DISK_CRITICAL_EVENT = "host.disk_critical"
 _HOLDING_LEASE_STATES = frozenset(
     {
         RunState.PREPARING,
@@ -109,9 +99,7 @@ class Supervisor:
         self._events = EventLog(connection)
         self._cancel_flags: dict[str, CancelFlag] = {}
         self._last_renew_at: datetime | None = None
-        self._disk_warn_reported = False
-        self._disk_guard_reported = False
-        self._disk_critical_reported = False
+        self._disk_watermark = DiskWatermark(self._disk_free, self._log, self._emit_global)
 
     def startup(self) -> tuple[JobRunRecord, ...]:
         """启动扫描：重建运行、回收孤儿租约，最后对状态不明的环境各探一次。"""
@@ -146,7 +134,7 @@ class Supervisor:
         建运行被 2 GB 守卫拒绝时发生点保持待办，磁盘恢复后按补跑策略重算（docs/08）。
         """
         now = self._clock.utc_now()
-        if self._check_disk():
+        if self._disk_watermark.check():
             return
         try:
             self._scanner.tick(now)
@@ -166,63 +154,7 @@ class Supervisor:
     @property
     def is_disk_critical(self) -> bool:
         """最近一次 tick 是否观测到磁盘低于 500 MB；serve 循环据此退出。"""
-        return self._disk_critical_reported
-
-    def _check_disk(self) -> bool:
-        """三级水位检查点（docs/08）：warn 与 guard 按边沿各记一次，critical 触发停机。
-
-        三档互斥取当前最深一档；回到上一档重新武装边沿，再次下跌时重新报。
-
-        Returns:
-            True 表示低于 500 MB，本轮立即中止。
-        """
-        free = self._disk_free()
-        if free is None:
-            return False
-        if free < DISK_CRITICAL_BYTES:
-            if not self._disk_critical_reported:
-                self._disk_critical_reported = True
-                self._announce_disk(
-                    self._log.error,
-                    DISK_CRITICAL_EVENT,
-                    {"free_bytes": free, "threshold_bytes": DISK_CRITICAL_BYTES},
-                )
-            return True
-        if free < DISK_GUARD_BYTES:
-            if not self._disk_guard_reported:
-                self._disk_guard_reported = True
-                self._announce_disk(
-                    self._log.warn,
-                    DISK_FULL_GUARD_EVENT,
-                    {
-                        "free_bytes": free,
-                        "threshold_bytes": DISK_GUARD_BYTES,
-                        "error_code": "E_DISK",
-                    },
-                )
-            return False
-        self._disk_guard_reported = False
-        if free < DISK_WARN_BYTES:
-            if not self._disk_warn_reported:
-                self._disk_warn_reported = True
-                self._announce_disk(
-                    self._log.warn,
-                    DISK_LOW_EVENT,
-                    {"free_bytes": free, "threshold_bytes": DISK_WARN_BYTES},
-                )
-            return False
-        self._disk_warn_reported = False
-        return False
-
-    def _announce_disk(
-        self,
-        notify: Callable[[Mapping[str, Any]], None],
-        event: str,
-        fields: dict[str, object],
-    ) -> None:
-        """同一份水位字段进日志与全局事件：日志供排障，事件入库可回放。"""
-        notify({"event": event, **fields})
-        self._emit_global(event, fields)
+        return self._disk_watermark.is_critical
 
     def request_cancel(self, run_id: str, reason: str = "user_cancel") -> JobRunRecord:
         """记录叫停：未开始的立即 cancelled；执行中的置位标记，由 worker 在阶段边界收尾。"""
