@@ -158,6 +158,27 @@ def test_export_configs_writes_settings_and_plugins_summary(
     assert plugins["plugins"] == [{"id": "maa", "version": "6.20.1", "enabled": True}]
 
 
+def test_export_configs_leave_out_secret_setting_keys(
+    database: sqlite3.Connection, clock: VirtualClock, backups_dir: Path
+) -> None:
+    database.executemany(
+        "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+        [
+            ("api.token", '"secret-token"', UPDATED_AT),
+            ("notify.token", '"SCT-secret-9x"', UPDATED_AT),
+            ("notify.webhook", '"https://example.test/hook"', UPDATED_AT),
+        ],
+    )
+
+    result = export_configs(database, backups_dir, clock=clock)
+
+    settings = json.loads(result.settings_path.read_text(encoding="utf-8"))
+    assert "api.token" not in settings["values"]
+    assert "notify.token" not in settings["values"]
+    assert "notify.webhook" not in settings["values"]
+    assert result.settings_count == 2
+
+
 def test_prune_keeps_newest_by_kind_and_skips_pre_migrate(
     database: sqlite3.Connection, clock: VirtualClock, backups_dir: Path
 ) -> None:

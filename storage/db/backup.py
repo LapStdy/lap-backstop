@@ -20,12 +20,14 @@ from typing import Literal, cast
 
 from contracts.context import Clock
 from storage.db.integrity import verify_integrity
+from storage.repositories.config_export import collect_export_data
 from storage.repositories.iso_time import format_at, parse_at
 
 SnapshotKind = Literal["daily", "weekly", "pre-migrate"]
 
 _MANIFEST_SUFFIX = ".manifest.json"
-_SNAPSHOT_TIMESTAMP = "%Y%m%d-%H%M%S"
+# 文件名时间戳形状：快照、pre-migrate 与配置导出统一走这一份，别处不再复制。
+TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
 _KINDS: tuple[SnapshotKind, ...] = ("daily", "weekly", "pre-migrate")
 # 导出文件名规则 {prefix}-{stamp}.json；构造与修剪必须共用同一形状。
 _EXPORT_PREFIXES: tuple[str, ...] = ("settings", "plugins")
@@ -76,7 +78,7 @@ def create_snapshot(
     """
     created_at = clock.utc_now().astimezone(UTC)
     spec = _SnapshotSpec(
-        stem=f"db-{created_at.strftime(_SNAPSHOT_TIMESTAMP)}",
+        stem=f"db-{created_at.strftime(TIMESTAMP_FORMAT)}",
         kind=kind,
         created_at=created_at,
     )
@@ -107,7 +109,7 @@ def create_pre_migrate_snapshot(
     """
     created_at = clock.utc_now().astimezone(UTC)
     spec = _SnapshotSpec(
-        stem=f"pre-migrate-{version}-{created_at.strftime(_SNAPSHOT_TIMESTAMP)}",
+        stem=f"pre-migrate-{version}-{created_at.strftime(TIMESTAMP_FORMAT)}",
         kind="pre-migrate",
         created_at=created_at,
     )
@@ -188,8 +190,8 @@ def export_configs(
 ) -> ExportResult:
     """把平台配置导出为带时间戳的 JSON：settings 全量、plugins 概要。
 
-    docs/08 的备份内容：settings 键值全量；plugins 只含 id、版本与启用
-    状态。密钥不入库，因此也不会出现在导出里。
+    docs/08 的备份内容：settings 键值全量、plugins 只含 id、版本与启用
+    状态；收集口径见 storage.repositories.config_export，密钥键不入导出。
 
     Args:
         connection: 已打开的源库连接。
@@ -204,12 +206,12 @@ def export_configs(
     """
     exports_dir.mkdir(parents=True, exist_ok=True)
     created_at = clock.utc_now().astimezone(UTC)
-    stamp = created_at.strftime(_SNAPSHOT_TIMESTAMP)
+    stamp = created_at.strftime(TIMESTAMP_FORMAT)
     settings_path = _export_path(exports_dir, "settings", stamp)
     plugins_path = _export_path(exports_dir, "plugins", stamp)
     if settings_path.exists() or plugins_path.exists():
         raise BackupError(f"同名导出已存在，换一个时刻再导出：settings-{stamp}.json")
-    values, plugins = _collect_export_data(connection)
+    values, plugins = collect_export_data(connection)
     try:
         _write_json_atomic(settings_path, {"created_at": format_at(created_at), "values": values})
         _write_json_atomic(plugins_path, {"created_at": format_at(created_at), "plugins": plugins})
@@ -225,21 +227,6 @@ def export_configs(
         settings_count=len(values),
         plugins_count=len(plugins),
     )
-
-
-def _collect_export_data(
-    connection: sqlite3.Connection,
-) -> tuple[dict[str, str], list[dict[str, object]]]:
-    """收导出数据：settings 全量键值与 plugins 概要（id、版本、启用）。"""
-    values = {
-        str(row[0]): str(row[1])
-        for row in connection.execute("SELECT key, value FROM settings ORDER BY key")
-    }
-    plugins = [
-        {"id": str(row[0]), "version": str(row[1]), "enabled": bool(row[2])}
-        for row in connection.execute("SELECT id, version, enabled FROM plugins ORDER BY id")
-    ]
-    return values, plugins
 
 
 @dataclass(frozen=True, slots=True)
