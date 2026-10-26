@@ -19,7 +19,7 @@ from core.api import store
 from core.api.ctx import Handler, RequestCtx
 from core.api.events_api import StreamOptions, stream_frames, stream_run_frames
 from core.api.notifications_api import post_notification_test
-from core.api.runs_api import get_run, list_runs, require_run, stop_run
+from core.api.runs_api import get_evidence_file, get_run, list_runs, require_run, stop_run
 from core.api.schedules_api import (
     create_schedule,
     delete_schedule,
@@ -82,6 +82,7 @@ ROUTES: tuple[Route, ...] = (
     Route("DELETE", ("job-templates", "{id}"), delete_template),
     Route("GET", ("runs",), list_runs),
     Route("GET", ("runs", "{id}"), get_run),
+    Route("GET", ("runs", "{id}", "evidence", "{name}"), get_evidence_file),
     Route("POST", ("runs", "{id}", "stop"), stop_run),
     Route("POST", ("schedules", "{id}", "run"), run_now),
     Route("GET", ("environments",), list_environments),

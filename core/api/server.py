@@ -18,7 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 from contracts import Clock, ContractError, ErrorCode, Logger, parse_event_id
 from core.api.app import API_PREFIX, EVENTS_CAPABILITY, ApiApp
 from core.api.store import ensure_server_id
-from core.api.wire import ApiRequest, ApiResponse, encode_json, error_response
+from core.api.wire import ApiRequest, ApiResponse, FileBody, encode_json, error_response
 from core.clock import SystemClock
 from core.logging import NullLogger
 
@@ -35,6 +35,8 @@ MAX_BODY_BYTES = 1_000_000
 MAX_DRAIN_BYTES = 4 * MAX_BODY_BYTES
 # 空闲连接读超时：挂住的连接不长期占线程（docs/11 并发与超时）。
 REQUEST_TIMEOUT_SECONDS = 30.0
+# 文件应答的读写块：大证据逐块过网，不整读进内存（docs/11 外部调用·文件）。
+FILE_CHUNK_BYTES = 64 * 1024
 # 服务循环的唤醒间隔：停机事件最多延迟这么久被看到。
 POLL_INTERVAL_SECONDS = 0.25
 
@@ -292,6 +294,10 @@ class _HandlerMethods(BaseHTTPRequestHandler):
             remaining -= len(chunk)
 
     def _write(self, response: ApiResponse) -> None:
+        file_body = response.file
+        if file_body is not None:
+            self._write_file(response.status, file_body)
+            return
         body = b"" if response.payload is None else encode_json(response.payload)
         self.send_response(response.status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -300,6 +306,19 @@ class _HandlerMethods(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _write_file(self, status: int, body: FileBody) -> None:
+        """文件应答：inline 下发，逐块写出；发头、写体或中途断连都关流。"""
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", body.content_type)
+            self.send_header("Content-Length", str(body.length))
+            self.send_header("Content-Disposition", "inline")
+            self.end_headers()
+            while chunk := body.stream.read(FILE_CHUNK_BYTES):
+                self.wfile.write(chunk)
+        finally:
+            body.stream.close()
 
     def log_message(self, format: str, *args: object) -> None:
         # 请求日志由 ApiApp 写结构化行，不走 stderr 自由文本。

@@ -57,6 +57,14 @@ class EvidenceRepository:
         ).fetchone()
         return None if row is None else _row_to_record(row)
 
+    def get_for_run(self, run_id: str, evidence_id: str) -> EvidenceRow | None:
+        """按运行与证据 id 联合取证据；其它运行的 id 视同不存在。"""
+        row = self._connection.execute(
+            f"SELECT {_COLUMNS} FROM evidence WHERE run_id = ? AND id = ?",
+            (run_id, evidence_id),
+        ).fetchone()
+        return None if row is None else _row_to_record(row)
+
     def for_run(self, run_id: str) -> tuple[EvidenceRow, ...]:
         """某个运行的全部证据，按创建时间排序。"""
         rows = self._connection.execute(
