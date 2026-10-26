@@ -13,6 +13,7 @@ from typing import Any
 
 from contracts import Clock, ContractError, ErrorCode
 from core.api.wire import ApiResponse
+from core.hostops.tasks import Runner
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +29,8 @@ class RequestCtx:
     body: object
     # 数据根目录，按数据库文件位置派生；供投递等需要宿主路径的端点使用。
     data_root: Path
+    # 计划任务注册执行件；生产默认 subprocess.run，测试注入假 runner。
+    task_runner: Runner
 
 
 Handler = Callable[[RequestCtx], ApiResponse]

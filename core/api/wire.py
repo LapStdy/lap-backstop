@@ -26,12 +26,25 @@ class ApiRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class BinaryBody:
+    """二进制正文：内容类型与可选下载文件名，替代 JSON payload 的直出通道。"""
+
+    content_type: str
+    data: bytes
+    filename: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ApiResponse:
-    """应用的应答；payload 是可直接 JSON 化的 snake_case 结构。"""
+    """应用的应答；payload 是可直接 JSON 化的 snake_case 结构。
+
+    binary 非 None 时按其内容类型直出字节（文件下载），payload 走 JSON。
+    """
 
     status: int
     payload: object
     etag: str | None = None
+    binary: BinaryBody | None = None
 
 
 def decode_json(body: bytes) -> object:
@@ -81,6 +94,7 @@ def check_if_match(header: str | None, current: str) -> None:
 __all__ = [
     "ApiRequest",
     "ApiResponse",
+    "BinaryBody",
     "check_if_match",
     "content_etag",
     "decode_json",

@@ -71,6 +71,21 @@ class VerdictJson(TypedDict):
     created_at: str
 
 
+class RunSummaryJson(TypedDict):
+    """job_runs 一行的导出摘要形态：时间线与结论引用，不含事件流（docs/03 导出）。"""
+
+    id: str
+    template_id: str
+    schedule_id: str | None
+    scheduled_at: str | None
+    created_at: str
+    state: str
+    started_at: str | None
+    finished_at: str | None
+    verdict_id: str | None
+    error_code: str | None
+
+
 _ACTIVE_STATES = (
     "scheduled",
     "queued",
@@ -164,6 +179,34 @@ def run_rows(connection: sqlite3.Connection, filters: RunFilters) -> list[RunJso
     return [_run_json(row) for row in rows]
 
 
+_RUN_SUMMARY_COLUMNS = (
+    "id, template_id, schedule_id, scheduled_at, created_at, state, "
+    "started_at, finished_at, verdict_id, error_code"
+)
+
+
+def run_summary_rows(connection: sqlite3.Connection) -> list[RunSummaryJson]:
+    """全部运行的摘要，按创建时间升序；导出条目用，不携带事件流。"""
+    rows = connection.execute(
+        f"SELECT {_RUN_SUMMARY_COLUMNS} FROM job_runs ORDER BY created_at, id"
+    ).fetchall()
+    return [
+        {
+            "id": str(row["id"]),
+            "template_id": str(row["template_id"]),
+            "schedule_id": optional_str(row["schedule_id"]),
+            "scheduled_at": optional_str(row["scheduled_at"]),
+            "created_at": str(row["created_at"]),
+            "state": str(row["state"]),
+            "started_at": optional_str(row["started_at"]),
+            "finished_at": optional_str(row["finished_at"]),
+            "verdict_id": optional_str(row["verdict_id"]),
+            "error_code": optional_str(row["error_code"]),
+        }
+        for row in rows
+    ]
+
+
 def _run_json(row: sqlite3.Row) -> RunJson:
     return {
         "id": str(row["id"]),
@@ -187,6 +230,7 @@ def _run_json(row: sqlite3.Row) -> RunJson:
 __all__ = [
     "RunFilters",
     "RunJson",
+    "RunSummaryJson",
     "VerdictJson",
     "active_run_rows",
     "queued_run_rows",
@@ -194,4 +238,5 @@ __all__ = [
     "record_run_now",
     "run_now_run_id",
     "run_rows",
+    "run_summary_rows",
 ]

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import sqlite3
+import subprocess
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from core.api.app import API_PREFIX, EVENTS_CAPABILITY, ApiApp
 from core.api.store import ensure_server_id
 from core.api.wire import ApiRequest, ApiResponse, encode_json, error_response
 from core.clock import SystemClock
+from core.hostops import tasks
 from core.logging import NullLogger
 
 EVENTS_PATH = f"{API_PREFIX}/{EVENTS_CAPABILITY}"
@@ -50,6 +52,8 @@ class ApiOptions:
     clock: Clock = field(default_factory=SystemClock)
     log: Logger = field(default_factory=NullLogger)
     stop: threading.Event = field(default_factory=threading.Event)
+    # 重新注册计划任务端点的执行件；测试注入假 runner，不真跑 schtasks。
+    task_runner: tasks.Runner = field(default_factory=lambda: subprocess.run)
     max_requests: int | None = None
 
 
@@ -139,7 +143,7 @@ def start_api_server(
     active = ApiOptions() if options is None else options
     database = _database_path(connection)
     ensure_server_id(connection, at=active.clock.utc_now())
-    app = ApiApp(database, clock=active.clock, log=active.log)
+    app = ApiApp(database, clock=active.clock, log=active.log, task_runner=active.task_runner)
     counter = _RequestCounter()
     servers: list[tuple[ThreadingHTTPServer, threading.Thread]] = []
     failures: list[tuple[str, str]] = []
@@ -292,9 +296,19 @@ class _HandlerMethods(BaseHTTPRequestHandler):
             remaining -= len(chunk)
 
     def _write(self, response: ApiResponse) -> None:
-        body = b"" if response.payload is None else encode_json(response.payload)
+        if response.binary is not None:
+            body = response.binary.data
+            content_type = response.binary.content_type
+        else:
+            body = b"" if response.payload is None else encode_json(response.payload)
+            content_type = "application/json; charset=utf-8"
         self.send_response(response.status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+        if response.binary is not None and response.binary.filename is not None:
+            self.send_header(
+                "Content-Disposition",
+                f'attachment; filename="{response.binary.filename}"',
+            )
+        self.send_header("Content-Type", content_type)
         if response.etag is not None:
             self.send_header("ETag", response.etag)
         self.send_header("Content-Length", str(len(body)))
