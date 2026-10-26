@@ -6,14 +6,10 @@ import base64
 import hashlib
 import hmac
 import json
-import threading
 import time
 import urllib.parse
-from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -22,6 +18,7 @@ from core.clock import SystemClock
 from core.logging import NullLogger
 from core.notify.channels import DingTalkChannel, NtfyChannel, ServerChanChannel
 from core.worker.executor import CancelFlag
+from tests.notify_support import FakeServer
 
 TITLE = "标题"
 BODY = "正文行一\n正文行二"
@@ -52,61 +49,7 @@ def _ctx(tmp_path: Path) -> RunContext:
     )
 
 
-class _FakeServer:
-    """可脚本化的本地假渠道：按剧本应答并记录收到的请求。"""
-
-    def __init__(self) -> None:
-        self.requests: list[dict[str, Any]] = []
-        self.status = 200
-        self.body = b"{}"
-        self.delay_seconds = 0.0
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(self))
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-
-    @property
-    def base_url(self) -> str:
-        host = str(self._server.server_address[0])
-        port = int(str(self._server.server_address[1]))
-        return f"http://{host}:{port}"
-
-    def close(self) -> None:
-        self._server.shutdown()
-        self._server.server_close()
-
-
-def _make_handler(owner: _FakeServer) -> type[BaseHTTPRequestHandler]:
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:
-            length = int(self.headers.get("Content-Length", "0"))
-            raw = self.rfile.read(length)
-            owner.requests.append(
-                {"path": self.path, "headers": dict(self.headers.items()), "body": raw}
-            )
-            if owner.delay_seconds > 0:
-                time.sleep(owner.delay_seconds)
-            self.send_response(owner.status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(owner.body)))
-            self.end_headers()
-            self.wfile.write(owner.body)
-
-        def log_message(self, format: str, *args: object) -> None:
-            pass
-
-    return Handler
-
-
-@pytest.fixture
-def fake_server() -> Iterator[_FakeServer]:
-    server = _FakeServer()
-    try:
-        yield server
-    finally:
-        server.close()
-
-
-def test_serverchan_success_posts_form(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_serverchan_success_posts_form(tmp_path: Path, fake_server: FakeServer) -> None:
     fake_server.body = json.dumps({"code": 0}).encode("utf-8")
     channel = ServerChanChannel(token="SCT123", endpoint=fake_server.base_url)
     result = channel.send(_ctx(tmp_path), _message())
@@ -119,7 +62,7 @@ def test_serverchan_success_posts_form(tmp_path: Path, fake_server: _FakeServer)
     assert form["desp"] == [BODY]
 
 
-def test_serverchan_business_code_failure(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_serverchan_business_code_failure(tmp_path: Path, fake_server: FakeServer) -> None:
     fake_server.body = json.dumps({"code": 40001, "message": "bad key"}).encode("utf-8")
     channel = ServerChanChannel(token="SCT123", endpoint=fake_server.base_url)
     result = channel.send(_ctx(tmp_path), _message())
@@ -130,7 +73,7 @@ def test_serverchan_business_code_failure(tmp_path: Path, fake_server: _FakeServ
 
 @pytest.mark.parametrize("status", [403, 500])
 def test_serverchan_http_status_failure(
-    tmp_path: Path, fake_server: _FakeServer, status: int
+    tmp_path: Path, fake_server: FakeServer, status: int
 ) -> None:
     fake_server.status = status
     channel = ServerChanChannel(token="SCT123", endpoint=fake_server.base_url)
@@ -140,7 +83,7 @@ def test_serverchan_http_status_failure(
     assert f"HTTP {status}" in result.detail
 
 
-def test_serverchan_timeout(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_serverchan_timeout(tmp_path: Path, fake_server: FakeServer) -> None:
     fake_server.delay_seconds = 2.0
     channel = ServerChanChannel(token="SCT123", endpoint=fake_server.base_url, timeout_seconds=0.3)
     started = time.monotonic()
@@ -151,7 +94,7 @@ def test_serverchan_timeout(tmp_path: Path, fake_server: _FakeServer) -> None:
     assert time.monotonic() - started < 1.5
 
 
-def test_serverchan_bad_json(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_serverchan_bad_json(tmp_path: Path, fake_server: FakeServer) -> None:
     fake_server.body = b"<html>gateway error</html>"
     channel = ServerChanChannel(token="SCT123", endpoint=fake_server.base_url)
     result = channel.send(_ctx(tmp_path), _message())
@@ -159,7 +102,7 @@ def test_serverchan_bad_json(tmp_path: Path, fake_server: _FakeServer) -> None:
     assert "JSON" in result.detail
 
 
-def test_dingtalk_success_with_sign(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_dingtalk_success_with_sign(tmp_path: Path, fake_server: FakeServer) -> None:
     fake_server.body = json.dumps({"errcode": 0, "errmsg": "ok"}).encode("utf-8")
     channel = DingTalkChannel(
         webhook=f"{fake_server.base_url}/robot/send?access_token=abc", secret="SEC999"
@@ -181,7 +124,7 @@ def test_dingtalk_success_with_sign(tmp_path: Path, fake_server: _FakeServer) ->
     assert BODY in payload["markdown"]["text"]
 
 
-def test_dingtalk_success_without_sign(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_dingtalk_success_without_sign(tmp_path: Path, fake_server: FakeServer) -> None:
     fake_server.body = json.dumps({"errcode": 0}).encode("utf-8")
     channel = DingTalkChannel(webhook=f"{fake_server.base_url}/robot/send")
     result = channel.send(_ctx(tmp_path), _message())
@@ -189,7 +132,7 @@ def test_dingtalk_success_without_sign(tmp_path: Path, fake_server: _FakeServer)
     assert "timestamp=" not in fake_server.requests[0]["path"]
 
 
-def test_dingtalk_errcode_failure(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_dingtalk_errcode_failure(tmp_path: Path, fake_server: FakeServer) -> None:
     fake_server.body = json.dumps({"errcode": 310000, "errmsg": "sign not match"}).encode("utf-8")
     channel = DingTalkChannel(webhook=f"{fake_server.base_url}/robot/send")
     result = channel.send(_ctx(tmp_path), _message())
@@ -198,7 +141,7 @@ def test_dingtalk_errcode_failure(tmp_path: Path, fake_server: _FakeServer) -> N
     assert "310000" in result.detail
 
 
-def test_dingtalk_http_5xx(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_dingtalk_http_5xx(tmp_path: Path, fake_server: FakeServer) -> None:
     fake_server.status = 502
     channel = DingTalkChannel(webhook=f"{fake_server.base_url}/robot/send")
     result = channel.send(_ctx(tmp_path), _message())
@@ -206,7 +149,7 @@ def test_dingtalk_http_5xx(tmp_path: Path, fake_server: _FakeServer) -> None:
     assert result.error_code == "E_NOTIFY"
 
 
-def test_ntfy_success_publishes_json(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_ntfy_success_publishes_json(tmp_path: Path, fake_server: FakeServer) -> None:
     channel = NtfyChannel(topic_url=f"{fake_server.base_url}/my-topic", token="tk_1")
     result = channel.send(_ctx(tmp_path), _message(NotificationLevel.WARN))
     assert result.ok
@@ -221,7 +164,7 @@ def test_ntfy_success_publishes_json(tmp_path: Path, fake_server: _FakeServer) -
     assert payload["tags"] == ["warning"]
 
 
-def test_ntfy_error_level_maps_priority(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_ntfy_error_level_maps_priority(tmp_path: Path, fake_server: FakeServer) -> None:
     channel = NtfyChannel(topic_url=f"{fake_server.base_url}/my-topic")
     result = channel.send(_ctx(tmp_path), _message(NotificationLevel.ERROR))
     assert result.ok
@@ -231,7 +174,7 @@ def test_ntfy_error_level_maps_priority(tmp_path: Path, fake_server: _FakeServer
     assert "Authorization" not in fake_server.requests[0]["headers"]
 
 
-def test_ntfy_http_4xx(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_ntfy_http_4xx(tmp_path: Path, fake_server: FakeServer) -> None:
     fake_server.status = 403
     channel = NtfyChannel(topic_url=f"{fake_server.base_url}/my-topic")
     result = channel.send(_ctx(tmp_path), _message())
@@ -239,7 +182,7 @@ def test_ntfy_http_4xx(tmp_path: Path, fake_server: _FakeServer) -> None:
     assert result.error_code == "E_NOTIFY"
 
 
-def test_ntfy_rejects_multi_segment_topic(tmp_path: Path, fake_server: _FakeServer) -> None:
+def test_ntfy_rejects_multi_segment_topic(tmp_path: Path, fake_server: FakeServer) -> None:
     channel = NtfyChannel(topic_url=f"{fake_server.base_url}/a/b")
     result = channel.send(_ctx(tmp_path), _message())
     assert not result.ok

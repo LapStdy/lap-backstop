@@ -18,6 +18,7 @@ from contracts import Clock, ContractError, ErrorCode, Logger
 from core.api import store
 from core.api.ctx import Handler, RequestCtx
 from core.api.events_api import StreamOptions, stream_frames
+from core.api.notifications_api import post_notification_test
 from core.api.runs_api import get_run, list_runs, stop_run
 from core.api.schedules_api import (
     create_schedule,
@@ -68,6 +69,7 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", ("status",), get_status),
     Route("GET", ("settings",), get_settings),
     Route("PUT", ("settings",), put_settings),
+    Route("POST", ("notifications", "test"), post_notification_test),
     Route("GET", ("schedules",), list_schedules),
     Route("POST", ("schedules",), create_schedule),
     Route("GET", ("schedules", "{id}"), get_schedule),
@@ -187,6 +189,7 @@ class ApiApp:
             headers=request.headers,
             capabilities=self._capabilities,
             body=body,
+            data_root=self._database.parent,
         )
         return route.handler(context)
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from contracts import Clock, ContractError, ErrorCode
@@ -25,6 +26,8 @@ class RequestCtx:
     headers: Mapping[str, str]
     capabilities: tuple[str, ...]
     body: object
+    # 数据根目录，按数据库文件位置派生；供投递等需要宿主路径的端点使用。
+    data_root: Path
 
 
 Handler = Callable[[RequestCtx], ApiResponse]
