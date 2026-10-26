@@ -1,11 +1,11 @@
-"""doctor 自检：13 项宿主环境检查，只报告不修复（docs/08 排障入口）。
+"""doctor 自检：14 项宿主环境检查，只报告不修复（docs/08 排障入口）。
 
 外部依赖全注入，单元测试不碰真实注册表与 schtasks；退出码 0 全过、1 有 FAIL、2 仅 WARN。
 """
 
 from __future__ import annotations
 
-import json
+import ipaddress
 import re
 import socket
 import sqlite3
@@ -19,7 +19,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import TextIO
 
-from core.hostops import instance, tasks
+from core.hostops import instance, tailscale, tasks
 from core.hostops.heartbeat import HEARTBEAT_FILENAME, heartbeat_age_seconds, read_heartbeat
 from core.jobs.run_service import DISK_GUARD_BYTES, DISK_WARN_BYTES, disk_free_bytes
 from storage.db.migrations import MIGRATIONS
@@ -27,9 +27,15 @@ from storage.defaults import DEFAULTS, load_defaults
 
 DATABASE_FILENAME = "backstop.sqlite"
 DEFAULT_API_ADDRESS = ("127.0.0.1", 8787)
-# 排障入口可以比看门狗宽裕，但仍必须有界（docs/11 每个外部调用都必须带超时）。
-_EXTERNAL_TIMEOUT_SECONDS = 10.0
 WINLOGON_KEY = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon"
+# 入站放行规则名，与 docs/08 Tailscale 一节的手工 netsh 步骤对应。
+FIREWALL_RULE_NAME = "lap-backstop-api"
+# 入站规则的远端白名单：回环与 tailnet 网段，超出即判 WARN（docs/08 Tailscale 一节）。
+_ALLOWED_REMOTE_V4 = (
+    ipaddress.IPv4Network("127.0.0.0/8"),
+    tailscale.TAILNET_IPV4_NETWORK,
+)
+_ALLOWED_REMOTE_V6 = (ipaddress.IPv6Network("::1/128"),)
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess[bytes]]
 RegistryGet = Callable[[str, str], str | None]
@@ -71,7 +77,7 @@ class DoctorDeps:
     app_root: Path
     now: datetime = field(default_factory=lambda: datetime.now(UTC))
     registry_get: RegistryGet = field(default_factory=lambda: registry_get)
-    runner: Runner = field(default_factory=lambda: _run)
+    runner: Runner = field(default_factory=lambda: tailscale.default_runner)
     disk_free: Callable[[Path], int | None] = disk_free_bytes
     api_address: tuple[str, int] = DEFAULT_API_ADDRESS
 
@@ -101,7 +107,7 @@ def exit_code(results: list[CheckResult]) -> int:
 
 
 def collect(deps: DoctorDeps) -> list[CheckResult]:
-    """按编号顺序跑 13 项检查。"""
+    """按编号顺序跑 14 项检查。"""
     checks = [
         _check_data_writable,
         _check_database_integrity,
@@ -116,6 +122,7 @@ def collect(deps: DoctorDeps) -> list[CheckResult]:
         _check_scheduled_tasks,
         _check_time_service,
         _check_tailscale_and_power,
+        _check_inbound_firewall,
     ]
     return [check(deps) for check in checks]
 
@@ -305,17 +312,10 @@ def _check_time_service(deps: DoctorDeps) -> CheckResult:
 
 def _check_tailscale_and_power(deps: DoctorDeps) -> CheckResult:
     """第 13 项：Tailscale 在 Running、交流供电下睡眠与休眠超时为 0。"""
-    tailscale = deps.runner(["tailscale", "status", "--json"])
-    state = ""
-    if tailscale.returncode == 0:
-        try:
-            text = tailscale.stdout.decode("utf-8", errors="replace")
-            state = str(json.loads(text).get("BackendState", ""))
-        except ValueError:
-            state = ""
+    status = tailscale.probe(deps.runner)
     problems: list[str] = []
-    if state != "Running":
-        problems.append(f"Tailscale BackendState={state or '不可查'}")
+    if not status.is_running:
+        problems.append(f"Tailscale BackendState={status.down_detail}")
     standby = _ac_timeout(deps, "STANDBYIDLE")
     hibernate = _ac_timeout(deps, "HIBERNATEIDLE")
     if standby is None or standby != 0:
@@ -325,6 +325,107 @@ def _check_tailscale_and_power(deps: DoctorDeps) -> CheckResult:
     if problems:
         return _result(13, "远程访问与电源", Level.WARN, "；".join(problems))
     return _result(13, "远程访问与电源", Level.PASS, "Tailscale Running，交流下不睡眠不休眠")
+
+
+def _check_inbound_firewall(deps: DoctorDeps) -> CheckResult:
+    """第 14 项：入站放行规则存在且只放行回环与 tailnet（docs/08 Tailscale 一节）。
+
+    只查不改：改防火墙是管理员手工步骤，规则缺失或范围越界都只给 WARN。
+    """
+    query = [
+        "netsh",
+        "advfirewall",
+        "firewall",
+        "show",
+        "rule",
+        f"name={FIREWALL_RULE_NAME}",
+    ]
+    completed = deps.runner(query)
+    if completed.returncode != 0:
+        detail = f"未找到规则 {FIREWALL_RULE_NAME}；需要远程访问时按 docs/08 手工配置"
+        return _result(14, "入站防火墙", Level.WARN, detail)
+    blocks = _rule_blocks(_decode_console(completed.stdout))
+    if not blocks:
+        detail = f"{FIREWALL_RULE_NAME} 的规则输出不可解析，人工核对 netsh advfirewall"
+        return _result(14, "入站防火墙", Level.WARN, detail)
+    problems = _rule_problems(blocks, port=deps.api_address[1])
+    if problems:
+        detail = f"{FIREWALL_RULE_NAME}：" + "；".join(problems)
+        return _result(14, "入站防火墙", Level.WARN, detail)
+    detail = f"{FIREWALL_RULE_NAME} 只放行回环与 tailnet，端口 {deps.api_address[1]}"
+    return _result(14, "入站防火墙", Level.PASS, detail)
+
+
+def _decode_console(raw: bytes) -> str:
+    """netsh 输出解码：先 UTF-8，失败退 GBK（中文宿主的控制台代码页）。"""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("gbk", errors="replace")
+
+
+def _rule_blocks(text: str) -> list[str]:
+    """netsh show rule 输出按分隔线切块，返回含远端地址字段的规则块。"""
+    blocks = re.split(r"-{8,}", text)
+    return [block for block in blocks if _rule_field(block, "RemoteIP", "远程IP")]
+
+
+def _rule_problems(blocks: list[str], *, port: int) -> list[str]:
+    """逐块核对启用、方向、动作、端口与远端网段；只收集问题不修规则。"""
+    problems: list[str] = []
+    for block in blocks:
+        enabled = _rule_field(block, "Enabled", "已启用")
+        direction = _rule_field(block, "Direction", "方向")
+        action = _rule_field(block, "Action", "操作")
+        local = _rule_field(block, "LocalPort", "本地端口")
+        if enabled and enabled not in ("Yes", "是"):
+            problems.append("规则未启用")
+        if direction and direction not in ("In", "入"):
+            problems.append("方向不是入站")
+        if action and action not in ("Allow", "允许"):
+            problems.append("动作不是允许")
+        if local and local not in ("Any", "*"):
+            ports = _port_values(local)
+            if ports and port not in ports:
+                problems.append(f"本地端口不含 {port}")
+        problems.extend(_remote_scope_problems(_rule_field(block, "RemoteIP", "远程IP")))
+    return list(dict.fromkeys(problems))
+
+
+def _rule_field(block: str, english: str, chinese: str) -> str:
+    """取规则块里某字段的值；英中字段名都认，找不到返回空串。"""
+    found = re.search(rf"^(?:{english}|{chinese})\s*[:：]\s*(.*)$", block, re.MULTILINE)
+    return found.group(1).strip() if found else ""
+
+
+def _port_values(field_value: str) -> set[int]:
+    """本地端口字段解析成集合；解析不了的条目丢弃（端口核对是辅助项）。"""
+    return {int(part) for part in field_value.split(",") if part.strip().isdigit()}
+
+
+def _remote_scope_problems(field_value: str) -> list[str]:
+    """远端地址核对：白名单外的条目都算越界，解析不了报不可核。"""
+    if not field_value:
+        return ["远程IP 不可解析"]
+    if field_value in ("Any", "*"):
+        return ["远程IP 为 Any，放行范围超出回环与 tailnet"]
+    outside = [entry for entry in field_value.split(",") if not _is_allowed_remote(entry.strip())]
+    if outside:
+        return ["远程IP 越界：" + "、".join(outside)]
+    return []
+
+
+def _is_allowed_remote(entry: str) -> bool:
+    """白名单比对：回环与 tailnet 网段；无掩码地址按所在网段判断。"""
+    try:
+        network = ipaddress.ip_network(entry, strict=False)
+    except ValueError:
+        return False
+    if isinstance(network, ipaddress.IPv4Network):
+        return any(network.subnet_of(allowed) for allowed in _ALLOWED_REMOTE_V4)
+    if isinstance(network, ipaddress.IPv6Network):
+        return any(network.subnet_of(allowed) for allowed in _ALLOWED_REMOTE_V6)
+    return False
 
 
 def _registered_action_matches(completed: subprocess.CompletedProcess[bytes], local: Path) -> bool:
@@ -364,20 +465,8 @@ def _result(number: int, name: str, level: Level, detail: str) -> CheckResult:
     return CheckResult(number=number, name=name, level=level, detail=detail)
 
 
-def _run(command: list[str]) -> subprocess.CompletedProcess[bytes]:
-    """跑外部命令；可执行体不存在或超时按退出码 -1 处理，不炸整个 doctor。"""
-    try:
-        return subprocess.run(
-            command,
-            capture_output=True,
-            check=False,
-            timeout=_EXTERNAL_TIMEOUT_SECONDS,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return subprocess.CompletedProcess(command, -1, b"", b"")
-
-
 __all__ = [
+    "FIREWALL_RULE_NAME",
     "WINLOGON_KEY",
     "CheckResult",
     "DoctorDeps",
