@@ -35,7 +35,9 @@ from core.api.system_api import (
     get_status,
     health,
     list_environments,
+    list_leases,
     list_plugins,
+    list_resources,
     put_settings,
 )
 from core.api.templates_api import (
@@ -89,6 +91,8 @@ ROUTES: tuple[Route, ...] = (
     Route("GET", ("environments", "{id}"), get_environment),
     Route("GET", ("plugins",), list_plugins),
     Route("GET", ("plugins", "{id}"), get_plugin),
+    Route("GET", ("resources",), list_resources),
+    Route("GET", ("resources", "leases"), list_leases),
 )
 
 

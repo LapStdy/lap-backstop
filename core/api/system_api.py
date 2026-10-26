@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contracts import ContractError, ErrorCode
-from core.api import registry_store, run_store, store
+from core.api import registry_store, resource_store, run_store, store
 from core.api.ctx import RequestCtx
 from core.api.version import executable_version
 from core.api.wire import ApiResponse
@@ -79,6 +79,22 @@ def get_plugin(ctx: RequestCtx) -> ApiResponse:
     return ApiResponse(status=200, payload={"plugin": row})
 
 
+def list_resources(ctx: RequestCtx) -> ApiResponse:
+    """资源列表。"""
+    return ApiResponse(
+        status=200,
+        payload={"resources": resource_store.resource_rows(ctx.connection)},
+    )
+
+
+def list_leases(ctx: RequestCtx) -> ApiResponse:
+    """租约列表。"""
+    return ApiResponse(
+        status=200,
+        payload={"leases": resource_store.lease_rows(ctx.connection)},
+    )
+
+
 __all__ = [
     "get_environment",
     "get_plugin",
@@ -86,6 +102,8 @@ __all__ = [
     "get_status",
     "health",
     "list_environments",
+    "list_leases",
     "list_plugins",
+    "list_resources",
     "put_settings",
 ]
