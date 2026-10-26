@@ -5,6 +5,7 @@ poll() 由 serve 每轮调用：刷新渠道配置、追读新事件、排队投
 只读既有事件流，不改事件语义；投递结果用契约里现成的事件类型。
 推送口径（docs/06、docs/07）：运行结束、停手、环境 failed 各推一次；
 同一运行只推一条（恢复停手与运行结束合并，先到先推）。
+连通性自检（send_test）与常驻轮询共用 core.notify.selftest 的一次性投递实现。
 """
 
 from __future__ import annotations
@@ -21,12 +22,10 @@ from contracts import (
     Clock,
     ContractError,
     EnvironmentState,
-    ErrorCode,
     EventType,
     Logger,
     Notification,
     Notifier,
-    RunContext,
 )
 from contracts.types import DeliveryResult
 from core.api.store import all_settings
@@ -41,13 +40,8 @@ from core.notify.delivery import (
     DeliveryWorker,
     PendingDelivery,
 )
-from core.notify.notifications import (
-    NotificationFactory,
-    no_emit,
-    reject_evidence,
-    test_notification,
-)
-from core.worker.executor import CancelFlag
+from core.notify.notifications import NotificationFactory
+from core.notify.selftest import build_kernel_delivery_context, deliver_test_notification
 from storage.repositories.events import EventLog
 
 _EVENTS_PER_POLL: Final[int] = 200
@@ -128,19 +122,15 @@ class NotifyService:
             渠道应答；配置未启用或非法时返回失败结果。
         """
         try:
-            config = resolve_config(self._settings_reader())
+            return deliver_test_notification(
+                self._settings_reader(),
+                build_kernel_delivery_context(
+                    self._clock, data_root=self._data_root, log=self._log
+                ),
+                channel_factory=self._build_channel,
+            ).result
         except ContractError as error:
-            return DeliveryResult(
-                ok=False, error_code=ErrorCode.CONFIG_INVALID.value, detail=error.message
-            )
-        if not config.enabled:
-            return DeliveryResult(
-                ok=False,
-                error_code=ErrorCode.CONFIG_INVALID.value,
-                detail="通知未启用：先打开 notify.enabled",
-            )
-        channel = self._build_channel(config)
-        return channel.send(self._delivery_context(), test_notification())
+            return DeliveryResult(ok=False, error_code=error.code.value, detail=error.message)
 
     def close(self, *, join_timeout: float = 15.0) -> None:
         """停机：等工作线程收尾；在途 HTTP 调用最多等一个超时周期。"""
@@ -160,32 +150,12 @@ class NotifyService:
 
     def _bind_send(self, channel: Notifier) -> Callable[[Notification], DeliveryResult]:
         """把协议的双参 send 绑成投递循环用的单参形式；上下文只有内核投递身份。"""
-        ctx = self._delivery_context()
+        ctx = build_kernel_delivery_context(self._clock, data_root=self._data_root, log=self._log)
 
         def send(message: Notification) -> DeliveryResult:
             return channel.send(ctx, message)
 
         return send
-
-    def _delivery_context(self) -> RunContext:
-        """内核投递的最小上下文：无运行归属，不接受证据，只满足协议签名。"""
-        return RunContext(
-            run_id="notify:kernel",
-            attempt=0,
-            template_id="",
-            plugin_id="core.notify",
-            environment_id="",
-            config={},
-            work_dir=self._data_root / "work" / "notify-kernel",
-            evidence_dir=self._data_root / "evidence" / "notify-kernel",
-            deadline_at=self._clock.utc_now(),
-            cancel=CancelFlag(),
-            clock=self._clock,
-            secrets={},
-            log=self._log,
-            emit=no_emit,
-            record_evidence=reject_evidence,
-        )
 
     def _refresh_config(self) -> None:
         """读 settings；渠道相关键变化才重建渠道，非法配置只报一次。"""
