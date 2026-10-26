@@ -1,17 +1,19 @@
-"""全局事件保留维护：清理口径与日闸门（docs/03 保留表）。"""
+"""全局事件保留维护：清理口径、日闸门与消费方不受清理影响。"""
 
 from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from contracts import EventType, Logger
+from contracts import EventType
+from core.api.events_api import StreamOptions, stream_frames
 from core.clock import VirtualClock
 from core.events.maintenance import (
     GLOBAL_EVENTS_PRUNED_EVENT,
@@ -20,9 +22,13 @@ from core.events.maintenance import (
     PruneOutcome,
 )
 from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeOptions, run_serve
+from core.hostops.watchdog import WATCHDOG_GAVE_UP_EVENT
 from core.jobs.run_service import JobRunService
+from core.notify.service import NotifyService
+from core.supervisor import Supervisor
 from storage import migrate, open_database
 from storage.repositories.events import GLOBAL_EVENTS_KEEP, EventLog
+from tests.notify_support import ENABLED, StubChannel, record_outcomes_within
 
 NOW = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
 
@@ -62,10 +68,7 @@ def seed_global_events(connection: sqlite3.Connection, count: int) -> None:
     start = last_global_seq(connection) + 1
     connection.executemany(
         "INSERT INTO events_global (seq, type, payload, ts) VALUES (?, ?, '{}', ?)",
-        [
-            (start + offset, EventType.CORE_EVENT.value, NOW.isoformat())
-            for offset in range(count)
-        ],
+        [(start + offset, EventType.CORE_EVENT.value, NOW.isoformat()) for offset in range(count)],
     )
 
 
@@ -158,9 +161,7 @@ def test_pruner_runs_once_per_day_then_again_next_day(
     assert pruned_on_value(database) == json.dumps((NOW + timedelta(days=1)).date().isoformat())
 
 
-def test_pruner_restart_same_day_skips_via_settings(
-    tmp_path: Path, clock: VirtualClock
-) -> None:
+def test_pruner_restart_same_day_skips_via_settings(tmp_path: Path, clock: VirtualClock) -> None:
     path = tmp_path / "backstop.sqlite"
     first = open_database(path)
     migrate(first)
@@ -235,7 +236,7 @@ def test_serve_loop_survives_prune_failure_and_keeps_ticking(
     supervisor = _StubSupervisor()
     try:
         loop = ServeLoop(
-            supervisor,
+            cast(Supervisor, supervisor),
             JobRunService(connection, clock),
             HeartbeatWriter(
                 path=tmp_path / "run" / "heartbeat.json",
@@ -279,3 +280,118 @@ def test_run_serve_executes_prune_once_and_survives_restart(tmp_path: Path) -> N
         assert len(core_event_payloads(reader, GLOBAL_EVENTS_PRUNED_EVENT)) == 1
     finally:
         reader.close()
+
+
+def test_stream_resumes_with_reset_when_history_pruned(tmp_path: Path, clock: VirtualClock) -> None:
+    path = tmp_path / "backstop.sqlite"
+    writer = open_database(path)
+    migrate(writer)
+    try:
+        seed_global_events(writer, GLOBAL_EVENTS_KEEP + 1)
+        EventLog(writer).prune_global()
+        stop = threading.Event()
+        frames = stream_frames(
+            path,
+            StreamOptions(
+                clock=clock,
+                stop=stop,
+                last_event_id="g:1",
+                poll_interval_seconds=5.0,
+                heartbeat_interval_seconds=5.0,
+            ),
+        )
+        try:
+            assert b"event: heartbeat" in next(frames)
+            assert b"event: reset" in next(frames)
+        finally:
+            stop.set()
+    finally:
+        writer.close()
+
+
+def test_stream_resumes_inside_window_after_prune(tmp_path: Path, clock: VirtualClock) -> None:
+    path = tmp_path / "backstop.sqlite"
+    writer = open_database(path)
+    migrate(writer)
+    try:
+        seed_global_events(writer, GLOBAL_EVENTS_KEEP + 1)
+        EventLog(writer).prune_global()
+        stop = threading.Event()
+        frames = stream_frames(
+            path,
+            StreamOptions(
+                clock=clock,
+                stop=stop,
+                last_event_id="g:2",
+                poll_interval_seconds=5.0,
+                heartbeat_interval_seconds=5.0,
+            ),
+        )
+        try:
+            assert b"event: heartbeat" in next(frames)
+            assert b"id: g:3" in next(frames)
+        finally:
+            stop.set()
+    finally:
+        writer.close()
+
+
+def _notify_service(
+    database: sqlite3.Connection, clock: VirtualClock, stub: StubChannel
+) -> NotifyService:
+    return NotifyService(
+        database,
+        clock,
+        data_root=Path("data"),
+        settings_reader=lambda: dict(ENABLED),
+        channel_factory=lambda config: stub,
+        wait=lambda seconds: None,
+    )
+
+
+def test_notify_running_service_continues_after_prune_without_repush(
+    database: sqlite3.Connection, clock: VirtualClock, stub: StubChannel
+) -> None:
+    seed_global_events(database, GLOBAL_EVENTS_KEEP)
+    service = _notify_service(database, clock, stub)
+    try:
+        # 游标停在第 1000 条；下一条触发事件随后被清理窗口吞掉
+        EventLog(database).append_global(
+            EventType.CORE_EVENT,
+            {"event": WATCHDOG_GAVE_UP_EVENT, "detail": "清理前未读"},
+            at=NOW,
+        )
+        seed_global_events(database, 1200)
+        EventLog(database).prune_global()
+        minimum = min_global_seq(database)
+        assert minimum is not None and minimum > GLOBAL_EVENTS_KEEP
+        EventLog(database).append_global(
+            EventType.CORE_EVENT,
+            {"event": WATCHDOG_GAVE_UP_EVENT, "detail": "清理后新事件"},
+            at=NOW,
+        )
+        assert record_outcomes_within(service, lambda: len(stub.sent) == 1)
+        assert [message.title for message in stub.sent] == ["看门狗停手"]
+    finally:
+        service.close()
+
+
+def test_notify_restarted_service_does_not_repush_history(
+    database: sqlite3.Connection, clock: VirtualClock, stub: StubChannel
+) -> None:
+    seed_global_events(database, GLOBAL_EVENTS_KEEP)
+    EventLog(database).append_global(
+        EventType.CORE_EVENT,
+        {"event": WATCHDOG_GAVE_UP_EVENT, "detail": "历史停手"},
+        at=NOW,
+    )
+    seed_global_events(database, 100)
+    EventLog(database).prune_global()
+    assert min_global_seq(database) == 102
+    service = _notify_service(database, clock, stub)
+    try:
+        service.poll()
+        service.poll()
+        assert stub.sent == []
+    finally:
+        service.close()
