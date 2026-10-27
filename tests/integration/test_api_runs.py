@@ -18,6 +18,8 @@ from core.api.store import TOKEN_KEY, put_settings
 from core.api.wire import ApiRequest, ApiResponse
 from core.clock import VirtualClock
 from core.jobs.run_service import JobRunService
+from core.plugins.registry import PluginRegistry
+from core.supervisor import Supervisor
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 
@@ -25,6 +27,7 @@ NOW = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)
 TOKEN = "secret-token"
 TEMPLATE_ID = "template-1"
 DATABASE_NAME = "state.db"
+_STABLE_DISK_FREE = 100 * 1024**3
 
 
 @pytest.fixture
@@ -46,8 +49,24 @@ def database(tmp_path: Path) -> Iterator[Path]:
 
 
 @pytest.fixture
-def app(database: Path) -> ApiApp:
-    return ApiApp(database, clock=VirtualClock(NOW))
+def app(database: Path, tmp_path: Path) -> Iterator[ApiApp]:
+    """叫停端点经注入的 Supervisor 走真实实现：请求线程不碰它的 tick 连接。"""
+    connection = open_database(database)
+    clock = VirtualClock(NOW)
+    try:
+        yield ApiApp(
+            database,
+            clock=clock,
+            run_stopper=Supervisor(
+                connection,
+                clock,
+                PluginRegistry(),
+                data_root=tmp_path,
+                disk_free=lambda: _STABLE_DISK_FREE,
+            ),
+        )
+    finally:
+        connection.close()
 
 
 def seed_run(database: Path, *, state: RunState, created_at: datetime) -> str:
@@ -147,3 +166,21 @@ def test_stop_run_cancels_queued_and_rejects_terminal(app: ApiApp, database: Pat
     assert again.status == 409
     assert error_code_of(again) == "E_CONFLICT"
     assert call(app, "POST", "/api/v1/runs/nope/stop").status == 404
+
+
+def test_stop_without_injected_stopper_returns_conflict(database: Path) -> None:
+    """未注入运行动作时拒绝叫停：端点是执行器的入口，不绕过它直接改库。"""
+    queued_id = seed_run(database, state=RunState.QUEUED, created_at=NOW)
+    response = call(
+        ApiApp(database, clock=VirtualClock(NOW)),
+        "POST",
+        f"/api/v1/runs/{queued_id}/stop",
+    )
+    assert response.status == 409
+    assert error_code_of(response) == "E_CONFLICT"
+    connection = open_database(database)
+    try:
+        events = JobRunService(connection, VirtualClock(NOW)).events(queued_id)
+    finally:
+        connection.close()
+    assert "run.interrupted" not in [event.type for event in events]
