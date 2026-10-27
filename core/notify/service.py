@@ -52,6 +52,8 @@ from storage.repositories.notifications import NotificationRepository
 _EVENTS_PER_POLL: Final[int] = 200
 _NOTIFIED_RUNS_LIMIT: Final[int] = 1000
 _ABANDONED_ERROR: Final[str] = "停机放弃投递"
+# 自动登录事件名的属主在 core.hostops.serve；这里按值匹配，避免与其互相导入。
+_AUTOLOGON_CHECKED_EVENT: Final[str] = "host.autologon_checked"
 
 
 def _payload_of(raw: object) -> Mapping[str, Any]:
@@ -211,15 +213,24 @@ class NotifyService:
             self._notify_run(str(row["run_id"]), str(row["type"]), _payload_of(row["payload"]))
 
     def _notify_global(self, event_type: str, payload: Mapping[str, Any]) -> None:
-        """全局事件映射：环境 failed、看门狗停手与 Tailscale 未运行；都无运行归属。"""
+        """全局事件映射：环境 failed、看门狗停手、自动登录自检失败与 Tailscale 未运行。
+
+        这些事件都没有运行归属。
+        """
         if event_type == EventType.ENV_STATE_CHANGED.value and (
             payload.get("to_state") == EnvironmentState.FAILED.value
         ):
             self._submit(self._notifications.environment(payload), run_id=None)
-        elif event_type == EventType.CORE_EVENT.value and (
+        elif event_type == EventType.HOST_EVENT.value and (
             payload.get("event") == WATCHDOG_GAVE_UP_EVENT
         ):
             self._submit(self._notifications.watchdog(payload), run_id=None)
+        elif (
+            event_type == EventType.HOST_EVENT.value
+            and payload.get("event") == _AUTOLOGON_CHECKED_EVENT
+            and payload.get("ok") is False
+        ):
+            self._submit(self._notifications.autologon(payload), run_id=None)
         elif event_type == EventType.HOST_EVENT.value and (
             payload.get("event") == tailscale.TAILSCALE_DOWN_EVENT
         ):

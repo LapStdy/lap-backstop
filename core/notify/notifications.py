@@ -145,6 +145,18 @@ class NotificationFactory:
             body="\n".join(lines),
         )
 
+    def autologon(self, payload: Mapping[str, Any]) -> Notification:
+        """自动登录自检失败通知；detail 是当前注册表值与重启后的后果。"""
+        detail = str(payload.get("detail", ""))
+        lines = ["结论：自动登录未配置好，重启后会停在登录界面"]
+        if detail:
+            lines.append(f"详情：{detail}")
+        return Notification(
+            level=NotificationLevel.WARN,
+            title="自动登录自检未通过",
+            body="\n".join(lines),
+        )
+
     def tailscale(self, payload: Mapping[str, Any]) -> Notification:
         """Tailscale 未运行通知；detail 是 BackendState 或不可查原因。"""
         detail = str(payload.get("detail", ""))
