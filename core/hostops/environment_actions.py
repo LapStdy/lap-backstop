@@ -13,10 +13,11 @@ import sqlite3
 import threading
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from contracts import Clock, EventType, Logger, PhaseResult
 from core.environments.actions import EnvironmentActionResult
+from core.environments.errors import EnvironmentStateError
 from core.environments.service import EnvironmentService
 from core.logging import NullLogger
 from core.plugins.registry import PluginRegistry
@@ -25,6 +26,10 @@ from storage import open_database
 from storage.repositories.events import EventLog
 
 Action = Callable[[EnvironmentSupervision], PhaseResult]
+
+# 动作可能耗掉 provider 的整个超时周期；等锁超时按「环境忙」拒绝，
+# 不让第二个请求线程无限期挂在 HTTP 连接上（docs/11 并发：锁一律带超时）。
+_LOCK_TIMEOUT_SECONDS: Final[float] = 5.0
 
 
 class EnvironmentActionService:
@@ -37,12 +42,14 @@ class EnvironmentActionService:
         registry: PluginRegistry,
         *,
         log: Logger | None = None,
+        lock_timeout_seconds: float = _LOCK_TIMEOUT_SECONDS,
     ) -> None:
         self._database = database
         self._data_root = database.parent
         self._clock = clock
         self._registry = registry
         self._log: Logger = NullLogger() if log is None else log
+        self._lock_timeout_seconds = lock_timeout_seconds
         self._lock = threading.Lock()
 
     def prepare(self, environment_id: str) -> EnvironmentActionResult:
@@ -66,13 +73,22 @@ class EnvironmentActionService:
         return self._serialized(lambda supervision: supervision.reset(environment_id))
 
     def _serialized(self, action: Action) -> EnvironmentActionResult:
-        """在锁内用本次调用的连接执行动作；连接随调用关闭，不留到其它线程。"""
-        with self._lock:
+        """在锁内用本次调用的连接执行动作；连接随调用关闭，不留到其它线程。
+
+        Raises:
+            EnvironmentStateError: 等锁超时，说明另一个动作正在执行同一批环境；
+                按「环境忙」拒绝比让请求线程无限期挂着更符合 docs/03 的 409 口径。
+        """
+        if not self._lock.acquire(timeout=self._lock_timeout_seconds):
+            raise EnvironmentStateError("环境动作正在执行，稍后再试")
+        try:
             connection = open_database(self._database)
             try:
                 result = action(self._supervision(connection))
             finally:
                 connection.close()
+        finally:
+            self._lock.release()
         return EnvironmentActionResult(
             ok=result.ok,
             error_code=result.error_code,

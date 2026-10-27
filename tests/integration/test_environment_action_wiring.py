@@ -23,6 +23,7 @@ from core.api.server import ApiOptions, ApiServer, start_api_server
 from core.api.store import TOKEN_KEY, put_settings
 from core.clock import VirtualClock
 from core.environments.actions import EnvironmentActionResult
+from core.environments.errors import EnvironmentStateError
 from core.hostops.environment_actions import EnvironmentActionService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from plugins.fake.plugin import FakeEnvironmentProvider
@@ -80,6 +81,26 @@ def test_prepare_from_request_thread_succeeds_while_tick_connection_is_open(
         assert stored.state is EnvironmentState.READY
     finally:
         serve_connection.close()
+
+
+def test_prepare_rejects_as_busy_when_another_action_holds_the_lock(database: Path) -> None:
+    """等锁超时按环境忙拒绝：第二个动作不挂在请求线程上，也不改环境行。"""
+    actions = EnvironmentActionService(
+        database, VirtualClock(NOW), PluginRegistry(), lock_timeout_seconds=0.01
+    )
+    actions._lock.acquire()
+    try:
+        with pytest.raises(EnvironmentStateError):
+            actions.prepare(ENV_ID)
+    finally:
+        actions._lock.release()
+    connection = open_database(database)
+    try:
+        stored = EnvironmentRepository(connection).get(ENV_ID)
+    finally:
+        connection.close()
+    assert stored is not None
+    assert stored.state is EnvironmentState.UNKNOWN
 
 
 def test_prepare_over_http_returns_ready_row_and_state_event(database: Path) -> None:
