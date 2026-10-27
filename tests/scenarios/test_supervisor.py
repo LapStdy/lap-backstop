@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,10 +18,14 @@ from contracts import (
     RunState,
     ScriptHandle,
     ScriptObservation,
+    ScriptRef,
     ScriptState,
     StopMode,
     StopResult,
 )
+from core.api.app import ApiApp
+from core.api.store import TOKEN_KEY, put_settings
+from core.api.wire import ApiRequest, ApiResponse
 from core.clock import VirtualClock
 from core.environments.errors import EnvironmentNotFoundError, EnvironmentStateError
 from core.environments.service import EnvironmentService
@@ -36,6 +42,7 @@ from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
+TOKEN = "secret-token"
 
 _STABLE_DISK_FREE = 100 * 1024**3
 TEMPLATE_ID = "template-1"
@@ -109,15 +116,35 @@ class _CancellingScriptAdapter(FakeScriptAdapter):
         return super().stop(handle, ctx, mode)
 
 
+class _GatedScriptAdapter(FakeScriptAdapter):
+    """launch 后停在 observe，直到测试放行；用来观察取消是否到场。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.launched = threading.Event()
+        self.release = threading.Event()
+
+    def launch(self, script: ScriptRef, ctx: RunContext) -> ScriptHandle:
+        handle = super().launch(script, ctx)
+        self.launched.set()
+        return handle
+
+    def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
+        self.calls.append("observe")
+        assert self.release.wait(timeout=10), "测试没有放行执行器"
+        return ScriptObservation(state=ScriptState.RUNNING, since=ctx.clock.utc_now())
+
+
 @pytest.fixture
 def env(
     tmp_path: Path,
 ) -> Iterator[tuple[sqlite3.Connection, VirtualClock, JobRunService, Path]]:
     connection = open_database(tmp_path / "state.db")
     migrate(connection)
+    put_settings(connection, {TOKEN_KEY: TOKEN}, at=T0)
     clock = VirtualClock(T0)
     runs = JobRunService(connection, clock)
-    data_root = tmp_path / "data"
+    data_root = tmp_path
     try:
         yield connection, clock, runs, data_root
     finally:
@@ -134,11 +161,53 @@ def supervisor_for(
     )
 
 
+def _supervisor_with_script(
+    connection: sqlite3.Connection,
+    clock: VirtualClock,
+    data_root: Path,
+    script: FakeScriptAdapter,
+) -> Supervisor:
+    registry = PluginRegistry()
+    registry.register(
+        PluginCapabilities(
+            plugin_id="fake",
+            environment=FakeEnvironmentProvider(),
+            script=script,
+            verifier=FakeVerifier(),
+        )
+    )
+    return Supervisor(
+        connection, clock, registry, data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
+
+
+def _stop_over_http(
+    database: Path, clock: VirtualClock, supervisor: Supervisor, run_id: str
+) -> ApiResponse:
+    """走与 serve 相同的注入面：ApiApp 只拿到 RunStopper，不摸 Supervisor 内部。"""
+    app = ApiApp(database, clock=clock, run_stopper=supervisor)
+    return app.handle(
+        ApiRequest(
+            "POST",
+            f"/api/v1/runs/{run_id}/stop",
+            {},
+            {"authorization": f"Bearer {TOKEN}"},
+            b"",
+        )
+    )
+
+
+def body_of(response: ApiResponse) -> dict[str, Any]:
+    assert isinstance(response.payload, dict)
+    return response.payload
+
+
 def prepare_run(
     connection: sqlite3.Connection,
     runs: JobRunService,
     *,
     schedule_id: str | None = None,
+    scheduled_at: datetime = T0,
     deadline_at: datetime | None = None,
     key: str = "run-key",
 ) -> str:
@@ -146,7 +215,7 @@ def prepare_run(
         NewRun(
             template_id=TEMPLATE_ID,
             schedule_id=schedule_id,
-            scheduled_at=T0,
+            scheduled_at=scheduled_at,
             created_at=T0,
             idempotency_key=key,
             priority=0,
@@ -386,3 +455,71 @@ def test_reset_environment_raises_for_missing_environment(
     supervisor = supervisor_for(connection, clock, data_root)
     with pytest.raises(EnvironmentNotFoundError):
         supervisor.reset_environment("no-such-env")
+
+
+def test_stop_during_execute_reaches_script_and_lands_cancelled(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """执行中的叫停必须置位执行器侧的取消标记：脚本被停掉，最终 cancelled。"""
+    connection, clock, runs, data_root = env
+    insert_template(connection)
+    adapter = _GatedScriptAdapter()
+    run_id = prepare_run(connection, runs)
+    runs.enqueue(run_id)
+    supervisor = _supervisor_with_script(connection, clock, data_root, adapter)
+    outcome: dict[str, str] = {}
+
+    def request_stop() -> None:
+        if not adapter.launched.wait(timeout=10):
+            outcome["failure"] = "执行器没有启动脚本"
+            adapter.release.set()
+            return
+        try:
+            response = _stop_over_http(data_root / "state.db", clock, supervisor, run_id)
+            assert response.status == 200
+            outcome["state"] = str(body_of(response)["run"]["state"])
+        except Exception as error:
+            outcome["failure"] = repr(error)
+        finally:
+            adapter.release.set()
+
+    requester = threading.Thread(target=request_stop, daemon=True)
+    requester.start()
+    supervisor.tick()
+    requester.join(timeout=10)
+    assert not requester.is_alive(), "叫停线程没有结束"
+    assert outcome == {"state": "executing"}
+    assert runs.get(run_id).state is RunState.CANCELLED
+    assert "stop" in adapter.calls
+    assert [event.type for event in runs.events(run_id)].count("run.interrupted") == 1
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()
+    assert EnvironmentService(connection, clock).get(ENV_ID).state is EnvironmentState.OFF
+
+
+def test_stop_during_waiting_cancels_on_next_dispatch_without_launch(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """waiting 期间没有取消标记：下一轮 dispatch 按 run.interrupted 收敛，不执行脚本。"""
+    connection, clock, runs, data_root = env
+    insert_template(connection)
+    adapter = FakeScriptAdapter()
+    run_id = prepare_run(
+        connection,
+        runs,
+        scheduled_at=T0 + timedelta(minutes=5),
+        deadline_at=T0 + timedelta(minutes=30),
+    )
+    runs.enqueue(run_id)
+    supervisor = _supervisor_with_script(connection, clock, data_root, adapter)
+    supervisor.tick()
+    assert runs.get(run_id).state is RunState.WAITING
+    response = _stop_over_http(data_root / "state.db", clock, supervisor, run_id)
+    assert response.status == 200
+    assert body_of(response)["run"]["state"] == "waiting"
+    clock.advance(timedelta(minutes=6))
+    supervisor.tick()
+    record = runs.get(run_id)
+    assert record.state is RunState.CANCELLED
+    assert "launch" not in adapter.calls
+    assert [event.type for event in runs.events(run_id)].count("run.interrupted") == 1
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()

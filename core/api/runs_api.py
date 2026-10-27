@@ -9,7 +9,7 @@ import sqlite3
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import PurePosixPath
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from contracts import Clock, ContractError, ErrorCode, RunState
 from core.api import run_store
@@ -40,6 +40,19 @@ DEFAULT_CONTENT_TYPE: Final = "application/octet-stream"
 EVIDENCE_GONE_MESSAGE: Final = "证据文件已按保留策略清理，记录仍可查询"
 
 
+class RunStopper(Protocol):
+    """运行动作的注入面：HTTP 请求线程经此触达执行器，不认识 Supervisor。
+
+    Raises:
+        RunNotFoundError: 运行不存在。
+        IllegalRunTransitionError: 运行已到终态，不能再取消。
+    """
+
+    def stop(self, run_id: str, reason: str = "user_cancel") -> JobRunRecord:
+        """叫停运行并返回叫停后的运行行。"""
+        ...
+
+
 def list_runs(ctx: RequestCtx) -> ApiResponse:
     """运行列表；支持 state、template_id、since、until 与 limit。"""
     filters = _filters(ctx)
@@ -65,12 +78,19 @@ def get_run(ctx: RequestCtx) -> ApiResponse:
     )
 
 
-def stop_run(ctx: RequestCtx) -> ApiResponse:
-    """叫停运行：排队或未开始的立即取消，其余在阶段边界生效。"""
+def stop_run(ctx: RequestCtx, *, stopper: RunStopper | None = None) -> ApiResponse:
+    """叫停运行：排队或未开始的立即取消，其余在阶段边界生效。
+
+    内核实现由 serve 注入；未接入时 409，避免绕过执行器只写一条取消事件。
+
+    Raises:
+        ContractError: 叫停未接入（409）、运行不存在（404）、状态机拒绝（409）。
+    """
     reason = _stop_reason(ctx)
-    service = JobRunService(ctx.connection, ctx.clock)
+    if stopper is None:
+        raise ContractError(ErrorCode.CONFLICT, "运行叫停未接入内核")
     try:
-        record = service.request_cancel(ctx.params["id"], reason)
+        record = stopper.stop(ctx.params["id"], reason)
     except RunNotFoundError as error:
         raise ContractError(ErrorCode.NOT_FOUND, f"运行不存在：{ctx.params['id']}") from error
     except IllegalRunTransitionError as error:
@@ -239,4 +259,12 @@ def _verdict_json(item: VerdictRow) -> dict[str, Any]:
     }
 
 
-__all__ = ["get_evidence_file", "get_run", "list_runs", "require_run", "run_json", "stop_run"]
+__all__ = [
+    "RunStopper",
+    "get_evidence_file",
+    "get_run",
+    "list_runs",
+    "require_run",
+    "run_json",
+    "stop_run",
+]

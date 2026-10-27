@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from contracts import Clock, ContractError, ErrorCode, Logger, parse_event_id
 from core.api.app import API_PREFIX, EVENTS_CAPABILITY, ApiApp
+from core.api.runs_api import RunStopper
 from core.api.store import ensure_server_id
 from core.api.wire import ApiRequest, ApiResponse, FileBody, encode_json, error_response
 from core.clock import SystemClock
@@ -59,6 +60,8 @@ class ApiOptions:
     task_runner: tasks.Runner = field(default_factory=lambda: subprocess.run)
     # 内核环境动作；serve 装配注入，缺省时动作端点按未接入应答（409）。
     environment_actions: EnvironmentActions | None = None
+    # 运行叫停；serve 装配注入，缺省时叫停端点按未接入应答（409）。
+    run_stopper: RunStopper | None = None
     max_requests: int | None = None
 
 
@@ -154,6 +157,7 @@ def start_api_server(
         log=active.log,
         task_runner=active.task_runner,
         environment_actions=active.environment_actions,
+        run_stopper=active.run_stopper,
     )
     counter = _RequestCounter()
     servers: list[tuple[ThreadingHTTPServer, threading.Thread]] = []

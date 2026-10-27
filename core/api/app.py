@@ -24,7 +24,14 @@ from core.api.export_api import get_export
 from core.api.hostops_api import post_tasks_register
 from core.api.notifications_api import list_notifications, post_notification_test
 from core.api.plugins_api import get_plugin_config, get_plugin_schema, put_plugin_config
-from core.api.runs_api import get_evidence_file, get_run, list_runs, require_run, stop_run
+from core.api.runs_api import (
+    RunStopper,
+    get_evidence_file,
+    get_run,
+    list_runs,
+    require_run,
+    stop_run,
+)
 from core.api.schedules_api import (
     create_schedule,
     delete_schedule,
@@ -111,6 +118,18 @@ ROUTES: tuple[Route, ...] = (
 )
 
 
+def _bind_routes(run_stopper: RunStopper | None) -> tuple[Route, ...]:
+    """把叫停端点绑到注入的运行动作；其余路由复用模块级表。"""
+
+    def stop(ctx: RequestCtx) -> ApiResponse:
+        return stop_run(ctx, stopper=run_stopper)
+
+    return tuple(
+        Route(route.method, route.segments, stop if route.handler is stop_run else route.handler)
+        for route in ROUTES
+    )
+
+
 class ApiApp:
     """无传输依赖的请求处理核心；HTTP 服务与进程内测试共用。"""
 
@@ -122,13 +141,14 @@ class ApiApp:
         log: Logger | None = None,
         task_runner: Runner = subprocess.run,
         environment_actions: EnvironmentActions | None = None,
+        run_stopper: RunStopper | None = None,
     ) -> None:
         self._database = database
         self._clock: Clock = SystemClock() if clock is None else clock
         self._log: Logger = NullLogger() if log is None else log
         self._task_runner: Runner = task_runner
         self._environment_actions = environment_actions
-        self._routes = ROUTES
+        self._routes = _bind_routes(run_stopper)
         self._capabilities = tuple(
             sorted({route.segments[0] for route in ROUTES} | {EVENTS_CAPABILITY})
         )
