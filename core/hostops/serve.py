@@ -31,6 +31,7 @@ from core.__main__ import (
     EXIT_SECOND_INSTANCE,
     resolve_executable_path,
 )
+from core.api.runs_api import RunStopper
 from core.api.server import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -381,7 +382,7 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
         _record_events(connection, events, at=setup_at)
         # 环境动作在请求线程自开连接：supervisor 的连接只归 tick 线程。
         actions = EnvironmentActionService(database, options.clock, registry, log=options.log)
-        api_server, exit_code = _start_api(connection, options, actions)
+        api_server, exit_code = _start_api(connection, options, actions, supervisor)
         if exit_code is not None:
             return exit_code
         writer = HeartbeatWriter(
@@ -426,6 +427,7 @@ def _start_api(
     connection: sqlite3.Connection,
     options: ServeOptions,
     environment_actions: EnvironmentActions,
+    run_stopper: RunStopper,
 ) -> tuple[ApiServer | None, int | None]:
     """按 settings 挂载 API：无 token 先自生成，端口被占退 4，tailnet 绑定失败降级。"""
     _ensure_token_logged(connection, options)
@@ -448,7 +450,7 @@ def _start_api(
         options.log.warn({"event": "serve.tailscale_down", "detail": down_detail})
     # api.host 直接配成 tailnet 地址时不再重复追加，避免同一地址绑两次。
     plan = tailscale.ListenPlan(host, port, tuple(extra for extra in extra_hosts if extra != host))
-    server = _bind_api(connection, options, plan, environment_actions)
+    server = _bind_api(connection, options, plan, environment_actions, run_stopper)
     if server is None:
         return None, EXIT_PORT_CONFLICT
     tailscale.record_bind_degradation(
@@ -481,6 +483,7 @@ def _bind_api(
     options: ServeOptions,
     plan: tailscale.ListenPlan,
     environment_actions: EnvironmentActions,
+    run_stopper: RunStopper,
 ) -> ApiServer | None:
     """启动 API 服务；主地址端口被占写 core.port_conflict 返回 None，其余 OSError 上抛。"""
     try:
@@ -495,6 +498,7 @@ def _bind_api(
                 stop=options.stop,
                 task_runner=options.task_runner,
                 environment_actions=environment_actions,
+                run_stopper=run_stopper,
             ),
         )
     except OSError as error:
