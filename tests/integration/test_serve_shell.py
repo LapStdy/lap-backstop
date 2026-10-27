@@ -204,6 +204,28 @@ def test_subprocess_hard_kill_leaves_lock_and_next_start_overwrites(tmp_path: Pa
     restart.wait(timeout=WAIT_SECONDS)
 
 
+def test_autologon_failed_check_marks_event_payload(tmp_path: Path) -> None:
+    options = ServeOptions(
+        clock=VirtualClock(datetime(2026, 10, 25, 8, 0, tzinfo=UTC)),
+        max_ticks=1,
+        tick_interval_seconds=0.0,
+        register_tasks=False,
+        registry_get=lambda _key, name: autologon_registry("0", "")[name],
+    )
+    assert run_serve(tmp_path, options) == 0
+    reader = sqlite3.connect(tmp_path / "backstop.sqlite")
+    try:
+        rows = reader.execute("SELECT payload FROM events_global ORDER BY seq").fetchall()
+    finally:
+        reader.close()
+    payloads = [json.loads(str(row[0])) for row in rows]
+    autologon = next(
+        payload for payload in payloads if payload.get("event") == AUTOLOGON_CHECKED_EVENT
+    )
+    assert autologon["ok"] is False
+    assert "AutoAdminLogon=0" in autologon["detail"]
+
+
 def test_serve_snapshots_database_before_pending_migration(tmp_path: Path) -> None:
     clock = VirtualClock(datetime(2026, 10, 25, 8, 0, tzinfo=UTC))
     options = ServeOptions(
