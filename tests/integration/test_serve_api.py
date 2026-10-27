@@ -26,6 +26,7 @@ from core.hostops.tailscale import (
 )
 from core.logging import NullLogger
 from storage import migrate, open_database
+from storage.repositories.environments import EnvironmentRepository
 from tests.fixtures.subprocess_fakes import completed
 from tests.integration.test_serve_shell import (
     autologon_registry,
@@ -35,6 +36,7 @@ from tests.integration.test_serve_shell import (
 
 NOW = datetime(2026, 10, 26, 11, 0, tzinfo=UTC)
 TOKEN = "serve-token"
+ENV_ID = "env-1"
 
 
 class RecordingLogger:
@@ -76,6 +78,17 @@ def serve_options(**kwargs: Any) -> ServeOptions:
 
 def http_get(url: str) -> tuple[int, Any]:
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {TOKEN}"})
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        return error.code, json.loads(error.read().decode("utf-8"))
+
+
+def http_post(url: str) -> tuple[int, Any]:
+    request = urllib.request.Request(
+        url, method="POST", headers={"Authorization": f"Bearer {TOKEN}"}
+    )
     try:
         with urllib.request.urlopen(request, timeout=10) as response:
             return response.status, json.loads(response.read().decode("utf-8"))
@@ -182,6 +195,24 @@ def test_serve_smokes_endpoints_over_mounted_api(data_root: Path) -> None:
     assert seen["settings"][0] == 200
     # 正常收尾：锁文件删除，API 随进程收尾关停
     assert not (data_root / "run" / instance.LOCK_FILENAME).exists()
+
+
+def test_serve_environment_action_runs_on_request_thread_connection(data_root: Path) -> None:
+    """serve 装配的环境动作在 API 线程自开连接：provider 缺失拿 409，而不是跨线程 500。"""
+    seed = open_database(data_root / "backstop.sqlite")
+    try:
+        EnvironmentRepository(seed).ensure(ENV_ID, provider_id="missing", name="MuMu")
+    finally:
+        seed.close()
+    seen: dict[str, tuple[int, Any]] = {}
+
+    def on_listening(host: str, port: int) -> None:
+        seen["prepare"] = http_post(f"http://{host}:{port}/api/v1/environments/{ENV_ID}/prepare")
+
+    assert run_serve(data_root, serve_options(on_api_listening=on_listening)) == 0
+    status, payload = seen["prepare"]
+    assert status == 409
+    assert payload["error"]["code"] == "E_CONFLICT"
 
 
 def test_serve_rejects_invalid_port_config(tmp_path: Path) -> None:

@@ -14,7 +14,7 @@ from core.api.ctx import RequestCtx
 from core.api.wire import ApiResponse
 from core.environments.actions import EnvironmentActionResult, EnvironmentActions
 from core.environments.errors import EnvironmentNotFoundError, EnvironmentStateError
-from core.plugins.errors import PluginCapabilityError, PluginNotFoundError
+from core.plugins.errors import PluginError
 
 Action = Callable[[EnvironmentActions, str], EnvironmentActionResult]
 
@@ -53,7 +53,7 @@ def _environment_action(ctx: RequestCtx, action: Action) -> ApiResponse:
         result = action(actions, environment_id)
     except EnvironmentNotFoundError as error:
         raise ContractError(ErrorCode.NOT_FOUND, str(error)) from error
-    except (EnvironmentStateError, PluginCapabilityError, PluginNotFoundError) as error:
+    except (EnvironmentStateError, PluginError) as error:
         raise ContractError(ErrorCode.CONFLICT, str(error)) from error
     row = registry_store.environment_row(ctx.connection, environment_id)
     if row is None:

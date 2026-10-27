@@ -1,7 +1,7 @@
 """环境动作注入协议：HTTP 请求线程调用内核环境动作的窄接口。
 
-API 层不直接摸 Supervisor 与插件注册表，只依赖本协议；serve 装配时把
-Supervisor 包成实现注入。动作在请求线程同步执行，时长由 provider 自身超时决定。
+API 层不直接摸环境状态机与插件注册表，只依赖本协议；serve 装配时注入
+在调用线程自开连接的实现。动作在请求线程同步执行，时长由 provider 自身超时决定。
 """
 
 from __future__ import annotations
