@@ -30,8 +30,15 @@ class StubChannel:
         self.sent: list[Notification] = []
         self.results: list[DeliveryResult] = []
         self.delivered = threading.Event()
+        self.entered = threading.Event()
+        self.threads: list[str] = []
+        self.gate: threading.Event | None = None
 
     def send(self, ctx: RunContext, message: Notification) -> DeliveryResult:
+        self.entered.set()
+        self.threads.append(threading.current_thread().name)
+        if self.gate is not None:
+            self.gate.wait(5.0)
         self.sent.append(message)
         self.delivered.set()
         if self.results:

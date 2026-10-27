@@ -380,6 +380,26 @@ def test_disabled_notify_writes_no_ledger_rows(
     assert _ledger_rows(connection) == []
 
 
+def test_events_after_close_write_no_ledger_rows(
+    connection: sqlite3.Connection,
+    stub: Any,
+    service_factory: Callable[..., Any],
+) -> None:
+    service = service_factory()
+    service.poll()
+    service.close()
+    run_id = create_run(connection, "notify:after-close")
+    append_run_event(
+        connection,
+        run_id,
+        EventType.RUN_FINISHED,
+        {"run_id": run_id, "status": "succeeded", "duration_ms": 1000},
+    )
+    service.poll()
+    assert _ledger_rows(connection) == []
+    assert stub.sent == []
+
+
 def _ledger_rows(connection: sqlite3.Connection) -> list[sqlite3.Row]:
     return connection.execute("SELECT * FROM notifications ORDER BY id").fetchall()
 

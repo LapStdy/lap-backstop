@@ -176,11 +176,25 @@ def test_worker_delivers_and_reports_outcome() -> None:
     assert len(calls) == 1
 
 
-def test_worker_skips_delivery_when_channel_missing() -> None:
+def test_worker_reports_missing_channel_as_failed_outcome() -> None:
     stop = threading.Event()
     worker = DeliveryWorker(lambda: _snapshot(None), stop=stop, wait=lambda seconds: None)
     worker.start()
-    worker.submit(ITEM)
-    worker.submit(ITEM)
-    worker.close(join_timeout=5.0)
+    try:
+        worker.submit(ITEM)
+        outcomes = _drain_within(worker, timeout_seconds=5.0)
+    finally:
+        worker.close(join_timeout=5.0)
+    assert len(outcomes) == 1
+    assert not outcomes[0].ok
+    assert outcomes[0].error == "渠道不可用"
+    assert outcomes[0].attempts == 0
+
+
+def test_close_returns_untaken_items_and_refuses_later_submits() -> None:
+    stop = threading.Event()
+    worker = DeliveryWorker(lambda: _snapshot(None), stop=stop, wait=lambda seconds: None)
+    assert worker.submit(ITEM)
+    assert worker.close(join_timeout=1.0) == (ITEM,)
+    assert worker.submit(ITEM) is False
     assert worker.drain_outcomes() == []
