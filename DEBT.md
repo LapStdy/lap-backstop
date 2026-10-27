@@ -36,3 +36,4 @@
 | D-004 | 2026-10-28 | 进程被强杀或断电时不执行 `NotifyService.close`，`notifications` 表里已入账的 `pending` 行没有启动清扫（`core/notify/service.py`） | 停机收尾只覆盖正常退出路径 | 账目历史出现永久中间态，设置页把 `pending` 当投递历史时显示为一直在投递 | 下一张通知卡 | 未还 |
 | D-005 | 2026-10-28 | 渠道实现违反 `Notifier` 契约抛出异常时，投递工作线程终止，该条通知的 `pending` 行无终态（`core/notify/delivery.py`） | 契约约定渠道以 `DeliveryResult` 表达失败，投递循环未做异常兜底 | 一处渠道实现缺陷会使整个通知线程停摆，之后的通知全部不再投递 | 下一张通知卡 | 未还 |
 | D-006 | 2026-10-28 | 环境状态机的两个写者各持连接：tick 的保温关闭走内核连接，手动动作走请求线程连接，`core/environments/service.py` 的读与写不在同一事务（71、102、217、239 行），动作实例锁只串行动作自身 | 请求线程不能复用内核连接（sqlite3 线程检查），改自开连接是当期最小修法 | 并发「保温关闭 + 手动 prepare」可能撞状态机或丢更新，出现状态与 `last_probe_at` 不一致 | 下一张内核并发卡 | 未还 |
+| D-007 | 2026-10-28 | tick 抛出的非 IO 异常在 `core/hostops/serve.py` 里没有结构化日志：`_run_core` 只捕 `OSError`/`sqlite3.Error`/`MigrationError`，其它异常经 `finally` 收尾后带 traceback 退出，不写 `serve.run_failed` | 错误契约未定义「程序错误」在 serve 顶层的记账口径 | 核心因程序错误退出时日志台账缺一条可检索的失败事件，排障只能靠 stderr | 下一张宿主卡 | 未还 |
