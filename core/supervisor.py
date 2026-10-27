@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +36,7 @@ from core.supervisor_environments import EnvironmentSupervision
 from core.supervisor_leases import LeaseSupervision
 from core.supervisor_recovery import StartupRecovery, retry_due, scheduled_due
 from core.worker.executor import CancelFlag, WorkerExecutor
+from storage import open_database
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
 from storage.repositories.job_templates import JobTemplateRepository
@@ -55,6 +57,7 @@ class Supervisor:
         disk_free: Callable[[], int | None] | None = None,
     ) -> None:
         self._connection = connection
+        self._database = _database_path(connection)
         self._clock = clock
         self._registry = registry
         self._data_root = data_root
@@ -67,7 +70,9 @@ class Supervisor:
         self._schedules = ScheduleRepository(connection)
         self._leases = LeaseService(connection, clock)
         self._events = EventLog(connection)
+        # 标记的增删归 tick 线程，请求线程只置位；字典读写都在锁内。
         self._cancel_flags: dict[str, CancelFlag] = {}
+        self._cancel_lock = threading.Lock()
         self._disk_watermark = DiskWatermark(self._disk_free, self._log, self._emit_global)
         self._lease_watch = LeaseSupervision(
             self._runs,
@@ -143,11 +148,39 @@ class Supervisor:
 
     def request_cancel(self, run_id: str, reason: str = "user_cancel") -> JobRunRecord:
         """记录叫停：未开始的立即 cancelled；执行中的置位标记，由 worker 在阶段边界收尾。"""
-        self._runs.request_cancel(run_id, reason)
-        flag = self._cancel_flags.get(run_id)
-        if flag is not None:
-            flag.cancel()
-        return self._runs.get(run_id)
+        record = self._runs.request_cancel(run_id, reason)
+        self._signal_cancel(run_id)
+        return record
+
+    def stop(self, run_id: str, reason: str = "user_cancel") -> JobRunRecord:
+        """请求线程的叫停入口：自开连接落取消请求，再置位执行中的取消标记。
+
+        tick 的连接只归 tick 线程（docs/11 并发）；取消请求先落 ``run.interrupted``，
+        所以 waiting 或两次 tick 之间没有标记时也不丢，下一轮 dispatch 按事件把
+        运行收敛成 cancelled。
+
+        Raises:
+            RunNotFoundError: 运行不存在。
+            IllegalRunTransitionError: 运行已到终态，不能再取消。
+        """
+        connection = open_database(self._database)
+        try:
+            service = JobRunService(connection, self._clock)
+            try:
+                return service.request_cancel(run_id, reason)
+            finally:
+                # 落库与行迁移竞争失败时仍要触达执行器；终态运行的标记已由
+                # tick 线程清走，置位是空操作。
+                self._signal_cancel(run_id)
+        finally:
+            connection.close()
+
+    def _signal_cancel(self, run_id: str) -> None:
+        """置位该运行的取消标记；标记不存在（waiting、两次 tick 之间）时不动。"""
+        with self._cancel_lock:
+            flag = self._cancel_flags.get(run_id)
+            if flag is not None:
+                flag.cancel()
 
     def prepare_environment(self, environment_id: str) -> PhaseResult:
         """手动预热：与 tick 调度无关，不建运行、不改运行状态（docs/09 预热）。
@@ -188,7 +221,10 @@ class Supervisor:
     def _execute(self, run: JobRunRecord) -> None:
         schedule = None if run.schedule_id is None else self._schedules.get(run.schedule_id)
         keep_warm = 0 if schedule is None else schedule.keep_warm_minutes
-        cancel = self._cancel_flags.setdefault(run.id, CancelFlag())
+        cancel = self._cancel_for(run.id)
+        # 叫停先落库再置位：标记不存在期间收到的请求，靠事件在这里补上。
+        if self._runs.cancel_requested(run.id):
+            cancel.cancel()
         executor = WorkerExecutor(
             self._connection,
             self._clock,
@@ -203,7 +239,17 @@ class Supervisor:
         except ResourceBusyError:
             self._log.info({"event": "supervisor.resource_busy", "run_id": run.id})
         finally:
-            self._cancel_flags.pop(run.id, None)
+            self._drop_cancel(run.id)
+
+    def _cancel_for(self, run_id: str) -> CancelFlag:
+        """取该运行的取消标记；执行期间同一运行复用同一个对象。"""
+        with self._cancel_lock:
+            return self._cancel_flags.setdefault(run_id, CancelFlag())
+
+    def _drop_cancel(self, run_id: str) -> None:
+        """执行收尾后清走标记；之后再来的叫停靠 run_events 在下一轮生效。"""
+        with self._cancel_lock:
+            self._cancel_flags.pop(run_id, None)
 
     def _emit_global(self, event: str, payload: Mapping[str, Any]) -> None:
         self._events.append_global(
@@ -211,6 +257,19 @@ class Supervisor:
             {"event": event, "payload": dict(payload)},
             at=self._clock.utc_now(),
         )
+
+
+def _database_path(connection: sqlite3.Connection) -> Path:
+    """取主库文件路径：叫停入口在请求线程自开连接，内存库无法这样共享。
+
+    Raises:
+        ValueError: 连接指向内存库或临时库。
+    """
+    row = connection.execute("PRAGMA database_list").fetchone()
+    file_name = "" if row is None else str(row[2])
+    if not file_name:
+        raise ValueError("Supervisor 需要文件数据库：叫停入口在请求线程自开连接")
+    return Path(file_name)
 
 
 __all__ = ["Supervisor"]

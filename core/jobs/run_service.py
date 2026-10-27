@@ -208,6 +208,10 @@ class JobRunService:
             return self.transition(run_id, RunState.CANCELLED, reason=reason or "user_cancel")
         return record
 
+    def cancel_requested(self, run_id: str) -> bool:
+        """该运行是否已收到取消请求；请求落在 ``run.interrupted`` 事件里，跨 tick 有效。"""
+        return any(event.type == EventType.RUN_INTERRUPTED.value for event in self.events(run_id))
+
     def next_queued(self, limit: int = 1) -> tuple[JobRunRecord, ...]:
         """按出队顺序取排队运行。"""
         return self._runs.queue(limit)
