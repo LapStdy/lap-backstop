@@ -17,9 +17,8 @@ from core.api.wire import ApiRequest, ApiResponse
 from core.clock import VirtualClock
 from core.environments.actions import EnvironmentActionResult, EnvironmentActions
 from core.environments.errors import EnvironmentNotFoundError
-from core.hostops.environment_actions import SupervisorEnvironmentActions
+from core.hostops.environment_actions import EnvironmentActionService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
-from core.supervisor import Supervisor
 from plugins.fake.plugin import FakeEnvironmentProvider
 from storage import migrate, open_database
 from storage.repositories.environments import EnvironmentRepository
@@ -168,9 +167,8 @@ def test_busy_prepare_via_real_service_returns_conflict(
     EnvironmentRepository(connection).set_state(
         ENV_ID, EnvironmentState.BUSY, at=NOW, detail={"action": "test"}
     )
-    supervisor = _supervisor(connection, database)
     response = call(
-        _app(database, SupervisorEnvironmentActions(supervisor)),
+        _app(database, _actions(database)),
         "POST",
         f"/api/v1/environments/{ENV_ID}/prepare",
     )
@@ -178,14 +176,39 @@ def test_busy_prepare_via_real_service_returns_conflict(
     assert body_of(response)["error"]["message"] == "环境执行中，不能准备"
 
 
+def test_unknown_environment_via_real_service_returns_not_found(
+    seeded: tuple[Path, sqlite3.Connection],
+) -> None:
+    """真实链路：环境不存在是 404 E_NOT_FOUND，不是 500。"""
+    database, _connection = seeded
+    response = call(_app(database, _actions(database)), "POST", "/api/v1/environments/nope/prepare")
+    assert response.status == 404
+    assert body_of(response)["error"]["code"] == "E_NOT_FOUND"
+
+
+def test_missing_provider_via_real_service_returns_conflict(
+    seeded: tuple[Path, sqlite3.Connection],
+) -> None:
+    """真实链路：provider 未注册是 409 E_CONFLICT，message 指出插件 id。"""
+    database, _connection = seeded
+    response = call(
+        _app(database, _actions(database, with_provider=False)),
+        "POST",
+        f"/api/v1/environments/{ENV_ID}/prepare",
+    )
+    assert response.status == 409
+    payload = body_of(response)
+    assert payload["error"]["code"] == "E_CONFLICT"
+    assert "插件未注册：fake" in payload["error"]["message"]
+
+
 def test_reset_via_real_service_updates_environment_row(
     seeded: tuple[Path, sqlite3.Connection],
 ) -> None:
     """真实链路：reset 成功后环境行是动作后的最新状态，仍是 booting 等探针。"""
-    database, connection = seeded
-    supervisor = _supervisor(connection, database)
+    database, _connection = seeded
     response = call(
-        _app(database, SupervisorEnvironmentActions(supervisor)),
+        _app(database, _actions(database)),
         "POST",
         f"/api/v1/environments/{ENV_ID}/reset",
     )
@@ -225,12 +248,10 @@ def test_wrong_token_is_rejected(seeded: tuple[Path, sqlite3.Connection]) -> Non
     assert call(app, "POST", f"/api/v1/environments/{ENV_ID}/reset", token="wrong").status == 401
 
 
-def _supervisor(connection: sqlite3.Connection, database: Path) -> Supervisor:
+def _actions(database: Path, *, with_provider: bool = True) -> EnvironmentActionService:
     registry = PluginRegistry()
-    registry.register(PluginCapabilities(plugin_id="fake", environment=FakeEnvironmentProvider()))
-    return Supervisor(
-        connection,
-        VirtualClock(NOW),
-        registry,
-        data_root=database.parent,
-    )
+    if with_provider:
+        registry.register(
+            PluginCapabilities(plugin_id="fake", environment=FakeEnvironmentProvider())
+        )
+    return EnvironmentActionService(database, VirtualClock(NOW), registry)

@@ -44,8 +44,8 @@ from core.clock import SystemClock
 from core.environments.actions import EnvironmentActions
 from core.events.maintenance import GlobalEventsPruner
 from core.hostops import heartbeat, instance, tailscale, tasks, watchdog
-from core.hostops.doctor import WINLOGON_KEY, RegistryGet, registry_get
-from core.hostops.environment_actions import SupervisorEnvironmentActions
+from core.hostops.doctor import DATABASE_FILENAME, WINLOGON_KEY, RegistryGet, registry_get
+from core.hostops.environment_actions import EnvironmentActionService
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
 from core.notify.service import NotifyService
@@ -277,7 +277,7 @@ def run_serve(data_root: Path, options: ServeOptions | None = None) -> int:
     lock_path = data_root / "run" / instance.LOCK_FILENAME
     handle = instance.acquire_named_mutex(instance.MUTEX_NAME)
     if handle is None:
-        instance.report_second_instance(data_root / "backstop.sqlite", at=started_at)
+        instance.report_second_instance(data_root / DATABASE_FILENAME, at=started_at)
         active.log.warn({"event": "serve.second_instance"})
         return EXIT_SECOND_INSTANCE
     try:
@@ -324,15 +324,17 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
     api_server: ApiServer | None = None
     notify: NotifyService | None = None
     try:
-        connection = open_database(data_root / "backstop.sqlite")
+        database = data_root / DATABASE_FILENAME
+        connection = open_database(database)
         migrate(connection)
         # 通知游标在启动扫描与启动事件落库之前定桩：崩溃收尾（运行置 unknown）与
         # 看门狗停手补报都要进通知，重启不能漏报。
         notify = NotifyService(connection, options.clock, data_root=data_root, log=options.log)
+        registry = PluginRegistry()
         supervisor = Supervisor(
             connection,
             options.clock,
-            PluginRegistry(),
+            registry,
             data_root=data_root,
             log=options.log,
         )
@@ -340,9 +342,9 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
         setup_at = options.clock.utc_now()
         events = _host_setup_events(data_root, options, at=setup_at)
         _record_events(connection, events, at=setup_at)
-        api_server, exit_code = _start_api(
-            connection, options, SupervisorEnvironmentActions(supervisor)
-        )
+        # 环境动作在请求线程自开连接：supervisor 的连接只归 tick 线程。
+        actions = EnvironmentActionService(database, options.clock, registry, log=options.log)
+        api_server, exit_code = _start_api(connection, options, actions)
         if exit_code is not None:
             return exit_code
         writer = HeartbeatWriter(
