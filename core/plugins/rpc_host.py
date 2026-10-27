@@ -154,7 +154,9 @@ class RpcPluginHost:
             channel = WorkerChannel(plugin_id, WorkerConfig(plugins_root=plugins_root, log=log))
             try:
                 channel.start()
-            except WorkerError as error:
+            except (WorkerError, OSError) as error:
+                # 起子进程本身也可能失败（可执行文件消失、权限、句柄耗尽）；
+                # 插件装不上的后果只能是这个插件不可用，不能拖垮整个核心。
                 self._rejected[plugin_id] = str(error)
                 channel.close()
                 if log is not None:

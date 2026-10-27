@@ -405,17 +405,21 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
     finally:
         # 逐项回收：任一步抛错不能跳过后面的清理，worker 子进程随核心先结束。
         if plugin_host is not None:
-            with contextlib.suppress(Exception):
-                plugin_host.close()
+            _recycle(plugin_host.close, event="serve.close_plugin_host_failed", log=options.log)
         if notify is not None:
-            with contextlib.suppress(Exception):
-                notify.close()
+            _recycle(notify.close, event="serve.close_notify_failed", log=options.log)
         if api_server is not None:
-            with contextlib.suppress(Exception):
-                api_server.shutdown()
+            _recycle(api_server.shutdown, event="serve.shutdown_api_failed", log=options.log)
         if connection is not None:
-            with contextlib.suppress(Exception):
-                connection.close()
+            _recycle(connection.close, event="serve.close_database_failed", log=options.log)
+
+
+def _recycle(step: Callable[[], object], *, event: str, log: Logger) -> None:
+    """执行一步回收；失败记日志后继续，不让一项异常把后面的清理全跳过。"""
+    try:
+        step()
+    except Exception as error:
+        log.error({"event": event, "error": str(error)})
 
 
 def _start_api(
