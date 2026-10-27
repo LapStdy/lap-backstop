@@ -23,6 +23,7 @@ from core.api.events_api import StreamOptions, stream_frames, stream_run_frames
 from core.api.export_api import get_export
 from core.api.hostops_api import post_tasks_register
 from core.api.notifications_api import list_notifications, post_notification_test
+from core.api.plugins_api import get_plugin_config, get_plugin_schema, put_plugin_config
 from core.api.runs_api import get_evidence_file, get_run, list_runs, require_run, stop_run
 from core.api.schedules_api import (
     create_schedule,
@@ -102,6 +103,9 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", ("environments", "{id}", "reset"), post_environment_reset),
     Route("GET", ("plugins",), list_plugins),
     Route("GET", ("plugins", "{id}"), get_plugin),
+    Route("GET", ("plugins", "{id}", "schema"), get_plugin_schema),
+    Route("GET", ("plugins", "{id}", "config"), get_plugin_config),
+    Route("PUT", ("plugins", "{id}", "config"), put_plugin_config),
     Route("GET", ("resources",), list_resources),
     Route("GET", ("resources", "leases"), list_leases),
 )

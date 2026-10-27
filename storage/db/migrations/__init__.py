@@ -12,4 +12,4 @@ def _load(version: int, name: str) -> Migration:
     return Migration(version=version, name=name, up=load_up(module))
 
 
-MIGRATIONS: tuple[Migration, ...] = (_load(1, "initial"),)
+MIGRATIONS: tuple[Migration, ...] = (_load(1, "initial"), _load(2, "plugin_config"))
