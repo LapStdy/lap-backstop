@@ -33,3 +33,5 @@
 | D-001 | 2026-10-24 | 执行器在核心进程同步跑完整运行（`core/worker/executor.py`），长运行占住 supervisor 的 tick | 本轮隔离先落在插件调用层（ADR 0010），阶段编排留在核心 | API/SSE 接入后，一次长运行期间接口会卡住 | P3 客户端与远程前 | 未还 |
 | D-002 | 2026-10-27 | `core/supervisor.py` 540 行，连续两次超 docs/11 模块上限 500 | 环境动作端点在既有 509 行基础上加 31 行；拆分属独立重构，不混入本功能卡 | 改动热点继续膨胀，tick 主循环可读性与可测性下降 | 下一张内核重构卡 | 已还（2026-10-27 归还：supervisor.py 216 行；新增 supervisor_disk 103 行、supervisor_environments 167 行、supervisor_leases 126 行、supervisor_recovery 129 行） |
 | D-003 | 2026-10-27 | `tests/unit/test_hostops_doctor.py` 的 `test_check_lock_and_mutex` 与 `test_run_doctor_prints_each_check_and_summary` 依赖本机当刻状态（全局命名互斥量与心跳、计划任务等检查项） | 断言绑定开发机稳定态；故障注入用例会持有 60 秒全局互斥量 | 并行跑 gate 或机器状态变化时误报红，需人工复跑甄别 | 下一张测试整备卡 | 未还 |
+| D-004 | 2026-10-28 | 进程被强杀或断电时不执行 `NotifyService.close`，`notifications` 表里已入账的 `pending` 行没有启动清扫（`core/notify/service.py`） | 停机收尾只覆盖正常退出路径 | 账目历史出现永久中间态，设置页把 `pending` 当投递历史时显示为一直在投递 | 下一张通知卡 | 未还 |
+| D-005 | 2026-10-28 | 渠道实现违反 `Notifier` 契约抛出异常时，投递工作线程终止，该条通知的 `pending` 行无终态（`core/notify/delivery.py`） | 契约约定渠道以 `DeliveryResult` 表达失败，投递循环未做异常兜底 | 一处渠道实现缺陷会使整个通知线程停摆，之后的通知全部不再投递 | 下一张通知卡 | 未还 |
