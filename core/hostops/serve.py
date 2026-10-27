@@ -49,7 +49,7 @@ from core.hostops.environment_actions import EnvironmentActionService
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
 from core.notify.service import NotifyService
-from core.plugins.registry import PluginRegistry
+from core.plugins.rpc_host import RpcPluginHost, installed_plugin_ids
 from core.supervisor import Supervisor
 from storage import MigrationError, migrate, open_database
 from storage.defaults import default
@@ -80,6 +80,8 @@ class ServeOptions:
     max_ticks: int | None = None
     tick_interval_seconds: float = TICK_INTERVAL_SECONDS
     register_tasks: bool = True
+    # 插件根缺省与 data 同级（docs/08 路径布局）；测试指向只含 fake 的临时目录。
+    plugins_root: Path | None = None
     task_runner: tasks.Runner = field(default_factory=lambda: subprocess.run)
     registry_get: RegistryGet = field(default_factory=lambda: registry_get)
     tailscale_runner: tailscale.Runner = field(default_factory=lambda: tailscale.default_runner)
@@ -266,6 +268,35 @@ def _record_events(
         log.append_global(event_type, {"event": event, "detail": detail}, at=at)
 
 
+def _record_plugin_events(
+    connection: sqlite3.Connection,
+    host: RpcPluginHost,
+    *,
+    at: datetime,
+) -> None:
+    """装配结果落全局事件：成功与拒绝都留痕，排障时能看出加载了什么（docs/03）。"""
+    log = EventLog(connection)
+    for plugin_id in host.registry.plugin_ids():
+        log.append_global(
+            EventType.PLUGIN_LOADED,
+            {"plugin_id": plugin_id, "version": host.versions.get(plugin_id, "")},
+            at=at,
+        )
+    for plugin_id, reason in host.rejections.items():
+        log.append_global(
+            EventType.PLUGIN_REJECTED,
+            {"plugin_id": plugin_id, "reason": reason},
+            at=at,
+        )
+
+
+def _plugins_root(data_root: Path, options: ServeOptions) -> Path:
+    """插件根与 data 同级（docs/08 路径布局）；测试可显式指向临时目录。"""
+    if options.plugins_root is not None:
+        return options.plugins_root
+    return data_root.parent / "plugins"
+
+
 def run_serve(data_root: Path, options: ServeOptions | None = None) -> int:
     """serve 主流程，返回进程退出码。
 
@@ -321,6 +352,7 @@ def _write_lock(lock_path: Path, started_at: datetime, log: Logger) -> bool:
 def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> int:
     """库、迁移、启动扫描、API 挂载与 tick 循环；打开失败与运行期错误都记日志退 1。"""
     connection: sqlite3.Connection | None = None
+    plugin_host: RpcPluginHost | None = None
     api_server: ApiServer | None = None
     notify: NotifyService | None = None
     try:
@@ -330,7 +362,12 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
         # 通知游标在启动扫描与启动事件落库之前定桩：崩溃收尾（运行置 unknown）与
         # 看门狗停手补报都要进通知，重启不能漏报。
         notify = NotifyService(connection, options.clock, data_root=data_root, log=options.log)
-        registry = PluginRegistry()
+        plugins_root = _plugins_root(data_root, options)
+        plugin_host = RpcPluginHost(
+            plugins_root, installed_plugin_ids(plugins_root), log=options.log
+        )
+        registry = plugin_host.registry
+        _record_plugin_events(connection, plugin_host, at=options.clock.utc_now())
         supervisor = Supervisor(
             connection,
             options.clock,
@@ -366,12 +403,19 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
         options.log.error({"event": "serve.run_failed", "error": str(error)})
         return EXIT_ERROR
     finally:
+        # 逐项回收：任一步抛错不能跳过后面的清理，worker 子进程随核心先结束。
+        if plugin_host is not None:
+            with contextlib.suppress(Exception):
+                plugin_host.close()
         if notify is not None:
-            notify.close()
+            with contextlib.suppress(Exception):
+                notify.close()
         if api_server is not None:
-            api_server.shutdown()
+            with contextlib.suppress(Exception):
+                api_server.shutdown()
         if connection is not None:
-            connection.close()
+            with contextlib.suppress(Exception):
+                connection.close()
 
 
 def _start_api(

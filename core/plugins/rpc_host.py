@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -123,6 +124,16 @@ def installed_plugin_ids(plugins_root: Path) -> tuple[str, ...]:
     return tuple(sorted(path.parent.name for path in plugins_root.glob("*/plugin.json")))
 
 
+def _manifest_version(plugins_root: Path, plugin_id: str) -> str:
+    """读 manifest 里的版本；插件已启动说明文件可解析，读不到按空串记。"""
+    try:
+        data = json.loads((plugins_root / plugin_id / "plugin.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return ""
+    version = data.get("version") if isinstance(data, dict) else None
+    return version if isinstance(version, str) else ""
+
+
 class RpcPluginHost:
     """按插件目录装配 RPC 能力表；启动失败的插件跳过，内核继续运行。"""
 
@@ -137,13 +148,14 @@ class RpcPluginHost:
         self._plugins_root = plugins_root
         self._log = log
         self._channels: dict[str, WorkerChannel] = {}
-        self._rejected: list[str] = []
+        self._rejected: dict[str, str] = {}
+        self._versions: dict[str, str] = {}
         for plugin_id in plugin_ids:
             channel = WorkerChannel(plugin_id, WorkerConfig(plugins_root=plugins_root, log=log))
             try:
                 channel.start()
             except WorkerError as error:
-                self._rejected.append(plugin_id)
+                self._rejected[plugin_id] = str(error)
                 channel.close()
                 if log is not None:
                     log.error(
@@ -155,12 +167,23 @@ class RpcPluginHost:
                     )
                 continue
             self._channels[plugin_id] = channel
+            self._versions[plugin_id] = _manifest_version(plugins_root, plugin_id)
             self.registry.register(rpc_capabilities(channel))
 
     @property
     def rejected(self) -> tuple[str, ...]:
         """启动失败、未注册的插件 id。"""
         return tuple(self._rejected)
+
+    @property
+    def rejections(self) -> Mapping[str, str]:
+        """启动失败的插件与原因，按启动顺序。"""
+        return dict(self._rejected)
+
+    @property
+    def versions(self) -> Mapping[str, str]:
+        """已注册插件的 manifest 版本。"""
+        return dict(self._versions)
 
     @property
     def channels(self) -> Mapping[str, WorkerChannel]:
