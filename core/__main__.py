@@ -123,6 +123,7 @@ def _run_backup(data_root: Path) -> int:
             connection.close()
         pruned = prune_backups(backups_dir)
     except (BackupError, sqlite3.Error, OSError) as error:
+        _notify_failure(data_root, database_path, title="数据库备份失败", error=error)
         print(
             f"备份失败：{error}；检查 {backups_dir} 的写权限与磁盘剩余空间后重试",
             file=sys.stderr,
@@ -156,10 +157,53 @@ def _run_db_check(data_root: Path) -> int:
         finally:
             connection.close()
     except (MigrationError, sqlite3.Error, OSError) as error:
+        _notify_failure(data_root, database_path, title="数据库检查未通过", error=error)
         print(f"数据库检查未通过：{error}", file=sys.stderr)
         return EXIT_ERROR
     print(f"数据库完整，schema 版本 {version}：{database_path}")
     return EXIT_OK
+
+
+def _notify_failure(
+    data_root: Path,
+    database_path: Path,
+    *,
+    title: str,
+    error: BaseException,
+) -> None:
+    """备份或库检查失败时发一条 ERROR 通知；通知失败只提示，不改退出码。
+
+    CLI 没有常驻核心与连接池：配置从同一份库现读，投递复用一次性实现
+    （core.notify.selftest），不建投递线程、不记账目。
+    """
+    from contracts import ContractError, Notification, NotificationLevel
+    from core.api.store import all_settings
+    from core.clock import SystemClock
+    from core.notify.selftest import build_kernel_delivery_context, deliver_test_notification
+    from storage import open_database
+
+    try:
+        connection = open_database(database_path)
+        try:
+            settings = all_settings(connection)
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error, ValueError) as read_error:
+        print(f"失败通知未发送：读不到通知配置（{read_error}）", file=sys.stderr)
+        return
+    context = build_kernel_delivery_context(SystemClock(), data_root=data_root)
+    message = Notification(
+        level=NotificationLevel.ERROR,
+        title=title,
+        body=f"库：{database_path}\n原因：{error}",
+    )
+    try:
+        delivery = deliver_test_notification(settings, context, message=message)
+    except ContractError as config_error:
+        print(f"失败通知未发送：{config_error.message}", file=sys.stderr)
+        return
+    if not delivery.result.ok:
+        print(f"失败通知发送失败：{delivery.result.detail}", file=sys.stderr)
 
 
 def _build_parser() -> argparse.ArgumentParser:
