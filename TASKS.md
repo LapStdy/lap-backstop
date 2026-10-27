@@ -6,6 +6,26 @@
 
 - [ ] 多插件路由接入时按 `channel.is_degraded` 跳过降级插件（单插件模板下不适用）。
 
+## 宿主运维补完（docs/08 一致性巡检 2026-10-28，文档承诺未实现）
+
+- [ ] dead-man 心跳：`notify.heartbeat_url`、看门狗通过后 ping、失败立即停手（docs/08:159-171，代码零命中）。
+- [ ] 校时与时钟跳变：启动 `w32tm /resync`；漂移 >30 s 记 `host.clock_skew` 并暂停补跑；跳变 >120 s 记 `host.suspended` 且全环境 unknown（docs/08:127-130，无实现）。
+- [ ] 保留清理：证据 30 天、运行事件与阶段 30 天、verdict 90 天、日志 14 天、advisor 90 天，每日 03:30 清理（docs/08:105-118；现只有全局事件 1000 条日闸门）。
+- [ ] 日志轮转：按天 `core-YYYY-MM-DD.jsonl`、200 MB 续号、14 天压缩（docs/08:119；现固定 `core.jsonl`）。
+- [ ] SIGTERM 收尾：30 s 内停建新运行、释放租约、写 `run.interrupted`（docs/08:139；现只置停机事件退出）。
+- [ ] 心跳与续租改用单调时钟（docs/08:129；现用墙钟相减）。
+- [ ] 看门狗停手事件附核心日志尾部与心跳（docs/08:79；现只在核心下次启动时补写，核心起不来则永不产生）。
+- [ ] 唤醒与启动后对环境各做一次 probe，不复用 ready（docs/08:138、docs/09:119；现跳过 off/ready）。
+- [ ] 计划任务补完：preheat 缺 XML 生成器，backup 只生成不注册（docs/08:56-63；`REGISTERED_TASKS` 只有 core 与 watchdog）。
+- [ ] 升级与回滚：drain、升级前快照、60 s 健康检查、自动回滚、保留 3 版（docs/08:192-199；仓库只有目录联接构建器）。
+- [ ] 证据增量镜像：每周日 04:30、>20 GB 只留 verdict 引用证据（docs/08:177）。
+
+## 测试整备
+
+- [ ] 错误路径与并发补测：`core/api` 各端点的 4xx 分支、`core/hostops` 的异常分支、跨连接写并发。
+- [ ] 端到端闭环冒烟：serve 装配 fake 插件 → 模板与调度 → tick 触发 → 运行 completed，证据、verdict、事件经真 HTTP 可查。
+- [ ] DEBT D-003：`tests/unit/test_hostops_doctor.py` 两例依赖本机当刻状态，并行与机器状态变化时误报。
+
 ## P1：MAA 插件与方舟环境
 
 - [ ] 冷启动采样：开机到模拟器可用、到游戏主界面，至少 10 次，记录 P50/P95。
