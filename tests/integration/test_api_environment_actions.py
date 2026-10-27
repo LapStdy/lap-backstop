@@ -18,6 +18,7 @@ from core.clock import VirtualClock
 from core.environments.actions import EnvironmentActionResult, EnvironmentActions
 from core.environments.errors import EnvironmentNotFoundError
 from core.hostops.environment_actions import EnvironmentActionService
+from core.plugins.errors import PluginError
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from plugins.fake.plugin import FakeEnvironmentProvider
 from storage import migrate, open_database
@@ -200,6 +201,24 @@ def test_missing_provider_via_real_service_returns_conflict(
     payload = body_of(response)
     assert payload["error"]["code"] == "E_CONFLICT"
     assert "插件未注册：fake" in payload["error"]["message"]
+
+
+def test_plugin_error_returns_conflict(seeded: tuple[Path, sqlite3.Connection]) -> None:
+    """插件领域的其它失败同样按 provider 不允许映射 409，不泄漏成 500。"""
+
+    class BrokenActions(RecordingActions):
+        def prepare(self, environment_id: str) -> EnvironmentActionResult:
+            raise PluginError("插件加载失败")
+
+        def reset(self, environment_id: str) -> EnvironmentActionResult:
+            raise PluginError("插件加载失败")
+
+    database, _connection = seeded
+    response = call(
+        _app(database, BrokenActions()), "POST", f"/api/v1/environments/{ENV_ID}/prepare"
+    )
+    assert response.status == 409
+    assert body_of(response)["error"]["message"] == "插件加载失败"
 
 
 def test_reset_via_real_service_updates_environment_row(
