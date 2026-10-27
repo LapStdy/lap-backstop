@@ -13,6 +13,7 @@ from typing import Any
 
 from contracts import EventType, EvidenceKind, EvidenceSource, NotificationLevel
 from contracts.types import DeliveryResult
+from core.hostops.serve import AUTOLOGON_CHECKED_EVENT
 from core.hostops.tailscale import TAILSCALE_DOWN_EVENT
 from core.hostops.watchdog import WATCHDOG_GAVE_UP_EVENT
 from storage.repositories.evidence import EvidenceRepository, EvidenceRow
@@ -217,7 +218,7 @@ def test_watchdog_gave_up_notifies_without_run(
     service = service_factory()
     append_global_event(
         connection,
-        EventType.CORE_EVENT,
+        EventType.HOST_EVENT,
         {"event": WATCHDOG_GAVE_UP_EVENT, "detail": "30 分钟内 3 次验收失败"},
     )
     service.poll()
@@ -229,6 +230,51 @@ def test_watchdog_gave_up_notifies_without_run(
     assert record_outcomes_within(service, lambda: len(core_events(connection, "notify.sent")) == 1)
     assert core_events(connection, "notify.sent")[0]["payload"]["channel"] == "serverchan"
     assert run_event_payloads(connection, EventType.NOTIFY_SENT) == []
+
+
+def test_autologon_failure_notifies_as_warn(
+    connection: sqlite3.Connection,
+    stub: Any,
+    service_factory: Callable[..., Any],
+) -> None:
+    service = service_factory()
+    append_global_event(
+        connection,
+        EventType.HOST_EVENT,
+        {
+            "event": AUTOLOGON_CHECKED_EVENT,
+            "detail": "AutoAdminLogon=0，DefaultUserName=；重启后会停在登录界面",
+            "ok": False,
+        },
+    )
+    service.poll()
+    assert stub.delivered.wait(2.0)
+    notification = stub.sent[0]
+    assert notification.level is NotificationLevel.WARN
+    assert notification.title == "自动登录自检未通过"
+    assert "AutoAdminLogon=0" in notification.body
+    assert record_outcomes_within(service, lambda: len(core_events(connection, "notify.sent")) == 1)
+    assert run_event_payloads(connection, EventType.NOTIFY_SENT) == []
+
+
+def test_autologon_success_is_silent(
+    connection: sqlite3.Connection,
+    stub: Any,
+    service_factory: Callable[..., Any],
+) -> None:
+    service = service_factory()
+    append_global_event(
+        connection,
+        EventType.HOST_EVENT,
+        {
+            "event": AUTOLOGON_CHECKED_EVENT,
+            "detail": "AutoAdminLogon=1，DefaultUserName=backstop",
+            "ok": True,
+        },
+    )
+    service.poll()
+    service.poll()
+    assert stub.sent == []
 
 
 def test_tailscale_down_notifies_without_run(

@@ -13,7 +13,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from contracts import Clock, ContractError, ErrorCode, Logger, Notifier, RunContext
+from contracts import Clock, ContractError, ErrorCode, Logger, Notification, Notifier, RunContext
 from contracts.types import DeliveryResult
 from core.logging import NullLogger
 from core.notify.channels import build_channel
@@ -63,13 +63,15 @@ def deliver_test_notification(
     context: RunContext,
     *,
     channel_factory: Callable[[NotifyConfig], Notifier] | None = None,
+    message: Notification | None = None,
 ) -> TestDelivery:
-    """按给定 settings 做一次真实测试投递：单次尝试、不重试、不写事件。
+    """按给定 settings 做一次真实投递：单次尝试、不重试、不写事件。
 
     Args:
         settings: settings 表的键值快照（notify.* 覆盖 defaults.toml）。
         context: 投递上下文；渠道实现不消费，仅为满足 Notifier 签名。
         channel_factory: 渠道构造的注入点；默认按配置构造真实 HTTP 渠道。
+        message: 要投递的通知；省略时用固定测试文案。
 
     Returns:
         生效渠道与渠道应答；投递失败体现在应答里（错误码 E_NOTIFY），不抛异常。
@@ -82,7 +84,7 @@ def deliver_test_notification(
         raise ContractError(ErrorCode.CONFIG_INVALID, "通知未启用：先打开 notify.enabled")
     build = channel_factory if channel_factory is not None else build_channel
     channel = build(config)
-    result = channel.send(context, test_notification())
+    result = channel.send(context, test_notification() if message is None else message)
     return TestDelivery(channel=config.channel, result=_redact_secrets(result, config))
 
 

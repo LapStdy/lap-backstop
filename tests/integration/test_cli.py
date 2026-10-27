@@ -8,8 +8,12 @@ from pathlib import Path
 
 import pytest
 
+from contracts import NotificationLevel
 from core.__main__ import EXIT_ERROR, EXIT_OK, main
-from storage import migrate, open_database, verify_snapshot
+from core.api.store import put_settings
+from core.notify import selftest
+from storage import BackupError, migrate, open_database, verify_snapshot
+from tests.notify_support import ENABLED, NOW, StubChannel
 
 UPDATED_AT = "2026-10-26T00:00:00+00:00"
 
@@ -21,7 +25,7 @@ def data_root(tmp_path: Path) -> Path:
         migrate(connection)
         connection.execute(
             "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
-            ("api.host", "127.0.0.1", UPDATED_AT),
+            ("api.host", json.dumps("127.0.0.1"), UPDATED_AT),
         )
     finally:
         connection.close()
@@ -58,6 +62,31 @@ def test_backup_on_unreadable_database_leaves_no_snapshot(tmp_path: Path) -> Non
     assert not list((tmp_path / "backups").glob("db-*"))
 
 
+def test_backup_failure_sends_error_notification(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    connection = open_database(data_root / "backstop.sqlite")
+    try:
+        put_settings(connection, ENABLED, at=NOW)
+    finally:
+        connection.close()
+    stub = StubChannel()
+    monkeypatch.setattr(selftest, "build_channel", lambda _config: stub)
+
+    def fail_snapshot(*_args: object, **_kwargs: object) -> None:
+        raise BackupError("integrity_check 未通过：db-1.sqlite")
+
+    monkeypatch.setattr("storage.create_snapshot", fail_snapshot)
+    assert main(["backup", "--data-root", str(data_root)]) == EXIT_ERROR
+    assert "备份失败" in capsys.readouterr().err
+    assert len(stub.sent) == 1
+    assert stub.sent[0].level is NotificationLevel.ERROR
+    assert stub.sent[0].title == "数据库备份失败"
+    assert "integrity_check 未通过" in stub.sent[0].body
+
+
 def test_db_check_passes_on_current_database(data_root: Path) -> None:
     assert main(["db", "check", "--data-root", str(data_root)]) == EXIT_OK
 
@@ -76,6 +105,24 @@ def test_db_check_migrates_restored_empty_database(tmp_path: Path) -> None:
 def test_db_check_rejects_corrupt_database(tmp_path: Path) -> None:
     (tmp_path / "backstop.sqlite").write_bytes(b"not a database" * 64)
     assert main(["db", "check", "--data-root", str(tmp_path)]) == EXIT_ERROR
+
+
+def test_db_check_failure_sends_error_notification(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connection = open_database(data_root / "backstop.sqlite")
+    try:
+        put_settings(connection, ENABLED, at=NOW)
+        connection.execute("PRAGMA user_version = 9")
+    finally:
+        connection.close()
+    stub = StubChannel()
+    monkeypatch.setattr(selftest, "build_channel", lambda _config: stub)
+    assert main(["db", "check", "--data-root", str(data_root)]) == EXIT_ERROR
+    assert len(stub.sent) == 1
+    assert stub.sent[0].level is NotificationLevel.ERROR
+    assert stub.sent[0].title == "数据库检查未通过"
+    assert "高于代码支持" in stub.sent[0].body
 
 
 def test_db_check_without_database_hints_to_restore(

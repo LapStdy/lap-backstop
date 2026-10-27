@@ -357,7 +357,7 @@ def test_notify_running_service_continues_after_prune_without_repush(
     try:
         # 游标停在第 1000 条；下一条触发事件随后被清理窗口吞掉
         EventLog(database).append_global(
-            EventType.CORE_EVENT,
+            EventType.HOST_EVENT,
             {"event": WATCHDOG_GAVE_UP_EVENT, "detail": "清理前未读"},
             at=NOW,
         )
@@ -366,7 +366,7 @@ def test_notify_running_service_continues_after_prune_without_repush(
         minimum = min_global_seq(database)
         assert minimum is not None and minimum > GLOBAL_EVENTS_KEEP
         EventLog(database).append_global(
-            EventType.CORE_EVENT,
+            EventType.HOST_EVENT,
             {"event": WATCHDOG_GAVE_UP_EVENT, "detail": "清理后新事件"},
             at=NOW,
         )
@@ -381,7 +381,7 @@ def test_notify_restarted_service_does_not_repush_history(
 ) -> None:
     seed_global_events(database, GLOBAL_EVENTS_KEEP)
     EventLog(database).append_global(
-        EventType.CORE_EVENT,
+        EventType.HOST_EVENT,
         {"event": WATCHDOG_GAVE_UP_EVENT, "detail": "历史停手"},
         at=NOW,
     )

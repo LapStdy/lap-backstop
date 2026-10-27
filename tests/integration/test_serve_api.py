@@ -31,6 +31,7 @@ from tests.fixtures.subprocess_fakes import completed
 from tests.integration.test_serve_shell import (
     autologon_registry,
     fake_task_runner,
+    global_event_rows,
     global_events,
 )
 
@@ -237,6 +238,7 @@ def test_serve_port_conflict_exits_4_and_records_event(data_root: Path) -> None:
         blocker.close()
     assert "serve.port_conflict" in logger.events()
     assert "core.port_conflict" in global_events(data_root / "backstop.sqlite")
+    assert ("core.event", "core.port_conflict") in global_event_rows(data_root / "backstop.sqlite")
     assert not (data_root / "run" / instance.LOCK_FILENAME).exists()
 
 
@@ -286,6 +288,7 @@ def test_remote_enabled_without_tailscale_records_event_once(tmp_path: Path) -> 
     assert run_serve(root, serve_options(tailscale_runner=scripted_tailscale(needs_login))) == 0
     payloads = global_payloads(root / "backstop.sqlite", TAILSCALE_DOWN_EVENT)
     assert payloads == [{"event": TAILSCALE_DOWN_EVENT, "detail": "NeedsLogin"}]
+    assert ("host.event", TAILSCALE_DOWN_EVENT) in global_event_rows(root / "backstop.sqlite")
 
 
 def test_tailnet_bind_failure_degrades_to_loopback(tmp_path: Path) -> None:

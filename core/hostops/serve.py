@@ -52,7 +52,7 @@ from core.logging import NullLogger
 from core.notify.service import NotifyService
 from core.plugins.rpc_host import RpcPluginHost, installed_plugin_ids
 from core.supervisor import Supervisor
-from storage import MigrationError, migrate, open_database
+from storage import BackupError, MigrationError, migrate, open_database
 from storage.defaults import default
 from storage.repositories.events import EventLog
 
@@ -225,48 +225,49 @@ def _host_setup_events(
     options: ServeOptions,
     *,
     at: datetime,
-) -> list[tuple[str, str]]:
+) -> list[tuple[str, Mapping[str, object]]]:
     """宿主启动动作的结果事件：看门狗停手补报、自动登录自检、任务注册。
 
     三件事都尽力而为，结果进事件 detail；单项失败不阻断核心启动
-    （docs/08 自动登录自检与计划任务两节）。
+    （docs/08 自动登录自检与计划任务两节）。自动登录自检额外带 ok，
+    供通知分支判断是否需要告警。
     """
-    events: list[tuple[str, str]] = []
+    events: list[tuple[str, Mapping[str, object]]] = []
     gave_up = watchdog.claim_gave_up_report(data_root / "run" / watchdog.STATE_FILENAME)
     if gave_up is not None:
-        events.append((WATCHDOG_GAVE_UP_EVENT, gave_up))
+        events.append((WATCHDOG_GAVE_UP_EVENT, {"detail": gave_up}))
     logon = options.registry_get(WINLOGON_KEY, "AutoAdminLogon")
     user = options.registry_get(WINLOGON_KEY, "DefaultUserName")
-    if logon == "1" and user:
-        events.append((AUTOLOGON_CHECKED_EVENT, f"AutoAdminLogon=1，DefaultUserName={user}"))
+    healthy = logon == "1" and bool(user)
+    if healthy:
+        detail = f"AutoAdminLogon=1，DefaultUserName={user}"
     else:
-        events.append(
-            (
-                AUTOLOGON_CHECKED_EVENT,
-                f"AutoAdminLogon={logon}，DefaultUserName={user}；重启后会停在登录界面",
-            )
-        )
+        detail = f"AutoAdminLogon={logon}，DefaultUserName={user}；重启后会停在登录界面"
+    events.append((AUTOLOGON_CHECKED_EVENT, {"detail": detail, "ok": healthy}))
     if options.register_tasks:
         registration = tasks.register_registered_tasks(
             data_root,
             runner=options.task_runner,
             registered_at=at,
         )
-        events.append((TASKS_REGISTERED_EVENT, registration.detail))
+        events.append((TASKS_REGISTERED_EVENT, {"detail": registration.detail}))
     return events
 
 
 def _record_events(
     connection: sqlite3.Connection,
-    events: Iterable[tuple[str, str]],
+    events: Iterable[tuple[str, Mapping[str, object]]],
     *,
     at: datetime,
-    event_type: EventType = EventType.CORE_EVENT,
+    event_type: EventType = EventType.HOST_EVENT,
 ) -> None:
-    """把启动事件作为全局事件落库；写不进说明库有故障，由调用方处置。"""
+    """把全局事件落库；顶层类型随事件归属选 host.event 或 core.event（docs/03）。
+
+    写不进说明库有故障，由调用方处置。
+    """
     log = EventLog(connection)
-    for event, detail in events:
-        log.append_global(event_type, {"event": event, "detail": detail}, at=at)
+    for event, fields in events:
+        log.append_global(event_type, {"event": event, **fields}, at=at)
 
 
 def _record_plugin_events(
@@ -359,7 +360,7 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
     try:
         database = data_root / DATABASE_FILENAME
         connection = open_database(database)
-        migrate(connection)
+        migrate(connection, backups_dir=data_root / "backups", clock=options.clock)
         # 通知游标在启动扫描与启动事件落库之前定桩：崩溃收尾（运行置 unknown）与
         # 看门狗停手补报都要进通知，重启不能漏报。
         notify = NotifyService(connection, options.clock, data_root=data_root, log=options.log)
@@ -400,6 +401,10 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             pruner=GlobalEventsPruner(connection, options.clock, log=options.log),
         )
         return loop.run()
+    except BackupError as error:
+        # 迁移前快照是强制前置（docs/08）：快照失败则不迁移，拒绝启动。
+        options.log.error({"event": "serve.migrate_snapshot_failed", "error": str(error)})
+        return EXIT_ERROR
     except (OSError, sqlite3.Error, MigrationError) as error:
         options.log.error({"event": "serve.run_failed", "error": str(error)})
         return EXIT_ERROR
@@ -443,7 +448,7 @@ def _start_api(
     if down_detail is not None:
         _record_events(
             connection,
-            [(tailscale.TAILSCALE_DOWN_EVENT, down_detail)],
+            [(tailscale.TAILSCALE_DOWN_EVENT, {"detail": down_detail})],
             at=options.clock.utc_now(),
             event_type=EventType.HOST_EVENT,
         )
@@ -507,8 +512,14 @@ def _bind_api(
             raise
         _record_events(
             connection,
-            [(PORT_CONFLICT_EVENT, f"{plan.host}:{plan.port} 已被其它进程监听：{error}")],
+            [
+                (
+                    PORT_CONFLICT_EVENT,
+                    {"detail": f"{plan.host}:{plan.port} 已被其它进程监听：{error}"},
+                )
+            ],
             at=options.clock.utc_now(),
+            event_type=EventType.CORE_EVENT,
         )
         options.log.error(
             {
