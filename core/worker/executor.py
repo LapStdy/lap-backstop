@@ -329,6 +329,14 @@ class WorkerExecutor:
             detail=cleaned.detail,
         )
         self._leases.release(scope.run.id, reason="cleanup")
+        # docs/09：cleaning 中取消在 cleanup 完成并释放租约后生效；_cancel_run 会再次
+        # 停脚本与清环境，这里直接落终态，避免同一轮收尾执行两次。
+        if self._cancel.is_cancelled():
+            return self._runs.transition(
+                scope.run.id,
+                RunState.CANCELLED,
+                reason="cancelled",
+            )
         if not cleaned.ok:
             return self._fail(scope, cleaned.error_code or "E_ENV_UNREACHABLE", "cleanup")
         if scope.verify_error is not None:
