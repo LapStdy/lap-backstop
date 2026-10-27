@@ -2,6 +2,10 @@
 
 只记还没做的事。做完的进提交说明或交接账本。
 
+## P0 内核装配：插件加载
+
+- [ ] 启动时按 `plugins/` 目录加载 manifest 与能力实现，装配进内核 `PluginRegistry`；加载失败按契约拒绝该插件并让内核继续运行（`E_PLUGIN_MANIFEST` / `E_PLUGIN_VERSION`）。现状：`core/hostops/serve.py` 建的是空注册表，生产环境动作恒 409「插件未注册」，作业进 `_begin` 即 `PluginError` 走恢复。
+
 ## P0 修复：worker RPC 审查发现（2026-10-24）
 
 - [ ] 多插件路由接入时按 `channel.is_degraded` 跳过降级插件（单插件模板下不适用）。
