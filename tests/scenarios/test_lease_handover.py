@@ -73,16 +73,18 @@ def prepare_run(
     *,
     key: str,
     priority: int = 0,
+    scheduled_at: datetime = T0,
+    deadline_at: datetime | None = None,
 ) -> str:
     record, _ = runs.create_scheduled(
         NewRun(
             template_id=TEMPLATE_ID,
             schedule_id=None,
-            scheduled_at=T0,
+            scheduled_at=scheduled_at,
             created_at=T0,
             idempotency_key=key,
             priority=priority,
-            deadline_at=None,
+            deadline_at=deadline_at,
         )
     )
     runs.enqueue(record.id)
@@ -180,3 +182,49 @@ def test_exhausted_lease_recovery_marks_run_failed(
     assert failed.state is RunState.FAILED
     assert failed.error_code == "E_RESOURCE_LEASE_LOST"
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
+
+
+def test_recovery_retry_with_busy_lease_stays_queued_until_deadline(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """docs/09「资源租约·过期」：重新申请时租约仍被占用只继续排队。
+
+    docs/02 的 queued 行只允许因截止时间迁入 failed，因此这里钉住
+    「继续排队 → 截止时间以 E_DEADLINE 收尾」，而不是立刻记 E_RESOURCE_LEASE_LOST。
+    """
+    connection, clock, runs, data_root = env
+    deadline = T0 + timedelta(minutes=90)
+    first = prepare_run(runs, key="first", priority=10, deadline_at=deadline)
+    runs.transition(first, RunState.PREPARING)
+    ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+    leases = LeaseService(connection, clock)
+    leases.acquire(first, (ENV_ID,), ttl=LEASE_TTL)
+
+    supervisor = Supervisor(
+        connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
+    )
+    clock.jump_to(T0 + LEASE_TTL + timedelta(minutes=1))
+    supervisor.tick()
+    assert runs.get(first).state is RunState.RECOVERING
+
+    blocker = prepare_run(
+        runs,
+        key="blocker",
+        scheduled_at=T0 + timedelta(hours=1),
+    )
+    runs.transition(blocker, RunState.PREPARING)
+    runs.transition(blocker, RunState.WAITING)
+    leases.acquire(blocker, (ENV_ID,))
+
+    clock.jump_to(T0 + LEASE_TTL + timedelta(minutes=2))
+    supervisor.tick()
+    retried = runs.get(first)
+    assert retried.state is RunState.QUEUED
+    assert leases.active_for_run(first) == ()
+    assert leases.active_for_run(blocker) != ()
+
+    clock.jump_to(deadline)
+    supervisor.tick()
+    overdue = runs.get(first)
+    assert overdue.state is RunState.FAILED
+    assert overdue.error_code == "E_DEADLINE"

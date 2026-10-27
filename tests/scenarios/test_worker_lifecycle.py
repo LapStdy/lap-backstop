@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -115,6 +115,20 @@ class _FailingCleanupProvider(FakeEnvironmentProvider):
 
     def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
         raise RuntimeError("清理失败")
+
+
+class _CancellingCleanupProvider(FakeEnvironmentProvider):
+    """清理期间发出取消请求，模拟用户在 cleaning 阶段按下停止。"""
+
+    def __init__(self, on_cleanup: Callable[[str], None]) -> None:
+        super().__init__()
+        self._on_cleanup = on_cleanup
+        self.cleanup_calls = 0
+
+    def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
+        self.cleanup_calls += 1
+        self._on_cleanup(ctx.run_id)
+        return super().cleanup(env, ctx, keep_warm)
 
 
 @pytest.fixture
@@ -292,6 +306,55 @@ def test_cancel_flag_prevents_start(
     result = executor_for(connection, clock, data_root, cancel=flag).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert phases(connection, run_id) == {}
+
+
+def test_cancel_during_cleanup_records_cancelled_after_one_cleanup(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """docs/09「cleaning 阶段取消：等 cleanup 完成，再记 cancelled」。
+
+    docs/02 允许 cleaning → cancelled；cleanup 只执行一次，取消不再触发一轮收尾。
+    """
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    flag = CancelFlag()
+
+    def request_cancel(during_run: str) -> None:
+        runs.request_cancel(during_run, reason="user_stop")
+        flag.cancel()
+
+    provider = _CancellingCleanupProvider(request_cancel)
+    registry = PluginRegistry()
+    registry.register(
+        PluginCapabilities(
+            plugin_id="fake",
+            environment=provider,
+            script=FakeScriptAdapter(),
+            verifier=FakeVerifier(),
+        )
+    )
+    result = WorkerExecutor(
+        connection,
+        clock,
+        registry,
+        data_root=data_root,
+        cancel=flag,
+    ).execute(run_id)
+    assert result.state is RunState.CANCELLED
+    assert result.finished_at is not None
+    assert provider.cleanup_calls == 1
+    assert phases(connection, run_id)["cleanup"] is PhaseState.OK
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()
+    assert EnvironmentService(connection, clock).get(ENV_ID).state is EnvironmentState.OFF
+    events = runs.events(run_id)
+    assert [event.type for event in events].count("run.interrupted") == 1
+    changed = [event for event in events if event.type == "run.state.changed"]
+    assert (changed[-1].payload["from_state"], changed[-1].payload["to_state"]) == (
+        "cleaning",
+        "cancelled",
+    )
+    assert events[-1].type == "run.finished"
+    assert events[-1].payload["status"] == "cancelled"
 
 
 class _NoEvidenceVerifier:
