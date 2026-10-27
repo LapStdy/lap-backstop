@@ -124,8 +124,8 @@ class DeliveryWorker:
         """创建工作器；线程由 start 拉起。
 
         Args:
-            snapshot_provider: 每次投递前取当前渠道；send=None 时放弃
-                队列中的待投递项（通知已关闭或配置非法）。
+            snapshot_provider: 每次投递前取当前渠道；send=None 时该条落成
+                「渠道不可用」的失败结果（通知已关闭或配置非法）。
             stop: 停机事件，由 close 置位。
             wait: 退避等待的注入点；默认用停机事件等待（可提前打断）。
         """
@@ -135,6 +135,8 @@ class DeliveryWorker:
         self._queue: queue.Queue[PendingDelivery] = queue.Queue()
         self._outcomes: queue.Queue[DeliveryOutcome] = queue.Queue()
         self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._current: PendingDelivery | None = None
 
     def start(self) -> None:
         """拉起工作线程；重复调用无害（线程已在时不重建）。"""
@@ -143,9 +145,17 @@ class DeliveryWorker:
         self._thread = threading.Thread(target=self._run, name="notify-delivery", daemon=True)
         self._thread.start()
 
-    def submit(self, item: PendingDelivery) -> None:
-        """入队一条通知，立即返回；投递节奏由工作线程控制。"""
-        self._queue.put(item)
+    def submit(self, item: PendingDelivery) -> bool:
+        """入队一条通知；停机后拒绝，由调用方把已入账的项落成终态。
+
+        Returns:
+            True 表示已入队；False 表示工作线程已停机，条目必须由调用方收尾。
+        """
+        with self._lock:
+            if self._stop.is_set():
+                return False
+            self._queue.put(item)
+            return True
 
     def drain_outcomes(self) -> list[DeliveryOutcome]:
         """取走已完成的结果；由内核线程在轮询里调用。"""
@@ -156,11 +166,32 @@ class DeliveryWorker:
             except queue.Empty:
                 return outcomes
 
-    def close(self, *, join_timeout: float) -> None:
-        """停机：置位停机事件并等工作线程收尾；在途 HTTP 调用最多等一个超时周期。"""
-        self._stop.set()
+    def close(self, *, join_timeout: float) -> tuple[PendingDelivery, ...]:
+        """停机并返回未投递的条目；在途 HTTP 调用最多等一个超时周期。
+
+        队列里没取走的项与等待上限到期仍在投递的那条都要交回调用方，
+        否则它们已入账的 pending 行会永远停在中间态。
+
+        Returns:
+            未产生投递结果的条目；等待上限内正常收尾时为空。
+        """
+        with self._lock:
+            self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=join_timeout)
+        abandoned = self._take_queued()
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive() and self._current is not None:
+                abandoned.append(self._current)
+        return tuple(abandoned)
+
+    def _take_queued(self) -> list[PendingDelivery]:
+        items: list[PendingDelivery] = []
+        while True:
+            try:
+                items.append(self._queue.get_nowait())
+            except queue.Empty:
+                return items
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -168,11 +199,16 @@ class DeliveryWorker:
                 item = self._queue.get(timeout=_QUEUE_POLL_SECONDS)
             except queue.Empty:
                 continue
-            snapshot = self._provider()
-            if snapshot.send is None:
-                continue
-            outcome = deliver_one(item, snapshot=snapshot, wait=self._wait, stop=self._stop)
-            self._outcomes.put(outcome)
+            with self._lock:
+                self._current = item
+            try:
+                outcome = deliver_one(
+                    item, snapshot=self._provider(), wait=self._wait, stop=self._stop
+                )
+                self._outcomes.put(outcome)
+            finally:
+                with self._lock:
+                    self._current = None
 
 
 __all__ = [

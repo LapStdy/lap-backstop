@@ -3,7 +3,8 @@
 poll() 由 serve 每轮调用：刷新渠道配置、追读新事件、排队投递（同时在
 notifications 表入账 pending）、把投递结果落成账目终态与
 notify.sent / notify.failed（运行内）或 core.event（无运行归属）事件。
-账目写入只发生在 poll() 所在线程；投递工作线程不碰数据库（docs/11 并发）。
+账目写入只发生在 poll() 与 close() 所在线程；投递工作线程不碰数据库（docs/11 并发）。
+停机会把队列里未投递的条目落成 failed，不让 pending 行停在中间态。
 只读既有事件流，不改事件语义；投递结果用契约里现成的事件类型。
 推送口径（docs/06、docs/07）：运行结束、停手、环境 failed 各推一次；
 同一运行只推一条（恢复停手与运行结束合并，先到先推）。
@@ -50,6 +51,7 @@ from storage.repositories.notifications import NotificationRepository
 
 _EVENTS_PER_POLL: Final[int] = 200
 _NOTIFIED_RUNS_LIMIT: Final[int] = 1000
+_ABANDONED_ERROR: Final[str] = "停机放弃投递"
 
 
 def _payload_of(raw: object) -> Mapping[str, Any]:
@@ -104,6 +106,7 @@ class NotifyService:
         self._notifications = NotificationFactory(connection)
         self._ledger = NotificationRepository(connection)
         self._stop = threading.Event()
+        self._closed = False
         self._config: NotifyConfig | None = None
         self._channel: Notifier | None = None
         self._invalid_reported = False
@@ -138,11 +141,21 @@ class NotifyService:
             return DeliveryResult(ok=False, error_code=error.code.value, detail=error.message)
 
     def close(self, *, join_timeout: float = 15.0) -> None:
-        """停机：等工作线程收尾；在途 HTTP 调用最多等一个超时周期。"""
-        self._worker.close(join_timeout=join_timeout)
+        """停机：收走结果、等工作线程停下，并把未投递项落成 failed。
+
+        重复调用无害。账目写仍留在本线程；连接已不可用时事件与账目都写不进去，
+        逐条记 notify.shutdown_ledger_unavailable 错误日志，带上通知 id 供事后判定。
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._record_outcomes()
+        abandoned = self._worker.close(join_timeout=join_timeout)
+        self._record_outcomes()
+        self._record_abandoned(abandoned)
 
     def _snapshot(self) -> ChannelSnapshot:
-        """工作线程取当前渠道；配置关闭或非法时 send 为 None，队列中的项被放弃。"""
+        """工作线程取当前渠道；配置关闭或非法时 send 为 None，该条落成渠道不可用。"""
         config = self._config
         channel = self._channel
         if config is None or not config.enabled or channel is None:
@@ -226,8 +239,10 @@ class NotifyService:
             self._submit(notification, run_id=run_id)
 
     def _submit(self, notification: Notification, *, run_id: str | None) -> None:
-        """入账 pending 并排队投递；渠道未就绪（关闭、非法配置）时不入账也不排队。"""
+        """入账 pending 并排队投递；渠道未就绪或已停机时不入账也不排队。"""
         config = self._config
+        if self._stop.is_set():
+            return
         if config is None or not config.enabled or self._channel is None:
             return
         if run_id is not None:
@@ -235,15 +250,15 @@ class NotifyService:
                 self._notified_runs.clear()
             self._notified_runs.add(run_id)
         notification_id = uuid4().hex
-        self._ledger.insert_pending(notification_id, run_id, config.channel)
-        self._worker.submit(
-            PendingDelivery(
-                notification_id=notification_id,
-                notification=notification,
-                run_id=run_id,
-                channel=config.channel,
-            )
+        item = PendingDelivery(
+            notification_id=notification_id,
+            notification=notification,
+            run_id=run_id,
+            channel=config.channel,
         )
+        self._ledger.insert_pending(notification_id, run_id, config.channel)
+        if not self._worker.submit(item):
+            self._record_abandoned((item,))
 
     def _record_outcomes(self) -> None:
         """把投递结果落库；单条失败只告警，不影响其余结果。"""
@@ -291,6 +306,29 @@ class NotifyService:
                 "notify.failed",
                 {"channel": outcome.channel, "error": outcome.error, "attempts": outcome.attempts},
             )
+
+    def _record_abandoned(self, items: tuple[PendingDelivery, ...]) -> None:
+        """停机时未投递的条目落成 failed 并记事件；单条写不进去只记错误日志。"""
+        at = self._clock.utc_now()
+        for item in items:
+            outcome = DeliveryOutcome(
+                notification_id=item.notification_id,
+                run_id=item.run_id,
+                channel=item.channel,
+                ok=False,
+                error=_ABANDONED_ERROR,
+                attempts=0,
+            )
+            try:
+                self._record_outcome(outcome, at=at)
+            except (ValueError, sqlite3.Error) as error:
+                self._log.error(
+                    {
+                        "event": "notify.shutdown_ledger_unavailable",
+                        "notification_id": item.notification_id,
+                        "error": str(error),
+                    }
+                )
 
     def _emit_core_event(self, event: str, fields: dict[str, object]) -> None:
         """无运行归属的通知簿记走 core.event，payload 形态与 supervisor 一致。"""
