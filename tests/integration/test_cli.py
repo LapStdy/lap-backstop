@@ -36,7 +36,7 @@ def test_backup_writes_snapshot_manifest_and_config_exports(data_root: Path) -> 
     assert len(snapshots) == len(manifests) == 1
     result = verify_snapshot(snapshots[0])
     assert result.row_counts["settings"] == 1
-    assert result.schema_version == 1
+    assert result.schema_version == 2
     payload = json.loads(manifests[0].read_text(encoding="utf-8"))
     assert payload["file"] == snapshots[0].name
     assert payload["sha256"] == result.sha256
@@ -70,7 +70,7 @@ def test_db_check_migrates_restored_empty_database(tmp_path: Path) -> None:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
     finally:
         connection.close()
-    assert int(version) == 1
+    assert int(version) == 2
 
 
 def test_db_check_rejects_corrupt_database(tmp_path: Path) -> None:

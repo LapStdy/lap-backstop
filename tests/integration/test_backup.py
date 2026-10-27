@@ -56,7 +56,7 @@ def test_snapshot_matches_source_and_survives_later_writes(
 ) -> None:
     result = create_snapshot(database, backups_dir, clock=clock)
     assert result.kind == "daily"
-    assert result.schema_version == 1
+    assert result.schema_version == 2
     assert result.row_counts["settings"] == 2
     assert _sha256(result.path) == result.sha256
 

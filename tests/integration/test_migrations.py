@@ -52,8 +52,8 @@ def connection(tmp_path: Path) -> Iterator[sqlite3.Connection]:
 
 def test_migrate_creates_schema_and_records_version(connection: sqlite3.Connection) -> None:
     assert current_version(connection) == 0
-    assert migrate(connection) == 1
-    assert current_version(connection) == 1
+    assert migrate(connection) == 2
+    assert current_version(connection) == 2
     verify_integrity(connection)
     rows = connection.execute(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
@@ -62,9 +62,9 @@ def test_migrate_creates_schema_and_records_version(connection: sqlite3.Connecti
 
 
 def test_migrate_is_idempotent(connection: sqlite3.Connection) -> None:
-    assert migrate(connection) == 1
-    assert migrate(connection) == 1
-    assert current_version(connection) == 1
+    assert migrate(connection) == 2
+    assert migrate(connection) == 2
+    assert current_version(connection) == 2
 
 
 def test_database_uses_wal(connection: sqlite3.Connection) -> None:
