@@ -94,7 +94,7 @@ class Supervisor:
         )
 
     def startup(self) -> tuple[JobRunRecord, ...]:
-        """启动扫描：重建运行、回收孤儿租约，最后对状态不明的环境各探一次。"""
+        """启动扫描：重建运行、回收孤儿租约，最后对每个环境各探一次。"""
         settled: list[JobRunRecord] = []
         for run in self._runs.non_terminal():
             snapshot = self._startup_recovery.replay(run)

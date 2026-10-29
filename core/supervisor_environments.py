@@ -14,7 +14,6 @@ from typing import Any
 from contracts import (
     Clock,
     EnvironmentRef,
-    EnvironmentState,
     Logger,
     PhaseResult,
     RunContext,
@@ -23,10 +22,6 @@ from core.environments.service import EnvironmentCall, EnvironmentService
 from core.plugins.registry import PluginRegistry
 from core.worker.executor import CancelFlag
 from storage.repositories.environments import EnvironmentRow
-
-# 崩溃只让中间态失真：off 是稳定关机、ready 可被下一次运行直接复用，
-# 其余状态都可能是崩溃瞬间的半程，启动时必须重新探测（docs/09）。
-_STARTUP_PROBE_SKIP = frozenset({EnvironmentState.OFF, EnvironmentState.READY})
 
 
 class EnvironmentSupervision:
@@ -71,14 +66,14 @@ class EnvironmentSupervision:
         return self._environments.reset(self._environment_call(row, "reset"))
 
     def probe_environments(self) -> None:
-        """启动探测与运行恢复互相独立：不管运行重建结果如何，中间态环境各探一次。
+        """启动时对每个环境各探一次，探针结果按状态机迁移。
 
-        只挂在启动扫描上，tick 不探测；探后仍 unknown 的等下一次启动再判，本轮不补探。
+        崩溃与唤醒都会让持久状态脱离现实，off 与 ready 也不能当作还成立；探针与
+        当前状态相同时只刷新观测时间。只挂在启动扫描上，tick 不探测；探后仍
+        unknown 的等下一次启动再判，本轮不补探。
         """
         now = self._clock.utc_now()
         for row in self._environments.list_all():
-            if row.state in _STARTUP_PROBE_SKIP:
-                continue
             try:
                 provider = self._registry.environment(row.provider_id)
             except Exception as error:

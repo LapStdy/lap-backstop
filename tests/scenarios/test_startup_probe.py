@@ -1,4 +1,4 @@
-"""场景：崩溃恢复的启动探测——中间态环境各探一次，失败置 unknown 等下一次探测。"""
+"""场景：崩溃恢复的启动探测——每个环境各探一次，失败置 unknown 等下一次探测。"""
 
 from __future__ import annotations
 
@@ -312,6 +312,7 @@ def test_startup_probe_once_per_environment(
     crash_leave(connection, "env-off", EnvironmentState.OFF)
     provider.script(ENV_ID, [EnvironmentState.READY])
     provider.script("env-idle", [EnvironmentState.OFF])
+    provider.script("env-off", [EnvironmentState.OFF])
 
     supervisor_for(connection, clock, provider, data_root).startup()
 
@@ -319,5 +320,25 @@ def test_startup_probe_once_per_environment(
     assert runs.get(run_b).state is RunState.QUEUED
     assert provider.probe_calls.get(ENV_ID) == 1
     assert provider.probe_calls.get("env-idle") == 1
-    assert "env-ready" not in provider.probe_calls
-    assert "env-off" not in provider.probe_calls
+    # ready 与 off 也各探一次；探针与当前状态相同，只刷新观测时间，不写状态事件
+    assert provider.probe_calls.get("env-ready") == 1
+    assert provider.probe_calls.get("env-off") == 1
+    assert service.get("env-ready").state is EnvironmentState.READY
+    assert service.get("env-off").state is EnvironmentState.OFF
+    assert env_transitions(connection, "env-ready") == []
+    assert env_transitions(connection, "env-off") == []
+
+
+def test_off_environment_probe_reporting_ready_lands_unknown(
+    env: Env,
+) -> None:
+    connection, clock, _runs, service, provider, data_root = env
+    make_env(service)
+    crash_leave(connection, ENV_ID, EnvironmentState.OFF)
+
+    supervisor_for(connection, clock, provider, data_root).startup()
+
+    # fake 探针缺省报 ready；off 不允许直接迁 ready，按状态不明落 unknown
+    assert provider.probe_calls[ENV_ID] == 1
+    assert service.get(ENV_ID).state is EnvironmentState.UNKNOWN
+    assert env_transitions(connection, ENV_ID) == [("off", "unknown")]

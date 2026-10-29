@@ -9,11 +9,10 @@
 ## 宿主运维自动化（docs/08 已按现状收敛，下列为待实现的能力）
 
 - [ ] dead-man 外部心跳：settings 键 `notify.heartbeat_url` 存外部 Push 服务地址；看门狗每次检查通过后 ping，核心死、看门狗死、断电、断网、自动登录失败都会停发；任一条件不满足立即发 fail，日志与事件里 URL 脱敏为域名加前 6 位。
-- [ ] 校时与时钟跳变：启动执行 `w32tm /resync`；偏移 >30 s 记 `host.clock_skew` 并暂停补跑；墙钟跳变 >120 s 记 `host.suspended` 且全环境置 unknown 强制 probe；心跳间隔改用单调时钟。两个事件已登记在 docs/03，代码无写入点。
+- [ ] 校时与时钟跳变：启动执行 `w32tm /resync`；偏移 >30 s 记 `host.clock_skew` 并暂停补跑；墙钟跳变 >120 s 记 `host.suspended` 且全环境置 unknown 强制 probe。两个事件已登记在 docs/03，代码无写入点。
 - [ ] 保留清理：证据 30 天且总量 ≤20 GB、运行记录与事件与阶段 30 天、verdict 90 天、日志 14 天、advisor 90 天；每日 03:30 执行，只删终态运行的证据，删文件保留 verdict 并标注过期。全局事件 1000 条日闸门已有。
 - [ ] 日志轮转：按天 `logs/core-YYYY-MM-DD.jsonl`、单文件 200 MB 续号、14 天压 `.gz`，进程内轮转跨天不丢行（现为固定 `logs/core.jsonl` 单文件）。
 - [ ] SIGTERM 收尾的强制时限与阶段行收尾：执行器在阶段边界响应停机，硬上限依赖 D-001 执行器异步化。
-- [ ] 唤醒与启动后 probe：唤醒后 90 s 内环境视为 unknown，先 probe 再 prepare；启动扫描不复用 `ready`（现跳过 off 与 ready）。
 - [ ] 看门狗停手载荷：停手当时产生 `host.watchdog_gave_up`，载荷附核心日志尾部与心跳内容（现只留状态标记，由核心下次启动补写，detail 只有失败次数与最近一次失败时刻）。
 - [ ] 计划任务补完：preheat 缺 XML 生成器；backup 已有定义生成器但未注册、`startup_actions` 缺动作映射（现只注册 core 与 watchdog）。
 - [ ] 升级与回滚：drain、升级前快照、60 s 健康检查、自动回滚、保留 3 版（现只有 `scripts/build_app.py` 的版本目录与 `current` 联接）。
