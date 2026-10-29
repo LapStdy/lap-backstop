@@ -120,11 +120,15 @@ class Supervisor:
         return tuple(settled)
 
     def tick(self) -> None:
-        """推进一轮：水位、调度、逾期、租约、保温、队列。
+        """推进一轮：停机、水位、调度、逾期、租约、保温、队列。
 
+        停机事件置位后本轮不再推进任何一步：不查磁盘水位、不扫新运行，在途运行由
+        执行器在阶段边界收尾（docs/08）。
         磁盘低于 500 MB 时本轮只记事件即中止，serve 循环据此以退出码 5 收场；
         建运行被 2 GB 守卫拒绝时发生点保持待办，磁盘恢复后按补跑策略重算（docs/08）。
         """
+        if self._shutdown():
+            return
         now = self._clock.utc_now()
         if self._disk_watermark.check():
             return
@@ -141,9 +145,6 @@ class Supervisor:
         self._lease_watch.expire(now)
         self._lease_watch.renew(now)
         self._environment_watch.close_warm(now)
-        # 停机事件置位后不再派发新运行；在途运行由执行器在阶段边界收尾（docs/08）。
-        if self._shutdown():
-            return
         self._dispatch(now)
 
     @property

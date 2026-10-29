@@ -196,8 +196,8 @@ class WorkerExecutor:
     def _advance(self, scope: RunScope) -> JobRunRecord:
         """按阶段推进；阶段之间是取消与停机的检查点（ADR 0007）。
 
-        取消优先于停机：用户取消仍按既有路径落终态。停机只写事件与释放租约，
-        运行状态与阶段记录保持原样，交下次启动扫描收尾（docs/08）。
+        取消优先于停机：用户取消仍按既有路径落终态。停机只写事件，运行状态、阶段
+        记录与租约保持原样，交下次启动扫描收尾（docs/08）。
         """
         for step in (self._prepare, self._run_script, self._verify, self._clean):
             result = step(scope)
@@ -210,10 +210,11 @@ class WorkerExecutor:
         return self._runs.get(scope.run_id)
 
     def _drain(self, run: JobRunRecord) -> JobRunRecord:
-        """停机收尾：写 run.interrupted 并释放租约，不改运行状态。
+        """停机收尾：写 run.interrupted，不改状态、不动租约。
 
-        强杀 worker、清环境与阶段收尾都不在这里做：执行器同步运行，停机后由进程
-        退出结束 worker，未完成运行交下次启动扫描（DEBT D-001、docs/08）。
+        进行中的运行由下次启动扫描置 unknown 并回收孤儿租约，等待中的运行继续持租约、
+        重启后接着跑；强杀 worker 与阶段收尾也不在这里做，执行器同步运行，停机后由
+        进程退出结束 worker（docs/09 租约、docs/08 关机与重启）。
         """
         try:
             self._events.append_run(
@@ -227,7 +228,6 @@ class WorkerExecutor:
             self._log.error(
                 {"event": "executor.drain_event_failed", "run_id": run.id, "error": str(error)}
             )
-        self._safe_release(run.id, reason=SHUTDOWN_REASON)
         try:
             return self._runs.get(run.id)
         except (RunNotFoundError, sqlite3.Error):

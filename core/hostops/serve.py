@@ -47,11 +47,10 @@ from core.events.maintenance import GlobalEventsPruner
 from core.hostops import heartbeat, instance, tailscale, tasks, watchdog
 from core.hostops.doctor import DATABASE_FILENAME, WINLOGON_KEY, RegistryGet, registry_get
 from core.hostops.environment_actions import EnvironmentActionService
-from core.jobs.run_service import SHUTDOWN_REASON, JobRunService
+from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
 from core.notify.service import NotifyService
 from core.plugins.rpc_host import RpcPluginHost, installed_plugin_ids
-from core.resources.service import LeaseService
 from core.supervisor import Supervisor
 from storage import BackupError, MigrationError, migrate, open_database
 from storage.defaults import default
@@ -402,9 +401,7 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             notify=notify,
             pruner=GlobalEventsPruner(connection, options.clock, log=options.log),
         )
-        code = loop.run()
-        _release_active_leases(connection, options)
-        return code
+        return loop.run()
     except BackupError as error:
         # 迁移前快照是强制前置（docs/08）：快照失败则不迁移，拒绝启动。
         options.log.error({"event": "serve.migrate_snapshot_failed", "error": str(error)})
@@ -430,27 +427,6 @@ def _recycle(step: Callable[[], object], *, event: str, log: Logger) -> None:
         step()
     except Exception as error:
         log.error({"event": event, "error": str(error)})
-
-
-def _release_active_leases(connection: sqlite3.Connection, options: ServeOptions) -> None:
-    """循环退出后兜底释放剩余活跃租约；失败只记日志，不改变退出码。"""
-    leases = LeaseService(connection, options.clock)
-    try:
-        active = leases.active()
-    except sqlite3.Error as error:
-        options.log.error({"event": "serve.release_active_leases_failed", "error": str(error)})
-        return
-    for run_id in dict.fromkeys(lease.run_id for lease in active):
-        try:
-            leases.release(run_id, reason=SHUTDOWN_REASON)
-        except Exception as error:
-            options.log.error(
-                {
-                    "event": "serve.release_lease_failed",
-                    "run_id": run_id,
-                    "error": str(error),
-                }
-            )
 
 
 def _start_api(

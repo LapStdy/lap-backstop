@@ -1,4 +1,4 @@
-"""停机收尾：阶段边界写 run.interrupted 并释放租约，不把运行推进终态。"""
+"""停机收尾：阶段边界写 run.interrupted，不改运行状态、不动租约。"""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ class _ShutdownOnObserveScript(FakeScriptAdapter):
         return ScriptObservation(state=ScriptState.RUNNING, since=ctx.clock.utc_now())
 
 
-def test_shutdown_during_execution_writes_interrupted_and_releases_lease(
+def test_shutdown_during_execution_writes_interrupted_and_keeps_lease(
     tmp_path: Path,
 ) -> None:
     connection = open_database(tmp_path / "state.db")
@@ -116,9 +116,8 @@ def test_shutdown_during_execution_writes_interrupted_and_releases_lease(
         assert len(interrupted) == 1, f"run.interrupted 条数不对：{[e.type for e in events]}"
         assert interrupted[0].payload == {"run_id": run_id, "reason": "shutdown"}
         assert not runs.cancel_requested(run_id), "停机收尾被当成用户取消"
-        assert LeaseService(connection, clock).active_for_run(run_id) == ()
-        released = [event for event in events if event.type == "resource.released"]
-        assert [event.payload["reason"] for event in released] == ["shutdown"]
+        # 租约活到 cleanup 释放（docs/09）：停机不动它，由下次启动扫描回收孤儿租约。
+        assert LeaseService(connection, clock).active_for_run(run_id), "停机释放了运行租约"
         assert not any(event.type == "run.finished" for event in events)
     finally:
         connection.close()
@@ -142,7 +141,7 @@ def _waiting_run_with_lease(data_root: Path) -> str:
         connection.close()
 
 
-def test_shutdown_without_active_run_exits_zero_and_clears_leases(tmp_path: Path) -> None:
+def test_shutdown_without_active_run_exits_zero_and_keeps_waiting_run(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     configure(data_root, {"api.host": "127.0.0.1", "api.port": 0})
     run_id = _waiting_run_with_lease(data_root)
@@ -158,14 +157,10 @@ def test_shutdown_without_active_run_exits_zero_and_clears_leases(tmp_path: Path
         interrupted = reader.execute(
             "SELECT COUNT(*) FROM run_events WHERE type = 'run.interrupted'"
         ).fetchone()
-        released = reader.execute(
-            "SELECT payload FROM run_events WHERE run_id = ? AND type = 'resource.released'",
-            (run_id,),
-        ).fetchall()
         state = reader.execute("SELECT state FROM job_runs WHERE id = ?", (run_id,)).fetchone()
     finally:
         reader.close()
-    assert active is not None and int(active[0]) == 0
+    # 等待中的运行不参与收尾：租约继续持有，重启后接着跑（docs/09 租约）。
+    assert active is not None and int(active[0]) == 1
     assert interrupted is not None and int(interrupted[0]) == 0
-    assert [json.loads(str(row[0]))["reason"] for row in released] == ["shutdown"]
     assert state is not None and str(state[0]) == "waiting"
