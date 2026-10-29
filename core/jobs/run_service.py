@@ -25,6 +25,9 @@ DISK_WARN_BYTES = 5 * 1024**3
 DISK_GUARD_BYTES = 2 * 1024**3
 DISK_CRITICAL_BYTES = 500 * 1024**2
 
+# 停机收尾与用户取消共用 run.interrupted，靠 reason 区分（docs/03、docs/08）。
+SHUTDOWN_REASON = "shutdown"
+
 
 class DiskFullError(JobRunError):
     """磁盘可用空间低于 2 GB 守护线，拒绝创建新运行（docs/08）。"""
@@ -209,8 +212,12 @@ class JobRunService:
         return record
 
     def cancel_requested(self, run_id: str) -> bool:
-        """该运行是否已收到取消请求；请求落在 ``run.interrupted`` 事件里，跨 tick 有效。"""
-        return any(event.type == EventType.RUN_INTERRUPTED.value for event in self.events(run_id))
+        """该运行是否已收到取消请求；停机收尾写的 run.interrupted 不是取消请求。"""
+        return any(
+            event.type == EventType.RUN_INTERRUPTED.value
+            and event.payload.get("reason") != SHUTDOWN_REASON
+            for event in self.events(run_id)
+        )
 
     def next_queued(self, limit: int = 1) -> tuple[JobRunRecord, ...]:
         """按出队顺序取排队运行。"""

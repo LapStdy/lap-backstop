@@ -38,8 +38,9 @@ from contracts import (
 from core.environments.service import EnvironmentCall, EnvironmentService
 from core.events.evidence import EvidenceService
 from core.events.verdicts import VerdictError, VerdictService
+from core.jobs.errors import RunNotFoundError
 from core.jobs.phases import PhaseTracker
-from core.jobs.run_service import JobRunService
+from core.jobs.run_service import SHUTDOWN_REASON, JobRunService
 from core.logging import NullLogger
 from core.plugins import rpc
 from core.plugins.errors import PluginError, WorkerCancelledError, WorkerTimeoutError
@@ -112,6 +113,7 @@ class WorkerExecutor:
         log: Logger | None = None,
         keep_warm_minutes: int = 0,
         cancel: CancelToken | None = None,
+        shutdown: Callable[[], bool] | None = None,
     ) -> None:
         self._connection = connection
         self._clock = clock
@@ -119,6 +121,7 @@ class WorkerExecutor:
         self._data_root = data_root
         self._keep_warm_minutes = keep_warm_minutes
         self._cancel: CancelToken = CancelFlag() if cancel is None else cancel
+        self._shutdown: Callable[[], bool] = (lambda: False) if shutdown is None else shutdown
         self._log: Logger = NullLogger() if log is None else log
         self._runs = JobRunService(connection, clock)
         self._templates = JobTemplateRepository(connection)
@@ -145,25 +148,27 @@ class WorkerExecutor:
         """
         run = self._runs.get(run_id)
         if run.state is RunState.RECOVERING:
+            # 停机不推进：恢复等待不再入队，留给下次启动扫描按持久状态处置。
+            if self._shutdown() and not self._cancel.is_cancelled():
+                return self._drain(run)
             run = self.resume(run_id)
         if run.state not in (RunState.QUEUED, RunState.WAITING):
             return run
+        if self._shutdown() and not self._cancel.is_cancelled():
+            return self._drain(run)
         template = self._templates.get(run.template_id)
         if template is None:
             return self._fail_missing_template(run)
         scope = self._begin(run, template)
         if self._cancel.is_cancelled():
             return self._cancel_run(scope, started=False)
+        if self._shutdown():
+            return self._drain(scope.run)
         if scope.run.state is RunState.QUEUED:
             self._leases.acquire(scope.run_id, (scope.call.environment_id,))
             scope.run = self._runs.transition(scope.run.id, RunState.PREPARING)
         try:
-            return (
-                self._prepare(scope)
-                or self._run_script(scope)
-                or self._verify(scope)
-                or self._clean(scope)
-            )
+            return self._advance(scope)
         except WorkerCancelledError:
             self._log.info({"event": "executor.worker_cancelled", "run_id": scope.run_id})
             return self._cancel_run(scope, started=True)
@@ -187,6 +192,46 @@ class WorkerExecutor:
                 {"event": "executor.error", "run_id": scope.run_id, "error": str(error)}
             )
             return self._recover(scope, "E_PLUGIN_CRASH", str(error))
+
+    def _advance(self, scope: RunScope) -> JobRunRecord:
+        """按阶段推进；阶段之间是取消与停机的检查点（ADR 0007）。
+
+        取消优先于停机：用户取消仍按既有路径落终态。停机只写事件与释放租约，
+        运行状态与阶段记录保持原样，交下次启动扫描收尾（docs/08）。
+        """
+        for step in (self._prepare, self._run_script, self._verify, self._clean):
+            result = step(scope)
+            if result is not None:
+                return result
+            if self._cancel.is_cancelled():
+                continue
+            if self._shutdown():
+                return self._drain(scope.run)
+        return self._runs.get(scope.run_id)
+
+    def _drain(self, run: JobRunRecord) -> JobRunRecord:
+        """停机收尾：写 run.interrupted 并释放租约，不改运行状态。
+
+        强杀 worker、清环境与阶段收尾都不在这里做：执行器同步运行，停机后由进程
+        退出结束 worker，未完成运行交下次启动扫描（DEBT D-001、docs/08）。
+        """
+        try:
+            self._events.append_run(
+                run.id,
+                EventType.RUN_INTERRUPTED,
+                {"run_id": run.id, "reason": SHUTDOWN_REASON},
+                at=self._clock.utc_now(),
+            )
+        except sqlite3.Error as error:
+            # 事件写不进时仍要保留停机的状态承诺：不改状态，只留日志给排障。
+            self._log.error(
+                {"event": "executor.drain_event_failed", "run_id": run.id, "error": str(error)}
+            )
+        self._safe_release(run.id, reason=SHUTDOWN_REASON)
+        try:
+            return self._runs.get(run.id)
+        except (RunNotFoundError, sqlite3.Error):
+            return run
 
     def _begin(self, run: JobRunRecord, template: JobTemplateRow) -> RunScope:
         """组装一次执行用的插件、环境引用与运行上下文。"""
@@ -258,6 +303,9 @@ class WorkerExecutor:
         )
         scope.handle = handle
         observation = self._wait_for_script(scope.script, handle, scope.context)
+        # 停机只停止推进：不落阶段结论、不停脚本，运行交下次启动扫描收尾。
+        if self._shutdown() and not self._cancel.is_cancelled():
+            return self._drain(scope.run)
         if observation is None:
             self._phases.finish(phase, state=PhaseState.TIMED_OUT, detail="deadline")
             self._stop_script(scope)
@@ -364,7 +412,7 @@ class WorkerExecutor:
             observation = script.observe(handle, context)
             if observation.state is not ScriptState.RUNNING:
                 return observation
-            if self._cancel.is_cancelled():
+            if self._cancel.is_cancelled() or self._shutdown():
                 return observation
             if self._clock.utc_now() >= context.deadline_at:
                 return None

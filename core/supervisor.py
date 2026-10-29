@@ -55,6 +55,7 @@ class Supervisor:
         data_root: Path,
         log: Logger | None = None,
         disk_free: Callable[[], int | None] | None = None,
+        shutdown: Callable[[], bool] | None = None,
     ) -> None:
         self._connection = connection
         self._database = _database_path(connection)
@@ -62,6 +63,7 @@ class Supervisor:
         self._registry = registry
         self._data_root = data_root
         self._log: Logger = NullLogger() if log is None else log
+        self._shutdown: Callable[[], bool] = (lambda: False) if shutdown is None else shutdown
         self._disk_free: Callable[[], int | None] = (
             (lambda: disk_free_bytes(data_root)) if disk_free is None else disk_free
         )
@@ -139,6 +141,9 @@ class Supervisor:
         self._lease_watch.expire(now)
         self._lease_watch.renew(now)
         self._environment_watch.close_warm(now)
+        # 停机事件置位后不再派发新运行；在途运行由执行器在阶段边界收尾（docs/08）。
+        if self._shutdown():
+            return
         self._dispatch(now)
 
     @property
@@ -233,6 +238,7 @@ class Supervisor:
             log=self._log,
             keep_warm_minutes=keep_warm,
             cancel=cancel,
+            shutdown=self._shutdown,
         )
         try:
             executor.execute(run.id)
