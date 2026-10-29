@@ -184,3 +184,16 @@ def test_stop_without_injected_stopper_returns_conflict(database: Path) -> None:
     finally:
         connection.close()
     assert "run.interrupted" not in [event.type for event in events]
+
+
+def test_stop_rejects_shutdown_as_cancel_reason(app: ApiApp, database: Path) -> None:
+    """shutdown 是停机收尾的保留值：作为取消原因一律拒绝，避免与停机事件混淆。"""
+    queued_id = seed_run(database, state=RunState.QUEUED, created_at=NOW)
+    response = call(
+        app,
+        "POST",
+        f"/api/v1/runs/{queued_id}/stop",
+        body=b'{"reason": "shutdown"}',
+    )
+    assert response.status == 400
+    assert error_code_of(response) == "E_BAD_REQUEST"

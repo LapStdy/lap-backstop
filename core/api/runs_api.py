@@ -19,7 +19,7 @@ from core.api.run_store import RunJson
 from core.api.wire import ApiResponse, FileBody
 from core.events.evidence import EvidenceService
 from core.jobs.errors import IllegalRunTransitionError, RunNotFoundError
-from core.jobs.run_service import JobRunService
+from core.jobs.run_service import SHUTDOWN_REASON, JobRunService
 from storage.repositories.evidence import EvidenceRepository, EvidenceRow
 from storage.repositories.job_runs import JobRunRecord
 from storage.repositories.run_phases import RunPhaseRepository, RunPhaseRow
@@ -189,13 +189,22 @@ def _optional_timestamp(query: Mapping[str, str], key: str) -> str | None:
 
 
 def _stop_reason(ctx: RequestCtx) -> str:
-    """可选的 JSON 对象体里带 reason；空体或空对象都按默认原因处理。"""
+    """可选的 JSON 对象体里带 reason；空体或空对象都按默认原因处理。
+
+    Raises:
+        ContractError: 请求体不是 JSON 对象，或 reason 是停机收尾的保留值（400）。
+    """
     if ctx.body is None:
         return "user_cancel"
     if not isinstance(ctx.body, dict):
         raise ContractError(ErrorCode.BAD_REQUEST, "请求体必须是 JSON 对象")
     value = ctx.body.get("reason")
     if isinstance(value, str) and value:
+        if value == SHUTDOWN_REASON:
+            raise ContractError(
+                ErrorCode.BAD_REQUEST,
+                f'"{SHUTDOWN_REASON}" 是停机收尾的保留值，不能作为取消原因',
+            )
         return value
     return "user_cancel"
 

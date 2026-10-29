@@ -376,6 +376,7 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             registry,
             data_root=data_root,
             log=options.log,
+            shutdown=options.stop.is_set,
         )
         supervisor.startup()
         setup_at = options.clock.utc_now()
