@@ -23,7 +23,6 @@
 ## 测试整备
 
 - [ ] 错误路径与并发补测：`core/api` 各端点的 4xx 分支、`core/hostops` 的异常分支、跨连接写并发。
-- [ ] 端到端闭环冒烟：serve 装配 fake 插件 → 模板与调度 → tick 触发 → 运行 completed，证据、verdict、事件经真 HTTP 可查。
 - [ ] DEBT D-003：`tests/unit/test_hostops_doctor.py` 两例依赖本机当刻状态，并行与机器状态变化时误报。
 
 ## P1：MAA 插件与方舟环境
