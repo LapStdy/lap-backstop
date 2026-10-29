@@ -15,6 +15,16 @@
 
 规矩全文与检查器：GitHub `LapStdy/lap-skills-rules` 的 `rules/` 与 `tools/`；本文件是操作版，两者冲突以仓库为准。
 
+## 改动范围（硬规则）
+
+改动范围 ＝ 本次请求要求改的文件与行。
+
+1. 不动无关代码：不顺手调格式、改命名、补类型、换写法；不重构没坏的东西。
+2. 只清自己造成的孤儿：自己改动弄成没人用的导入、变量、函数一起清；没碰过的死代码不删，记进 `TASKS.md` 或 `DEBT.md`。
+3. 不混入独立工作：拆分、抽取、升级依赖、修无关红灯另开一张卡。
+
+范围判据与收件箱：GitHub `LapStdy/lap-skills-rules` 的 `rules/change-scope.md`。
+
 ## 资产仓与技能
 
 - 规范与技能的唯一源是 GitHub `LapStdy/lap-skills-rules`；本机技能装在 `~/.dsh/skills/`，从仓库安装，不手工改安装副本。
