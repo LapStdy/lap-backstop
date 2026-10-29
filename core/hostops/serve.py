@@ -158,7 +158,7 @@ class ServeLoop:
         self._options = options
         self._notify = notify
         self._pruner = pruner
-        self._last_heartbeat_at: datetime | None = None
+        self._last_heartbeat_at: float | None = None
 
     def run(self) -> int:
         """循环到停机信号、tick 上限或磁盘 critical；正常路径返回 0，磁盘水位返回 5。"""
@@ -197,11 +197,16 @@ class ServeLoop:
             )
 
     def _write_heartbeat_if_due(self) -> None:
-        """到点写心跳；写失败保留上次时刻，下一轮立刻重试。"""
+        """到点写心跳；写失败保留上次时刻，下一轮立刻重试。
+
+        间隔按单调时钟判定，校时与休眠恢复造成的墙钟跳变不会让心跳停发或连发；
+        心跳内容里的 last_tick 仍是墙钟 UTC（看门狗按文件 mtime 算年龄）。
+        """
+        now_mono = self._options.clock.monotonic()
         last_tick_at = self._options.clock.utc_now()
         if (
             self._last_heartbeat_at is not None
-            and last_tick_at - self._last_heartbeat_at < _HEARTBEAT_INTERVAL
+            and now_mono - self._last_heartbeat_at < _HEARTBEAT_INTERVAL.total_seconds()
         ):
             return
         try:
@@ -209,7 +214,7 @@ class ServeLoop:
         except OSError as error:
             self._options.log.error({"event": "serve.heartbeat_write_failed", "error": str(error)})
             return
-        self._last_heartbeat_at = last_tick_at
+        self._last_heartbeat_at = now_mono
 
 
 def _active_run(runs: JobRunService) -> str | None:
