@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import subprocess
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -147,7 +148,21 @@ def test_check_heartbeat_fresh(tmp_path: Path) -> None:
     assert single(make_deps(tmp_path), 8).level is doctor.Level.WARN
 
 
-def test_check_lock_and_mutex(tmp_path: Path) -> None:
+def test_check_lock_and_mutex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """锁文件与互斥量的对应关系；互斥量用假件，不碰本机全局命名互斥量。"""
+    held: list[bool] = []
+
+    def fake_acquire(_name: str) -> int | None:
+        if held:
+            return None
+        held.append(True)
+        return 1
+
+    def fake_release(_handle: int) -> None:
+        held.clear()
+
+    monkeypatch.setattr(instance, "acquire_named_mutex", fake_acquire)
+    monkeypatch.setattr(instance, "release_named_mutex", fake_release)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     lock_path = run_dir / instance.LOCK_FILENAME
@@ -363,9 +378,28 @@ def test_exit_code_aggregation() -> None:
     assert doctor.exit_code(mixed) == 1
 
 
-def test_run_doctor_prints_each_check_and_summary(tmp_path: Path) -> None:
+def test_run_doctor_prints_each_check_and_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """14 项逐条打印并给汇总；外部依赖换成假件，结论不随本机状态变化。"""
     make_database(tmp_path)
     (tmp_path / "app" / "current").mkdir(parents=True)
+    fake = make_deps(tmp_path, api_address=("127.0.0.1", 1))
+    real_collect = doctor.collect
+    monkeypatch.setattr(
+        doctor,
+        "collect",
+        lambda deps: real_collect(
+            replace(
+                deps,
+                now=fake.now,
+                registry_get=fake.registry_get,
+                runner=fake.runner,
+                disk_free=fake.disk_free,
+                api_address=fake.api_address,
+            )
+        ),
+    )
     stream = io.StringIO()
     code = doctor.run_doctor(tmp_path, app_root=tmp_path / "app", stream=stream)
     lines = stream.getvalue().splitlines()
