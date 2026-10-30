@@ -142,9 +142,9 @@ def test_run_serve_bounded_ticks_write_heartbeat_and_cleanup(tmp_path: Path) -> 
         ("host.event", AUTOLOGON_CHECKED_EVENT),
         ("host.event", TASKS_REGISTERED_EVENT),
     }
-    # 注册走 schtasks 覆盖式导入，P0 清单只有 core 与 watchdog 两个任务
-    assert [call[3] for call in task_calls] == ["/tn", "/tn"]
-    assert {call[4] for call in task_calls} == {tasks.TASK_CORE, tasks.TASK_WATCHDOG}
+    # 注册走 schtasks 覆盖式导入，清单是 core、watchdog、backup 三个任务
+    assert [call[3] for call in task_calls] == ["/tn", "/tn", "/tn"]
+    assert {call[4] for call in task_calls} == set(tasks.REGISTERED_TASKS)
 
 
 def test_run_serve_reports_watchdog_gave_up_marker(tmp_path: Path) -> None:

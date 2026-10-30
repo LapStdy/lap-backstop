@@ -16,6 +16,7 @@ import pytest
 from core.api.server import MAX_BODY_BYTES, ApiOptions, ApiServer, start_api_server
 from core.api.store import TOKEN_KEY, put_settings
 from core.clock import VirtualClock
+from core.hostops import tasks
 from storage import migrate, open_database
 from tests.fixtures.subprocess_fakes import fake_runner
 
@@ -172,7 +173,7 @@ def test_tasks_register_uses_injected_task_runner(tmp_path: Path) -> None:
         status, payload, _ = request(handle, "POST", "/api/v1/host/tasks/register")
         assert status == 200
         assert payload["ok"] is True
-        assert len(calls) == 2
+        assert len(calls) == len(tasks.REGISTERED_TASKS)
         assert all(call[0] == "schtasks" for call in calls)
     finally:
         handle.shutdown()
