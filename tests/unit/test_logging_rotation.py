@@ -137,6 +137,28 @@ def test_startup_compresses_files_outside_keep_window(tmp_path: Path) -> None:
     assert kept.is_file()
     assert not (logs / "core-2026-10-28.jsonl.gz").exists()
     assert gzip.decompress(existing.read_bytes()) == b'{"event": "existing"}\n'
+    assert not list(logs.glob("*.part"))
+
+
+def test_compress_skips_source_another_instance_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logs = tmp_path / "logs"
+    logger = DailyRotatingJsonLineLogger(logs, clock=VirtualClock(NOW), keep_days=1)
+    vanished = logs / "core-2026-10-25.jsonl"
+    # 扫描时文件还在，压缩前已被另一实例归档并删除：快照里留着过期条目。
+    monkeypatch.setattr(
+        logger,
+        "_existing_files",
+        lambda: [(vanished, NOW.date() - timedelta(days=5), 1)],
+    )
+
+    logger._compress_before(NOW.date())
+
+    assert not (logs / "core-2026-10-25.jsonl.gz").exists()
+    assert not list(logs.glob("*.part"))
+    # 没有源文件不是失败：不写 log.compress_failed，当天日志文件不会被创建。
+    assert not (logs / "core-2026-10-30.jsonl").exists()
 
 
 def test_cross_day_switch_compresses_previous_day(tmp_path: Path) -> None:

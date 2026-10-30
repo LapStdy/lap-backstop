@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import threading
 from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
@@ -160,6 +161,9 @@ class DailyRotatingJsonLineLogger:
             if file_day >= cutoff or path == self._path:
                 continue
             target = path.with_name(f"{path.name}.gz")
+            if not path.is_file():
+                # 另一实例可能已把源文件归档并删除：归档已完成，跳过不算失败。
+                continue
             if target.exists():
                 # 已有压缩件就跳过：重复压缩只会浪费启动时间。
                 continue
@@ -198,11 +202,20 @@ def _parse_daily_name(name: str) -> tuple[date, int] | None:
 
 def _gzip_replace(source: Path, target: Path) -> None:
     # 先写临时文件再原子替换：半截压缩件不会被当成已完成。
-    temporary = target.with_name(f"{target.name}.part")
-    with source.open("rb") as reader, gzip.open(temporary, "wb") as writer:
-        shutil.copyfileobj(reader, writer)
-    os.replace(temporary, target)
-    source.unlink()
+    # 临时名按调用唯一：重复启动的实例会同时压缩同一个旧文件，固定名会互相截断。
+    handle, temporary_name = tempfile.mkstemp(
+        dir=target.parent, prefix=f"{target.name}.", suffix=".part"
+    )
+    os.close(handle)
+    temporary = Path(temporary_name)
+    try:
+        with source.open("rb") as reader, gzip.open(temporary, "wb") as writer:
+            shutil.copyfileobj(reader, writer)
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    # 另一实例可能已删除源文件：归档已完成，缺源不算失败。
+    source.unlink(missing_ok=True)
 
 
 __all__ = [
