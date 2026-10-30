@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -21,6 +22,7 @@ from core.clock import VirtualClock
 from core.hostops.retention import (
     RETENTION_PRUNED_EVENT,
     RETENTION_PRUNED_ON_KEY,
+    RetentionPolicy,
     RetentionRunner,
 )
 from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeOptions
@@ -37,6 +39,11 @@ TEMPLATE_ID = "template-1"
 def local_moment(hour: int, minute: int, *, day: int = 30) -> datetime:
     """2026-10-<day> 的 Asia/Shanghai 本地时刻，转成 UTC 交给虚拟时钟。"""
     return datetime(2026, 10, day, hour, minute, tzinfo=SHANGHAI).astimezone(UTC)
+
+
+def policy_with(**overrides: Any) -> RetentionPolicy:
+    """在默认策略上替换个别期限，避免测试真造 20 GB 证据。"""
+    return replace(RetentionPolicy.from_defaults(), **overrides)
 
 
 @pytest.fixture
@@ -248,6 +255,52 @@ def test_serve_loop_survives_retention_failure_and_keeps_ticking(tmp_path: Path)
         connection.close()
 
 
+def test_evidence_files_expire_after_30_days_but_rows_stay(
+    database: sqlite3.Connection, tmp_path: Path
+) -> None:
+    clock = VirtualClock(local_moment(3, 30))
+    seed_run(database, "run-old", created_at=NOW - timedelta(days=40))
+    expired = write_evidence(tmp_path, "run-old/old.png", b"old")
+    seed_evidence(database, "run-old", "run-old/old.png", created_at=NOW - timedelta(days=31))
+    fresh = write_evidence(tmp_path, "run-old/fresh.png", b"fresh")
+    seed_evidence(database, "run-old", "run-old/fresh.png", created_at=NOW - timedelta(days=2))
+
+    outcome = RetentionRunner(database, clock, data_root=tmp_path).run_once()
+
+    assert outcome is not None
+    assert not expired.exists()
+    assert fresh.exists()
+    assert count(database, "evidence") == 2
+    assert outcome.evidence_files_deleted == 1
+    assert outcome.evidence_bytes_freed == 3
+    assert outcome.evidence_bytes_after == 5
+
+
+def test_evidence_quota_deletes_oldest_terminal_files(
+    database: sqlite3.Connection, tmp_path: Path
+) -> None:
+    clock = VirtualClock(local_moment(3, 30))
+    seed_run(database, "run-old", created_at=NOW - timedelta(days=10))
+    seed_run(database, "run-new", created_at=NOW - timedelta(days=1))
+    oldest = write_evidence(tmp_path, "run-old/old.bin", b"a" * 100)
+    seed_evidence(database, "run-old", "run-old/old.bin", created_at=NOW - timedelta(days=5))
+    newest = write_evidence(tmp_path, "run-new/new.bin", b"b" * 100)
+    seed_evidence(database, "run-new", "run-new/new.bin", created_at=NOW - timedelta(days=1))
+
+    runner = RetentionRunner(
+        database, clock, data_root=tmp_path, policy=policy_with(evidence_total_bytes=150)
+    )
+    outcome = runner.run_once()
+
+    assert outcome is not None
+    assert not oldest.exists()
+    assert newest.exists()
+    assert count(database, "evidence") == 2
+    assert outcome.evidence_files_deleted == 1
+    assert outcome.evidence_bytes_freed == 100
+    assert outcome.evidence_bytes_after == 100
+
+
 def test_run_events_and_phases_expire_after_30_days(
     database: sqlite3.Connection, tmp_path: Path
 ) -> None:
@@ -346,3 +399,72 @@ def test_advisor_calls_expire_after_90_days(database: sqlite3.Connection, tmp_pa
     assert outcome is not None
     assert outcome.advisor_deleted == 1
     assert count(database, "advisor_calls") == 1
+
+
+def test_logs_expire_by_age_and_keep_watchdog_and_unknown_files(
+    database: sqlite3.Connection, tmp_path: Path
+) -> None:
+    clock = VirtualClock(local_moment(3, 30))
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    old_raw = logs / "core-2026-10-01.jsonl"
+    fresh_raw = logs / "core-2026-10-20.jsonl"
+    old_rotated = logs / "core-2026-10-01.2.jsonl"
+    old_archive = logs / "core-2026-06-01.jsonl.gz"
+    fresh_archive = logs / "core-2026-10-01.jsonl.gz"
+    watchdog = logs / "watchdog.jsonl"
+    other = logs / "notes.txt"
+    for path in (
+        old_raw,
+        fresh_raw,
+        old_rotated,
+        old_archive,
+        fresh_archive,
+        watchdog,
+        other,
+    ):
+        path.write_text("{}\n", encoding="utf-8")
+
+    outcome = RetentionRunner(database, clock, data_root=tmp_path).run_once()
+
+    assert outcome is not None
+    assert outcome.log_files_deleted == 3
+    assert not old_raw.exists()
+    assert not old_rotated.exists()
+    assert not old_archive.exists()
+    assert fresh_raw.exists()
+    assert fresh_archive.exists()
+    assert watchdog.exists()
+    assert other.exists()
+
+
+def test_missing_logs_directory_is_not_an_error(
+    database: sqlite3.Connection, tmp_path: Path
+) -> None:
+    clock = VirtualClock(local_moment(3, 30))
+    outcome = RetentionRunner(database, clock, data_root=tmp_path).run_once()
+    assert outcome is not None
+    assert outcome.log_files_deleted == 0
+
+
+def test_non_terminal_run_evidence_is_untouched(
+    database: sqlite3.Connection, tmp_path: Path
+) -> None:
+    clock = VirtualClock(local_moment(3, 30))
+    seed_run(
+        database,
+        "run-live",
+        state=RunState.EXECUTING,
+        created_at=NOW - timedelta(days=100),
+    )
+    kept = write_evidence(tmp_path, "run-live/live.png")
+    seed_evidence(database, "run-live", "run-live/live.png", created_at=NOW - timedelta(days=100))
+
+    outcome = RetentionRunner(database, clock, data_root=tmp_path).run_once()
+
+    assert outcome is not None
+    assert kept.exists()
+    assert count(database, "evidence") == 1
+    assert count(database, "job_runs") == 1
+    assert outcome.runs_deleted == 0
+    assert outcome.evidence_files_deleted == 0
