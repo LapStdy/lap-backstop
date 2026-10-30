@@ -321,47 +321,57 @@ def test_run_events_and_phases_expire_after_30_days(
     assert count(database, "run_phases") == 1
 
 
+def seed_doomed_run(
+    connection: sqlite3.Connection, tmp_path: Path, run_id: str, *, at: datetime
+) -> None:
+    """造一条带齐外键子行的终态运行，供 90 天整棵删用例断言。"""
+    seed_run(connection, run_id, created_at=at)
+    connection.execute(
+        "INSERT INTO verdicts (id, run_id, status, confidence, reason, policy_id, created_at) "
+        "VALUES (?, ?, 'completed', 0.9, 'ok', 'p-1', ?)",
+        (f"verdict-{run_id}", run_id, format_at(at)),
+    )
+    connection.execute(
+        "UPDATE job_runs SET verdict_id = ? WHERE id = ?",
+        (f"verdict-{run_id}", run_id),
+    )
+    write_evidence(tmp_path, f"{run_id}/old.png")
+    seed_evidence(connection, run_id, f"{run_id}/old.png", created_at=at)
+    seed_run_event(connection, run_id)
+    seed_phase(connection, run_id)
+    connection.execute(
+        "INSERT INTO request_idempotency (key, scope, run_id, created_at) "
+        "VALUES (?, 'run_now', ?, ?)",
+        (f"idem-{run_id}", run_id, format_at(at)),
+    )
+    connection.execute(
+        "INSERT INTO notifications (id, run_id, channel, status, attempts) "
+        "VALUES (?, ?, 'ntfy', 'sent', 1)",
+        (f"n-{run_id}", run_id),
+    )
+    connection.execute(
+        "INSERT INTO resources (id, type, name, capacity) VALUES (?, 'environment', '模拟器', 1)",
+        (f"res-{run_id}",),
+    )
+    connection.execute(
+        "INSERT INTO resource_leases "
+        "(id, resource_id, run_id, owner, state, acquired_at, expires_at) "
+        "VALUES (?, ?, ?, 'core', 'released', ?, ?)",
+        (f"lease-{run_id}", f"res-{run_id}", run_id, format_at(at), format_at(at)),
+    )
+    # advisor_calls 也引用 job_runs：即使创建时间没到 90 天，也要随运行一起清掉。
+    connection.execute(
+        "INSERT INTO advisor_calls (id, run_id, purpose, model, created_at) "
+        "VALUES (?, ?, 'p', 'm', ?)",
+        (f"a-{run_id}", run_id, format_at(NOW)),
+    )
+
+
 def test_terminal_runs_older_than_90_days_are_deleted_without_fk_errors(
     database: sqlite3.Connection, tmp_path: Path
 ) -> None:
     clock = VirtualClock(local_moment(3, 30))
-    old = NOW - timedelta(days=120)
-    seed_run(database, "run-old", created_at=old)
-    database.execute(
-        "INSERT INTO verdicts (id, run_id, status, confidence, reason, policy_id, created_at) "
-        "VALUES ('v-1', 'run-old', 'completed', 0.9, 'ok', 'p-1', ?)",
-        (format_at(old),),
-    )
-    database.execute("UPDATE job_runs SET verdict_id = 'v-1' WHERE id = 'run-old'")
-    write_evidence(tmp_path, "run-old/old.png")
-    seed_evidence(database, "run-old", "run-old/old.png", created_at=old)
-    seed_run_event(database, "run-old")
-    seed_phase(database, "run-old")
-    database.execute(
-        "INSERT INTO request_idempotency (key, scope, run_id, created_at) "
-        "VALUES ('idem-old', 'run_now', 'run-old', ?)",
-        (format_at(old),),
-    )
-    database.execute(
-        "INSERT INTO notifications (id, run_id, channel, status, attempts) "
-        "VALUES ('n-1', 'run-old', 'ntfy', 'sent', 1)"
-    )
-    database.execute(
-        "INSERT INTO resources (id, type, name, capacity) "
-        "VALUES ('res-1', 'environment', '模拟器', 1)"
-    )
-    database.execute(
-        "INSERT INTO resource_leases "
-        "(id, resource_id, run_id, owner, state, acquired_at, expires_at) "
-        "VALUES ('lease-1', 'res-1', 'run-old', 'core', 'released', ?, ?)",
-        (format_at(old), format_at(old)),
-    )
-    # advisor_calls 也引用 job_runs：即使创建时间没到 90 天，也要随运行一起清掉。
-    database.execute(
-        "INSERT INTO advisor_calls (id, run_id, purpose, model, created_at) "
-        "VALUES ('a-1', 'run-old', 'p', 'm', ?)",
-        (format_at(NOW),),
-    )
+    seed_doomed_run(database, tmp_path, "run-old", at=NOW - timedelta(days=120))
 
     outcome = RetentionRunner(database, clock, data_root=tmp_path).run_once()
 
