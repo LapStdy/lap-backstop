@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -303,3 +304,46 @@ def test_watchdog_mutex_second_acquire_returns_none() -> None:
         assert watchdog._acquire_watchdog_mutex(watchdog.WATCHDOG_MUTEX_NAME) is None
     finally:
         watchdog._kernel32.CloseHandle(handle)
+
+
+def test_claim_falls_back_when_report_field_type_is_wrong(tmp_path: Path) -> None:
+    """报告里 failed_count 类型不符 → 按不可解析处理，claim 走兜底载荷。"""
+    state_path = tmp_path / "run" / watchdog.STATE_FILENAME
+    watchdog.write_state(
+        state_path,
+        {
+            "pending_start": None,
+            "failures": ["2026-10-25T07:50:00+00:00"],
+            "gave_up_pending_report": True,
+            "gave_up_report": cast(watchdog.GaveUpReport, {"failed_count": "3", "log_tail": []}),
+        },
+    )
+    payload = watchdog.claim_gave_up_report(state_path)
+    assert payload is not None
+    assert payload["failed_count"] == 1
+    assert payload["last_failure_at"] == "2026-10-25T07:50:00+00:00"
+    assert payload["heartbeat"] is None
+    assert payload["log_tail"] == []
+
+
+def test_heartbeat_corrupt_json_is_read_as_none(tmp_path: Path) -> None:
+    """心跳文件内容损坏 → 读成 None，不抛异常。"""
+    heartbeat = tmp_path / "run" / watchdog.HEARTBEAT_FILENAME
+    heartbeat.parent.mkdir(parents=True, exist_ok=True)
+    heartbeat.write_text("{not json", encoding="utf-8")
+    assert watchdog._read_json_object(heartbeat) is None
+
+
+def test_core_log_tail_unreadable_latest_returns_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """最新核心日志存在但读不到 → 日志尾部为空数组。"""
+    monkeypatch.setattr(watchdog, "_latest_core_log", lambda _logs_dir: tmp_path / "gone.jsonl")
+    assert watchdog._core_log_tail(tmp_path / "logs") == []
+
+
+def test_iso_seconds_normalizes_non_utc_and_microseconds() -> None:
+    """非 UTC 时区与微秒都归一为 UTC 秒级；None 原样通过。"""
+    moment = datetime(2026, 10, 25, 16, 0, 0, 250000, tzinfo=timezone(timedelta(hours=8)))
+    assert watchdog._iso_seconds(moment) == "2026-10-25T08:00:00+00:00"
+    assert watchdog._iso_seconds(None) is None

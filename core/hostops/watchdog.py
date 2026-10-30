@@ -162,9 +162,14 @@ def claim_gave_up_report(state_path: Path) -> dict[str, object] | None:
     """取走停手待上报载荷；有则清标记并返回事件 payload，无则 None。
 
     payload 是人读 detail（通知路径依赖它）加 failed_count、last_failure_at、
-    heartbeat、log_tail 四个证据字段。旧状态文件只有布尔标记、没有可解析
-    报告时走兜底：失败次数与最近失败时刻从已存 failures 推，心跳与日志
-    尾部为空。供核心 serve 启动时调用：看门狗零数据库访问，事件由核心补写。
+    heartbeat、log_tail 四个证据字段。报告里 failed_count 或 log_tail 缺失、
+    类型不符即按不可解析处理，claim 走兜底：失败次数与最近失败时刻从已存
+    failures 推，last_failure_at 与 heartbeat 缺失按 None 补，日志尾部为空。
+    供核心 serve 启动时调用：看门狗零数据库访问，事件由核心补写。
+
+    Raises:
+        OSError: 清标记后写回状态文件失败；磁盘上的标记未变，下次启动
+            仍会取到同一报告，由调用方决定退出还是重试。
     """
     state = read_state(state_path)
     if not state.get("gave_up_pending_report"):
@@ -251,14 +256,11 @@ def _act_on_death(
 ) -> str:
     """死了之后做什么：误报豁免、停手或请求拉起；就地更新 state 并返回动作名。"""
     run_dir = data_root / "run"
-    recorded = [moment.isoformat() for moment in failures]
-    state["failures"] = recorded
+    state["failures"] = [moment.isoformat() for moment in failures]
     if _core_actually_running(run_dir, alive=inputs.pid_alive):
         return ACTION_NONE
     if len(failures) >= inputs.policy.give_up_max_failures:
-        state["gave_up_pending_report"] = True
-        state["gave_up_report"] = _collect_gave_up_report(data_root, failures)
-        return ACTION_GAVE_UP
+        return _handle_give_up(data_root, state, failures)
     try:
         completed = inputs.runner(
             ["schtasks", "/run", "/tn", CORE_TASK_NAME],
@@ -272,6 +274,13 @@ def _act_on_death(
         return ACTION_NONE
     state["pending_start"] = inputs.now.isoformat()
     return ACTION_START_REQUESTED
+
+
+def _handle_give_up(data_root: Path, state: WatchdogState, failures: list[datetime]) -> str:
+    """停手分支：取证载荷就地写进 state，待核心下次启动取走补写（docs/08 停手一节）。"""
+    state["gave_up_pending_report"] = True
+    state["gave_up_report"] = _collect_gave_up_report(data_root, failures)
+    return ACTION_GAVE_UP
 
 
 def _core_actually_running(run_dir: Path, *, alive: Callable[[int], bool]) -> bool:
@@ -323,6 +332,22 @@ def _parse_iso(value: str | None) -> datetime | None:
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
+def _build_report(
+    *,
+    failed_count: int,
+    last_failure_at: str | None,
+    heartbeat: dict[str, Any] | None,
+    log_tail: list[str],
+) -> GaveUpReport:
+    """停手报告的唯一构造点：键名只在此枚举一次，取证、解析与兜底都经它落形。"""
+    return {
+        "failed_count": failed_count,
+        "last_failure_at": last_failure_at,
+        "heartbeat": heartbeat,
+        "log_tail": log_tail,
+    }
+
+
 def _collect_gave_up_report(data_root: Path, failures: list[datetime]) -> GaveUpReport:
     """停手当时取证：窗口失败次数、最近失败时刻、最后心跳与核心日志尾部。
 
@@ -330,16 +355,19 @@ def _collect_gave_up_report(data_root: Path, failures: list[datetime]) -> GaveUp
     证据必须在停手当时落盘，不能等核心下次启动再补采。
     """
     last = failures[-1] if failures else None
-    return {
-        "failed_count": len(failures),
-        "last_failure_at": _iso_seconds(last),
-        "heartbeat": _read_heartbeat_snapshot(data_root / "run" / HEARTBEAT_FILENAME),
-        "log_tail": _core_log_tail(data_root / "logs"),
-    }
+    return _build_report(
+        failed_count=len(failures),
+        last_failure_at=_iso_seconds(last),
+        heartbeat=_read_json_object(data_root / "run" / HEARTBEAT_FILENAME),
+        log_tail=_core_log_tail(data_root / "logs"),
+    )
 
 
 def _parse_gave_up_report(value: object) -> GaveUpReport | None:
-    """校验停手报告形态；四字段不全或类型不符按不可解析处理，claim 走兜底。"""
+    """校验停手报告形态；failed_count 或 log_tail 缺失、类型不符按不可解析处理。
+
+    last_failure_at 与 heartbeat 不要求存在：缺失按 None 补，类型不符才拒收。
+    """
     if not isinstance(value, dict):
         return None
     failed_count = value.get("failed_count")
@@ -354,24 +382,24 @@ def _parse_gave_up_report(value: object) -> GaveUpReport | None:
         return None
     if not isinstance(log_tail, list) or not all(isinstance(item, str) for item in log_tail):
         return None
-    return {
-        "failed_count": failed_count,
-        "last_failure_at": last_failure_at,
-        "heartbeat": heartbeat,
-        "log_tail": list(log_tail),
-    }
+    return _build_report(
+        failed_count=failed_count,
+        last_failure_at=last_failure_at,
+        heartbeat=heartbeat,
+        log_tail=list(log_tail),
+    )
 
 
 def _fallback_gave_up_report(state: WatchdogState) -> GaveUpReport:
     """兜底载荷：旧状态文件只有布尔标记时，从已存失败记录推证据字段。"""
     failures = state.get("failures", [])
     last = _parse_iso(failures[-1]) if failures else None
-    return {
-        "failed_count": len(failures),
-        "last_failure_at": _iso_seconds(last),
-        "heartbeat": None,
-        "log_tail": [],
-    }
+    return _build_report(
+        failed_count=len(failures),
+        last_failure_at=_iso_seconds(last),
+        heartbeat=None,
+        log_tail=[],
+    )
 
 
 def _gave_up_event_payload(report: GaveUpReport) -> dict[str, object]:
@@ -383,10 +411,12 @@ def _gave_up_event_payload(report: GaveUpReport) -> dict[str, object]:
     )
     return {
         "detail": detail,
-        "failed_count": report["failed_count"],
-        "last_failure_at": last,
-        "heartbeat": report["heartbeat"],
-        "log_tail": list(report["log_tail"]),
+        **_build_report(
+            failed_count=report["failed_count"],
+            last_failure_at=last,
+            heartbeat=report["heartbeat"],
+            log_tail=list(report["log_tail"]),
+        ),
     }
 
 
@@ -399,8 +429,8 @@ def _iso_seconds(moment: datetime | None) -> str | None:
     return moment.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def _read_heartbeat_snapshot(path: Path) -> dict[str, Any] | None:
-    """读停手当时的心跳对象原样；读不到或不是 JSON 对象按无心跳处理。"""
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    """读文件里的 JSON 对象；缺失、损坏或顶层不是对象返回 None。"""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -459,11 +489,7 @@ def _read_tail_lines(path: Path) -> list[str]:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    return _read_json_object(path) or {}
 
 
 def _mtime_age_seconds(path: Path, *, now: datetime) -> float | None:
