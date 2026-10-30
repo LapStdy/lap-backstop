@@ -47,18 +47,18 @@ def main(argv: list[str] | None = None) -> int:
     arguments = _build_parser().parse_args(tokens)
     if arguments.command == "serve":
         from core.hostops.serve import ServeOptions, install_stop_handlers, run_serve
-        from core.logging import JsonLineLogger
+        from core.logging import DailyRotatingJsonLineLogger
 
         data_root = Path(arguments.data_root)
         options = ServeOptions(
-            log=JsonLineLogger(data_root / "logs" / "core.jsonl"),
+            log=DailyRotatingJsonLineLogger(data_root / "logs"),
             stop=install_stop_handlers(),
             register_tasks=not arguments.no_register_tasks,
         )
         code = run_serve(data_root, options)
         if code != EXIT_OK:
             print(
-                f"serve 退出码 {code}，运行日志见 {data_root / 'logs' / 'core.jsonl'}",
+                f"serve 退出码 {code}，运行日志见 {data_root / 'logs'} 目录",
                 file=sys.stderr,
             )
         return code
