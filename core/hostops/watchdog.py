@@ -5,8 +5,9 @@ r"""独立看门狗：判死、豁免误报、经计划任务拉起、跨次验�
 用标准库，锁文件解析与进程核对在此独立实现，不与 core.hostops 其余模块共享。
 
 跨次状态存 ``data\run\watchdog.state.json``：拉起后记 pending_start，下次检查
-核对是否出现过新心跳；30 分钟滑动窗口内 3 次验收失败即停手并留下待上报标记，
-由核心下次启动补写 ``host.watchdog_gave_up``（看门狗自身零数据库访问）。
+核对是否出现过新心跳；30 分钟滑动窗口内 3 次验收失败即停手，停手证据（窗口
+失败次数、最近失败时刻、当时心跳与核心日志尾部）随标记一并落盘，由核心下次
+启动取走并补写 ``host.watchdog_gave_up``（看门狗自身零数据库访问）。
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import re
 import subprocess
 from collections.abc import Callable
 from ctypes import wintypes
@@ -32,11 +34,16 @@ CORE_TASK_NAME = "lap-backstop-core"
 ACTION_NONE = "none"
 ACTION_START_REQUESTED = "start_requested"
 ACTION_GAVE_UP = "gave_up"
-# 停手补报事件名；看门狗只留标记，由核心启动时以 core.event 补写（docs/08）。
+# 停手补报事件名；看门狗只落状态文件，停手载荷由核心启动取走补写（docs/08）。
 WATCHDOG_GAVE_UP_EVENT = "host.watchdog_gave_up"
 
 # 单次检查 3 秒内必须结束（docs/08 自约束）：给 schtasks 留的窗口比它更小。
 _SCHEDULING_TIMEOUT_SECONDS = 2.0
+# 核心日志文件名（docs/08 磁盘与日志：core-YYYY-MM-DD[.N].jsonl，按日与续号取最新）。
+_CORE_LOG_NAME = re.compile(r"^core-(?P<day>\d{4}-\d{2}-\d{2})(?:\.(?P<index>\d+))?\.jsonl$")
+_LOG_TAIL_LINES = 50
+# 核心日志单文件最大 200 MB：全量读会撞上 3 秒自约束，只从文件尾取一个字节窗口再裁行数。
+_LOG_TAIL_WINDOW_BYTES = 262_144
 ERROR_ALREADY_EXISTS = 183
 STILL_ACTIVE = 259
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -85,12 +92,22 @@ class CheckInputs:
     pid_alive: Callable[[int], bool]
 
 
+class GaveUpReport(TypedDict):
+    """停手当时的取证载荷：窗口失败数、最近失败时刻、心跳内容与核心日志尾部。"""
+
+    failed_count: int
+    last_failure_at: str | None
+    heartbeat: dict[str, Any] | None
+    log_tail: list[str]
+
+
 class WatchdogState(TypedDict, total=False):
-    """状态文件 schema：拉起待验收时刻、验收失败时刻列表、停手待上报标记。"""
+    """状态文件 schema：拉起待验收时刻、验收失败时刻列表、停手待上报标记与停手报告。"""
 
     pending_start: str | None
     failures: list[str]
     gave_up_pending_report: bool
+    gave_up_report: GaveUpReport | None
 
 
 def run_check(data_root: Path, *, inputs: CheckInputs) -> int:
@@ -123,6 +140,7 @@ def read_state(path: Path) -> WatchdogState:
             else []
         ),
         "gave_up_pending_report": bool(data.get("gave_up_pending_report")),
+        "gave_up_report": _parse_gave_up_report(data.get("gave_up_report")),
     }
 
 
@@ -140,19 +158,29 @@ def write_state(path: Path, state: WatchdogState) -> None:
     os.replace(temporary, path)
 
 
-def claim_gave_up_report(state_path: Path) -> str | None:
-    """取走停手待上报标记；有则清标记并返回事件 detail，无则 None。
+def claim_gave_up_report(state_path: Path) -> dict[str, object] | None:
+    """取走停手待上报载荷；有则清标记并返回事件 payload，无则 None。
 
+    payload 是人读 detail（通知路径依赖它）加 failed_count、last_failure_at、
+    heartbeat、log_tail 四个证据字段。报告里 failed_count 或 log_tail 缺失、
+    类型不符即按不可解析处理，claim 走兜底：失败次数与最近失败时刻从已存
+    failures 推，last_failure_at 与 heartbeat 缺失按 None 补，日志尾部为空。
     供核心 serve 启动时调用：看门狗零数据库访问，事件由核心补写。
+
+    Raises:
+        OSError: 清标记后写回状态文件失败；磁盘上的标记未变，下次启动
+            仍会取到同一报告，由调用方决定退出还是重试。
     """
     state = read_state(state_path)
     if not state.get("gave_up_pending_report"):
         return None
-    failures = state.get("failures", [])
-    tail = failures[-1] if failures else "未知时刻"
+    report = state.get("gave_up_report")
+    if report is None:
+        report = _fallback_gave_up_report(state)
     state["gave_up_pending_report"] = False
+    state["gave_up_report"] = None
     write_state(state_path, state)
-    return f"看门狗已停止拉起：窗口内 {len(failures)} 次验收失败，最近一次 {tail}"
+    return _gave_up_event_payload(report)
 
 
 def is_pid_alive(pid: int) -> bool:
@@ -180,7 +208,7 @@ def _execute_check(data_root: Path, inputs: CheckInputs) -> None:
     dead, age, core_pid = _judge_death(run_dir, inputs)
     _settle_acceptance(state, failures, age, inputs)
     if dead:
-        action = _act_on_death(run_dir, state, failures, inputs)
+        action = _act_on_death(data_root, state, failures, inputs)
     else:
         state["failures"] = [moment.isoformat() for moment in failures]
         action = ACTION_NONE
@@ -221,19 +249,18 @@ def _settle_acceptance(
 
 
 def _act_on_death(
-    run_dir: Path,
+    data_root: Path,
     state: WatchdogState,
     failures: list[datetime],
     inputs: CheckInputs,
 ) -> str:
     """死了之后做什么：误报豁免、停手或请求拉起；就地更新 state 并返回动作名。"""
-    recorded = [moment.isoformat() for moment in failures]
-    state["failures"] = recorded
+    run_dir = data_root / "run"
+    state["failures"] = [moment.isoformat() for moment in failures]
     if _core_actually_running(run_dir, alive=inputs.pid_alive):
         return ACTION_NONE
     if len(failures) >= inputs.policy.give_up_max_failures:
-        state["gave_up_pending_report"] = True
-        return ACTION_GAVE_UP
+        return _handle_give_up(data_root, state, failures)
     try:
         completed = inputs.runner(
             ["schtasks", "/run", "/tn", CORE_TASK_NAME],
@@ -247,6 +274,13 @@ def _act_on_death(
         return ACTION_NONE
     state["pending_start"] = inputs.now.isoformat()
     return ACTION_START_REQUESTED
+
+
+def _handle_give_up(data_root: Path, state: WatchdogState, failures: list[datetime]) -> str:
+    """停手分支：取证载荷就地写进 state，待核心下次启动取走补写（docs/08 停手一节）。"""
+    state["gave_up_pending_report"] = True
+    state["gave_up_report"] = _collect_gave_up_report(data_root, failures)
+    return ACTION_GAVE_UP
 
 
 def _core_actually_running(run_dir: Path, *, alive: Callable[[int], bool]) -> bool:
@@ -298,12 +332,164 @@ def _parse_iso(value: str | None) -> datetime | None:
     return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def _build_report(
+    *,
+    failed_count: int,
+    last_failure_at: str | None,
+    heartbeat: dict[str, Any] | None,
+    log_tail: list[str],
+) -> GaveUpReport:
+    """停手报告的唯一构造点：键名只在此枚举一次，取证、解析与兜底都经它落形。"""
+    return {
+        "failed_count": failed_count,
+        "last_failure_at": last_failure_at,
+        "heartbeat": heartbeat,
+        "log_tail": log_tail,
+    }
+
+
+def _collect_gave_up_report(data_root: Path, failures: list[datetime]) -> GaveUpReport:
+    """停手当时取证：窗口失败次数、最近失败时刻、最后心跳与核心日志尾部。
+
+    心跳与日志是核心死亡现场的全部线索，停手后核心可能长期起不来，
+    证据必须在停手当时落盘，不能等核心下次启动再补采。
+    """
+    last = failures[-1] if failures else None
+    return _build_report(
+        failed_count=len(failures),
+        last_failure_at=_iso_seconds(last),
+        heartbeat=_read_json_object(data_root / "run" / HEARTBEAT_FILENAME),
+        log_tail=_core_log_tail(data_root / "logs"),
+    )
+
+
+def _parse_gave_up_report(value: object) -> GaveUpReport | None:
+    """校验停手报告形态；failed_count 或 log_tail 缺失、类型不符按不可解析处理。
+
+    last_failure_at 与 heartbeat 不要求存在：缺失按 None 补，类型不符才拒收。
+    """
+    if not isinstance(value, dict):
+        return None
+    failed_count = value.get("failed_count")
+    last_failure_at = value.get("last_failure_at")
+    heartbeat = value.get("heartbeat")
+    log_tail = value.get("log_tail")
+    if not isinstance(failed_count, int) or isinstance(failed_count, bool):
+        return None
+    if last_failure_at is not None and not isinstance(last_failure_at, str):
+        return None
+    if heartbeat is not None and not isinstance(heartbeat, dict):
+        return None
+    if not isinstance(log_tail, list) or not all(isinstance(item, str) for item in log_tail):
+        return None
+    return _build_report(
+        failed_count=failed_count,
+        last_failure_at=last_failure_at,
+        heartbeat=heartbeat,
+        log_tail=list(log_tail),
+    )
+
+
+def _fallback_gave_up_report(state: WatchdogState) -> GaveUpReport:
+    """兜底载荷：旧状态文件只有布尔标记时，从已存失败记录推证据字段。"""
+    failures = state.get("failures", [])
+    last = _parse_iso(failures[-1]) if failures else None
+    return _build_report(
+        failed_count=len(failures),
+        last_failure_at=_iso_seconds(last),
+        heartbeat=None,
+        log_tail=[],
+    )
+
+
+def _gave_up_event_payload(report: GaveUpReport) -> dict[str, object]:
+    """停手事件 payload：人读 detail 加四个证据字段（docs/08 停手一节）。"""
+    last = report["last_failure_at"]
+    detail = (
+        f"看门狗已停止拉起：窗口内 {report['failed_count']} 次验收失败，"
+        f"最近一次 {last if last is not None else '未知时刻'}"
+    )
+    return {
+        "detail": detail,
+        **_build_report(
+            failed_count=report["failed_count"],
+            last_failure_at=last,
+            heartbeat=report["heartbeat"],
+            log_tail=list(report["log_tail"]),
+        ),
+    }
+
+
+def _iso_seconds(moment: datetime | None) -> str | None:
+    """格式化为秒级 UTC ISO8601；None 原样通过。"""
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=UTC)
+    return moment.astimezone(UTC).isoformat(timespec="seconds")
+
+
+def _read_json_object(path: Path) -> dict[str, Any] | None:
+    """读文件里的 JSON 对象；缺失、损坏或顶层不是对象返回 None。"""
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _core_log_tail(logs_dir: Path) -> list[str]:
+    """最新核心日志文件的尾部非空行（最多 50 行）；无日志或不可读返回空。"""
+    latest = _latest_core_log(logs_dir)
+    if latest is None:
+        return []
+    return _read_tail_lines(latest)
+
+
+def _latest_core_log(logs_dir: Path) -> Path | None:
+    """按名字里的日期与续号挑最新的 core-YYYY-MM-DD[.N].jsonl。"""
+    try:
+        entries = list(logs_dir.iterdir())
+    except OSError:
+        return None
+    latest: tuple[tuple[str, int], Path] | None = None
+    for path in entries:
+        parsed = _parse_core_log_name(path.name)
+        if parsed is None or not path.is_file():
+            continue
+        if latest is None or parsed > latest[0]:
+            latest = (parsed, path)
+    return None if latest is None else latest[1]
+
+
+def _parse_core_log_name(name: str) -> tuple[str, int] | None:
+    """解析核心日志文件名；返回日期串与续号（无续号按 1）。"""
+    match = _CORE_LOG_NAME.fullmatch(name)
+    if match is None:
+        return None
+    index = match.group("index")
+    return match.group("day"), 1 if index is None else int(index)
+
+
+def _read_tail_lines(path: Path) -> list[str]:
+    """读文件尾部的字节窗口，返回最后 50 条非空行（跳过空行）。"""
+    try:
+        with path.open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            start = max(0, size - _LOG_TAIL_WINDOW_BYTES)
+            stream.seek(start)
+            data = stream.read()
+    except OSError:
+        return []
+    lines = data.decode("utf-8", errors="replace").split("\n")
+    if start > 0 and lines:
+        # 窗口起点可能落在行中间，第一行是半截，弃掉。
+        lines = lines[1:]
+    return [line for line in lines if line.strip()][-_LOG_TAIL_LINES:]
+
+
+def _read_json(path: Path) -> dict[str, Any]:
+    return _read_json_object(path) or {}
 
 
 def _mtime_age_seconds(path: Path, *, now: datetime) -> float | None:
@@ -386,6 +572,7 @@ __all__ = [
     "WATCHDOG_MUTEX_NAME",
     "CheckInputs",
     "CheckPolicy",
+    "GaveUpReport",
     "WatchdogState",
     "claim_gave_up_report",
     "is_pid_alive",

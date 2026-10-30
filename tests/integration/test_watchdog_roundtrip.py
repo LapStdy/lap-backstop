@@ -109,6 +109,7 @@ def test_three_window_failures_lead_to_give_up_without_external_start(tmp_path: 
     data_root = tmp_path / "data"
     now = datetime.now(UTC)
     failures = [(now - timedelta(minutes=m)).isoformat() for m in (3, 2, 1)]
+    # 状态文件按旧版三键 schema 写入：新版看门狗仍须照常停手（向后兼容）
     write_files(
         data_root / "run",
         heartbeat_pid=DEAD_PID,
@@ -122,6 +123,14 @@ def test_three_window_failures_lead_to_give_up_without_external_start(tmp_path: 
     assert last_log_entry(data_root)["action"] == "gave_up"
     state = json.loads((data_root / "run" / "watchdog.state.json").read_text(encoding="utf-8"))
     assert state["gave_up_pending_report"] is True
+    report = state["gave_up_report"]
+    assert report["failed_count"] == 3
+    assert report["last_failure_at"] == datetime.fromisoformat(failures[-1]).isoformat(
+        timespec="seconds"
+    )
+    assert report["heartbeat"] is not None
+    assert report["heartbeat"]["pid"] == DEAD_PID
+    assert report["log_tail"] == []
 
 
 def test_second_watchdog_instance_exits_zero_without_checking(tmp_path: Path) -> None:
