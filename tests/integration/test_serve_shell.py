@@ -10,6 +10,7 @@ import sys
 import time
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from core.clock import VirtualClock
 from core.hostops import instance, tasks, watchdog
@@ -60,6 +61,16 @@ def global_event_rows(database: Path) -> list[tuple[str, str]]:
     finally:
         reader.close()
     return [(str(row[0]), str(json.loads(str(row[1])).get("event"))) for row in rows]
+
+
+def global_event_payloads(database: Path) -> list[dict[str, Any]]:
+    """读全局事件表里每行的事件 payload，按写入顺序。"""
+    reader = sqlite3.connect(database)
+    try:
+        rows = reader.execute("SELECT payload FROM events_global ORDER BY seq").fetchall()
+    finally:
+        reader.close()
+    return [dict(json.loads(str(row[0]))) for row in rows]
 
 
 def wait_for_file(path: Path, timeout: float = WAIT_SECONDS) -> None:
@@ -149,6 +160,7 @@ def test_run_serve_bounded_ticks_write_heartbeat_and_cleanup(tmp_path: Path) -> 
 
 def test_run_serve_reports_watchdog_gave_up_marker(tmp_path: Path) -> None:
     state_path = tmp_path / "run" / watchdog.STATE_FILENAME
+    # 旧版状态文件：只有布尔标记，claim 走兜底载荷
     watchdog.write_state(
         state_path,
         {
@@ -167,6 +179,16 @@ def test_run_serve_reports_watchdog_gave_up_marker(tmp_path: Path) -> None:
     assert run_serve(tmp_path, options) == 0
     assert WATCHDOG_GAVE_UP_EVENT in global_events(tmp_path / "backstop.sqlite")
     assert ("host.event", WATCHDOG_GAVE_UP_EVENT) in global_event_rows(tmp_path / "backstop.sqlite")
+    payload = next(
+        payload
+        for payload in global_event_payloads(tmp_path / "backstop.sqlite")
+        if payload.get("event") == WATCHDOG_GAVE_UP_EVENT
+    )
+    assert "1 次验收失败" in payload["detail"]
+    assert payload["failed_count"] == 1
+    assert payload["last_failure_at"] == "2026-10-25T07:50:00+00:00"
+    assert payload["heartbeat"] is None
+    assert payload["log_tail"] == []
     # 补报是取走式：标记清零，不会重复上报
     assert watchdog.read_state(state_path)["gave_up_pending_report"] is False
 

@@ -249,13 +249,14 @@ def _host_setup_events(
     """宿主启动动作的结果事件：看门狗停手补报、自动登录自检、任务注册。
 
     三件事都尽力而为，结果进事件 detail；单项失败不阻断核心启动
-    （docs/08 自动登录自检与计划任务两节）。自动登录自检额外带 ok，
+    （docs/08 自动登录自检与计划任务两节）。看门狗停手事件另带失败次数、
+    最近失败时刻、心跳内容与日志尾部四个证据字段。自动登录自检额外带 ok，
     供通知分支判断是否需要告警。
     """
     events: list[tuple[str, Mapping[str, object]]] = []
     gave_up = watchdog.claim_gave_up_report(data_root / "run" / watchdog.STATE_FILENAME)
     if gave_up is not None:
-        events.append((WATCHDOG_GAVE_UP_EVENT, {"detail": gave_up}))
+        events.append((WATCHDOG_GAVE_UP_EVENT, gave_up))
     logon = options.registry_get(WINLOGON_KEY, "AutoAdminLogon")
     user = options.registry_get(WINLOGON_KEY, "DefaultUserName")
     healthy = logon == "1" and bool(user)

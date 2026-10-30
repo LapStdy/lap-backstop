@@ -145,11 +145,122 @@ def test_acceptance_failures_accumulate_then_give_up(tmp_path: Path) -> None:
     assert state["gave_up_pending_report"] is True
     assert len(state["failures"]) == 3
     assert last_log_entry(tmp_path)["action"] == watchdog.ACTION_GAVE_UP
-    detail = watchdog.claim_gave_up_report(run_dir / watchdog.STATE_FILENAME)
-    assert detail is not None
+    payload = watchdog.claim_gave_up_report(run_dir / watchdog.STATE_FILENAME)
+    assert payload is not None
+    detail = payload["detail"]
+    assert isinstance(detail, str)
     assert "3 次验收失败" in detail
     # 补报是取走式：第二次没有可报的
     assert watchdog.claim_gave_up_report(run_dir / watchdog.STATE_FILENAME) is None
+
+
+def test_give_up_report_captures_heartbeat_and_log_tail(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    write_heartbeat(run_dir, pid=101, age_seconds=600)
+    lines = ["" if i % 2 == 0 else f'{{"event": "tick-{i}"}}' for i in range(120)]
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    # 核心日志按二进制追加写、行尾只有 \n（core.logging）；测试同构，不经文本模式翻译
+    (logs_dir / "core-2026-10-25.jsonl").write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    watchdog.write_state(
+        run_dir / watchdog.STATE_FILENAME,
+        {"failures": [(BASE - timedelta(minutes=m)).isoformat() for m in (3, 2, 1)]},
+    )
+    check(tmp_path, now=BASE, pid_alive=False)
+    state = state_of(tmp_path)
+    assert state["gave_up_pending_report"] is True
+    report = state["gave_up_report"]
+    assert report is not None
+    assert report["failed_count"] == 3
+    assert report["last_failure_at"] == (BASE - timedelta(minutes=1)).isoformat(timespec="seconds")
+    assert report["heartbeat"] is not None
+    assert report["heartbeat"]["pid"] == 101
+    # 只取最后 50 行非空文本，跳过空行
+    expected_tail = [f'{{"event": "tick-{i}"}}' for i in range(120) if i % 2 == 1][-50:]
+    assert report["log_tail"] == expected_tail
+
+
+def test_give_up_report_without_heartbeat_or_logs_is_empty_evidence(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir(parents=True)
+    watchdog.write_state(
+        run_dir / watchdog.STATE_FILENAME,
+        {"failures": [(BASE - timedelta(minutes=m)).isoformat() for m in (3, 2, 1)]},
+    )
+    check(tmp_path, now=BASE, pid_alive=False)
+    report = state_of(tmp_path)["gave_up_report"]
+    assert report is not None
+    assert report["heartbeat"] is None
+    assert report["log_tail"] == []
+
+
+def test_claim_with_legacy_marker_returns_fallback_payload(tmp_path: Path) -> None:
+    state_path = tmp_path / "run" / watchdog.STATE_FILENAME
+    # 旧版状态文件：只有布尔标记，没有可解析报告
+    watchdog.write_state(
+        state_path,
+        {
+            "pending_start": None,
+            "failures": [(BASE - timedelta(minutes=m)).isoformat() for m in (5, 3, 1)],
+            "gave_up_pending_report": True,
+        },
+    )
+    payload = watchdog.claim_gave_up_report(state_path)
+    assert payload is not None
+    detail = payload["detail"]
+    assert isinstance(detail, str)
+    assert "3 次验收失败" in detail
+    assert payload["failed_count"] == 3
+    assert payload["last_failure_at"] == (BASE - timedelta(minutes=1)).isoformat(timespec="seconds")
+    assert payload["heartbeat"] is None
+    assert payload["log_tail"] == []
+    state = watchdog.read_state(state_path)
+    assert state["gave_up_pending_report"] is False
+    assert state["gave_up_report"] is None
+    # 取走即清：二次调用返回 None
+    assert watchdog.claim_gave_up_report(state_path) is None
+
+
+def test_claim_takes_stored_report_and_clears_marker(tmp_path: Path) -> None:
+    state_path = tmp_path / "run" / watchdog.STATE_FILENAME
+    watchdog.write_state(
+        state_path,
+        {
+            "pending_start": None,
+            "failures": [],
+            "gave_up_pending_report": True,
+            "gave_up_report": {
+                "failed_count": 3,
+                "last_failure_at": "2026-10-25T07:59:00+00:00",
+                "heartbeat": {"pid": 101},
+                "log_tail": ["a"],
+            },
+        },
+    )
+    payload = watchdog.claim_gave_up_report(state_path)
+    assert payload == {
+        "detail": "看门狗已停止拉起：窗口内 3 次验收失败，最近一次 2026-10-25T07:59:00+00:00",
+        "failed_count": 3,
+        "last_failure_at": "2026-10-25T07:59:00+00:00",
+        "heartbeat": {"pid": 101},
+        "log_tail": ["a"],
+    }
+    assert watchdog.claim_gave_up_report(state_path) is None
+
+
+def test_log_tail_picks_latest_core_log_by_day_and_rotation(tmp_path: Path) -> None:
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "core-2026-10-24.jsonl").write_bytes(b"old-1\nold-2\n")
+    (logs_dir / "core-2026-10-25.jsonl").write_bytes(b"base-1\nbase-2\n")
+    (logs_dir / "core-2026-10-25.2.jsonl").write_bytes(b"rotated\n")
+    (logs_dir / "watchdog.jsonl").write_bytes(b"noise\n")
+    (logs_dir / "core-2026-10-25.jsonl.gz").write_bytes(b"compressed\n")
+    assert watchdog._core_log_tail(logs_dir) == ["rotated"]
+
+
+def test_log_tail_without_logs_dir_returns_empty(tmp_path: Path) -> None:
+    assert watchdog._core_log_tail(tmp_path / "logs") == []
 
 
 def test_failures_outside_window_are_dropped_and_watchdog_resumes(tmp_path: Path) -> None:
