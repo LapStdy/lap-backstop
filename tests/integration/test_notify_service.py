@@ -210,6 +210,40 @@ def test_exhausted_delivery_records_notify_failed(
     assert run_event_payloads(connection, EventType.NOTIFY_SENT) == []
 
 
+def test_channel_exception_records_notify_failed(
+    connection: sqlite3.Connection,
+    stub: Any,
+    service_factory: Callable[..., Any],
+) -> None:
+    """渠道违背契约抛异常时按失败尝试记账：命中上限落 notify.failed，投递线程继续可用。"""
+    run_id = create_run(connection, "notify:raise")
+    calls: list[str] = []
+
+    def broken(_ctx: Any, _message: Any) -> Any:
+        calls.append("send")
+        raise RuntimeError("渠道实现缺陷")
+
+    stub.send = broken
+    waits: list[float] = []
+    service = service_factory(waits=waits)
+    append_run_event(
+        connection,
+        run_id,
+        EventType.RUN_FINISHED,
+        {"run_id": run_id, "status": "failed", "duration_ms": 1000},
+    )
+    service.poll()
+    assert wait_until(lambda: len(calls) == 3 and len(waits) == 2)
+    assert record_outcomes_within(
+        service, lambda: len(run_event_payloads(connection, EventType.NOTIFY_FAILED)) == 1
+    )
+    payload = run_event_payloads(connection, EventType.NOTIFY_FAILED)[0]
+    assert payload["run_id"] == run_id
+    assert payload["attempts"] == 3
+    assert "渠道异常" in payload["error"]
+    assert "渠道实现缺陷" in payload["error"]
+
+
 def test_watchdog_gave_up_notifies_without_run(
     connection: sqlite3.Connection,
     stub: Any,

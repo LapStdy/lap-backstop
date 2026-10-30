@@ -150,6 +150,69 @@ def test_missing_channel_reports_unavailable_without_calling() -> None:
     assert calls == []
 
 
+def test_channel_exception_counts_as_failed_attempt_and_retries() -> None:
+    calls: list[Notification] = []
+    waits: list[float] = []
+
+    def send(message: Notification) -> DeliveryResult:
+        calls.append(message)
+        raise RuntimeError("boom")
+
+    outcome = deliver_one(ITEM, snapshot=_snapshot(send), wait=waits.append, stop=threading.Event())
+    assert not outcome.ok
+    assert outcome.attempts == 3
+    assert outcome.error == "渠道异常（RuntimeError）：boom"
+    assert waits == [5.0, 30.0]
+
+
+def test_worker_survives_channel_exception_and_keeps_delivering() -> None:
+    stop = threading.Event()
+    calls: list[Notification] = []
+
+    def send(message: Notification) -> DeliveryResult:
+        calls.append(message)
+        if len(calls) == 1:
+            raise RuntimeError("boom")
+        return DeliveryResult(ok=True)
+
+    worker = DeliveryWorker(
+        lambda: _snapshot(send, attempts=1, backoff=()), stop=stop, wait=lambda seconds: None
+    )
+    worker.start()
+    try:
+        worker.submit(ITEM)
+        worker.submit(PendingDelivery("n-2", NOTIFICATION, None, "serverchan"))
+        outcomes: list[Any] = []
+        deadline = time.monotonic() + 5.0
+        while len(outcomes) < 2 and time.monotonic() < deadline:
+            outcomes.extend(worker.drain_outcomes())
+            if len(outcomes) < 2:
+                time.sleep(0.01)
+    finally:
+        worker.close(join_timeout=5.0)
+    assert [outcome.notification_id for outcome in outcomes] == ["n-1", "n-2"]
+    assert not outcomes[0].ok
+    assert outcomes[0].error == "渠道异常（RuntimeError）：boom"
+    assert outcomes[1].ok
+
+
+def test_worker_reports_snapshot_failure_as_failed_outcome() -> None:
+    def provider() -> ChannelSnapshot:
+        raise RuntimeError("config broken")
+
+    stop = threading.Event()
+    worker = DeliveryWorker(provider, stop=stop, wait=lambda seconds: None)
+    worker.start()
+    try:
+        worker.submit(ITEM)
+        outcomes = _drain_within(worker, timeout_seconds=5.0)
+    finally:
+        worker.close(join_timeout=5.0)
+    assert len(outcomes) == 1
+    assert not outcomes[0].ok
+    assert outcomes[0].error == "投递异常（RuntimeError）：config broken"
+
+
 def test_worker_delivers_and_reports_outcome() -> None:
     stop = threading.Event()
     calls: list[Notification] = []

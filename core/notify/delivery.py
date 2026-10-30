@@ -101,10 +101,16 @@ def deliver_one(
         if stop.is_set():
             break
         tried = attempt
-        result = send(item.notification)
-        if result.ok:
-            return DeliveryOutcome(notification_id, item.run_id, item.channel, True, "", attempt)
-        last_error = _error_of(result)
+        try:
+            result = send(item.notification)
+        except Exception as error:  # 渠道实现在外部，抛异常属于实现缺陷，不能让线程倒下
+            last_error = f"渠道异常（{type(error).__name__}）：{error}"
+        else:
+            if result.ok:
+                return DeliveryOutcome(
+                    notification_id, item.run_id, item.channel, True, "", attempt
+                )
+            last_error = _error_of(result)
         if attempt == snapshot.attempts or stop.is_set():
             break
         wait(snapshot.backoff_seconds[min(attempt - 1, len(snapshot.backoff_seconds) - 1)])
@@ -202,9 +208,19 @@ class DeliveryWorker:
             with self._lock:
                 self._current = item
             try:
-                outcome = deliver_one(
-                    item, snapshot=self._provider(), wait=self._wait, stop=self._stop
-                )
+                try:
+                    outcome = deliver_one(
+                        item, snapshot=self._provider(), wait=self._wait, stop=self._stop
+                    )
+                except Exception as error:  # 兜底：任何意外都要落终态，线程继续服务后面的通知
+                    outcome = DeliveryOutcome(
+                        item.notification_id,
+                        item.run_id,
+                        item.channel,
+                        False,
+                        f"投递异常（{type(error).__name__}）：{error}",
+                        0,
+                    )
                 self._outcomes.put(outcome)
             finally:
                 with self._lock:

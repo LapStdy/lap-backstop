@@ -12,8 +12,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from core.clock import VirtualClock
-from core.hostops import instance, tasks, watchdog
+from core.hostops import instance, serve, tasks, watchdog
 from core.hostops.heartbeat import HEARTBEAT_FILENAME, read_heartbeat
 from core.hostops.serve import (
     AUTOLOGON_CHECKED_EVENT,
@@ -383,4 +385,31 @@ def test_serve_refuses_start_when_pre_migrate_snapshot_fails(tmp_path: Path) -> 
         json.loads(line)["event"] for line in log_path.read_text(encoding="utf-8").splitlines()
     ]
     assert "serve.migrate_snapshot_failed" in logged
+    assert not (tmp_path / "run" / instance.LOCK_FILENAME).exists()
+
+
+def test_serve_logs_program_error_and_reraises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log_path = tmp_path / "logs" / "core.jsonl"
+    options = ServeOptions(
+        clock=VirtualClock(datetime(2026, 10, 25, 8, 0, tzinfo=UTC)),
+        log=JsonLineLogger(log_path),
+        max_ticks=1,
+        tick_interval_seconds=0.0,
+        register_tasks=False,
+        registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
+    )
+
+    def broken_migrate(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("程序错误")
+
+    monkeypatch.setattr(serve, "migrate", broken_migrate)
+    with pytest.raises(RuntimeError, match="程序错误"):
+        run_serve(tmp_path, options)
+    entries = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
+    failed = [entry for entry in entries if entry.get("event") == "serve.run_failed"]
+    assert failed
+    assert failed[0]["error"] == "程序错误"
+    assert failed[0]["error_type"] == "RuntimeError"
     assert not (tmp_path / "run" / instance.LOCK_FILENAME).exists()
