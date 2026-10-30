@@ -150,6 +150,11 @@ def test_startup_actions_cover_frozen_and_source_modes(
     assert dev[tasks.TASK_CORE].command == sys.executable
     assert "--data-root" in dev[tasks.TASK_CORE].arguments
     assert "watchdog check" in dev[tasks.TASK_WATCHDOG].arguments
+    # 源码形态：backup 用当前解释器跑模块入口
+    root = str(tmp_path.resolve())
+    assert dev[tasks.TASK_BACKUP] == tasks.TaskAction(
+        sys.executable, f"-m core backup --data-root {root}"
+    )
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", "C:\\app\\current\\lap-backstop.exe")
     frozen = tasks.startup_actions(tmp_path)
@@ -157,6 +162,10 @@ def test_startup_actions_cover_frozen_and_source_modes(
         "C:\\app\\current\\lap-backstop.exe", "serve"
     )
     assert frozen[tasks.TASK_WATCHDOG].arguments == "watchdog check"
+    # 打包形态：backup 指向自身 exe
+    assert frozen[tasks.TASK_BACKUP] == tasks.TaskAction(
+        "C:\\app\\current\\lap-backstop.exe", "backup"
+    )
 
 
 def test_register_registered_tasks_reports_outcome(tmp_path: Path) -> None:
@@ -167,12 +176,16 @@ def test_register_registered_tasks_reports_outcome(tmp_path: Path) -> None:
     assert registration.ok is True
     assert tasks.TASK_CORE in registration.detail
     assert tasks.TASK_WATCHDOG in registration.detail
+    assert tasks.TASK_BACKUP in registration.detail
     # 逐任务结果各带成功确认
     assert all(outcome.ok and outcome.detail == "已注册" for outcome in registration.outcomes)
-    # P0 只注册两个动作型任务，且先写定义文件再注册
-    assert len(calls) == 2
+    # 注册清单三个任务，按清单顺序先写定义文件再逐个注册
+    assert [call[4] for call in calls] == list(tasks.REGISTERED_TASKS)
+    assert len(calls) == 3
     tasks_dir = tmp_path / tasks.TASKS_DIRNAME
-    assert (tasks_dir / f"{tasks.TASK_CORE}.xml").is_file()
+    for name in tasks.REGISTERED_TASKS:
+        definition = (tasks_dir / f"{name}.xml").read_text(encoding="utf-16")
+        assert f"\\{name}" in definition
     failing, _ = fake_runner(returncode=1)
     registration = tasks.register_registered_tasks(
         tmp_path, runner=failing, registered_at=REGISTERED_AT
@@ -182,4 +195,5 @@ def test_register_registered_tasks_reports_outcome(tmp_path: Path) -> None:
     assert {outcome.name for outcome in registration.outcomes if not outcome.ok} == {
         tasks.TASK_CORE,
         tasks.TASK_WATCHDOG,
+        tasks.TASK_BACKUP,
     }

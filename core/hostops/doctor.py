@@ -267,35 +267,28 @@ def _check_autologon(deps: DoctorDeps) -> CheckResult:
 
 
 def _check_scheduled_tasks(deps: DoctorDeps) -> CheckResult:
-    """第 11 项：计划任务已注册且定义文件在位。
+    """第 11 项：三个计划任务已注册且定义文件在位。
 
     schtasks 实际注册与登录触发按 docs/12 手工核对；这里查注册存在性，
-    已注册任务的动作与本地 XML 的动作字段一致。preheat 与 backup 随
-    API 里程碑启用，缺失只提示不算可修复项。
+    已注册任务的动作与本地 XML 的动作字段一致。
     """
     tasks_dir = deps.data_root / tasks.TASKS_DIRNAME
     fixable: list[str] = []
-    upcoming: list[str] = []
     drifted: list[str] = []
-    names = (tasks.TASK_CORE, tasks.TASK_WATCHDOG, tasks.TASK_PREHEAT, tasks.TASK_BACKUP)
-    for name in names:
+    # 检查范围就是注册清单：三个任务全部注册，没有「随后续里程碑启用」的
+    # 观察项，缺失一律按可修复项报出。
+    for name in tasks.REGISTERED_TASKS:
         completed = deps.runner(["schtasks", "/query", "/tn", name])
         local = tasks_dir / f"{name}.xml"
-        p0 = name in tasks.REGISTERED_TASKS
         if completed.returncode != 0 or not local.is_file():
             label = name if completed.returncode != 0 else f"{name}（无定义文件）"
-            (fixable if p0 else upcoming).append(label)
-        elif p0 and not _registered_action_matches(completed, local):
+            fixable.append(label)
+        elif not _registered_action_matches(completed, local):
             drifted.append(name)
     problems = fixable + [f"{name} 动作漂移" for name in drifted]
-    if not problems and not upcoming:
-        return _result(11, "计划任务", Level.PASS, "四个任务在位")
-    parts = ["、".join(problems)] if problems else []
-    if upcoming:
-        parts.append("、".join(upcoming) + " 随后续里程碑启用")
-    detail = "；".join(parts)
-    if problems:
-        detail += "；P0 任务跑 lap-backstop tasks register 修复"
+    if not problems:
+        return _result(11, "计划任务", Level.PASS, "三个任务在位")
+    detail = "、".join(problems) + "；跑 lap-backstop tasks register 修复"
     return _result(11, "计划任务", Level.WARN, detail)
 
 

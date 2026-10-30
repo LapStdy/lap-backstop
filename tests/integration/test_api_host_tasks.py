@@ -21,7 +21,8 @@ from tests.fixtures.subprocess_fakes import FakeRunner, fake_runner
 NOW = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)
 TOKEN = "secret-token"
 REGISTER_PATH = "/api/v1/host/tasks/register"
-SUCCESS_DETAIL = "已注册并写入定义：lap-backstop-core、lap-backstop-watchdog"
+SUCCESS_DETAIL = "已注册并写入定义：lap-backstop-core、lap-backstop-watchdog、lap-backstop-backup"
+FAILURE_DETAIL = "注册失败：lap-backstop-core、lap-backstop-watchdog、lap-backstop-backup"
 
 
 @pytest.fixture
@@ -89,13 +90,15 @@ def test_register_returns_per_task_result_and_writes_definitions(
     assert [task["name"] for task in payload["tasks"]] == [
         tasks.TASK_CORE,
         tasks.TASK_WATCHDOG,
+        tasks.TASK_BACKUP,
     ]
     assert all(task["ok"] and task["detail"] == "已注册" for task in payload["tasks"])
-    assert len(calls) == 2
+    assert len(calls) == 3
     # 定义文件落在数据目录，供比对与重建（docs/08 计划任务一节）
     tasks_dir = database.parent / tasks.TASKS_DIRNAME
     assert (tasks_dir / f"{tasks.TASK_CORE}.xml").is_file()
     assert (tasks_dir / f"{tasks.TASK_WATCHDOG}.xml").is_file()
+    assert (tasks_dir / f"{tasks.TASK_BACKUP}.xml").is_file()
 
 
 def test_register_event_matches_startup_shape(app: ApiApp, database: Path) -> None:
@@ -117,7 +120,7 @@ def test_register_failure_keeps_structured_result_and_event(app: ApiApp, databas
     assert response.status == 200
     payload = payload_of(response)
     assert payload["ok"] is False
-    assert payload["detail"] == "注册失败：lap-backstop-core、lap-backstop-watchdog"
+    assert payload["detail"] == FAILURE_DETAIL
     assert all(task["ok"] is False for task in payload["tasks"])
     assert all(task["detail"] == "schtasks 退出码 1" for task in payload["tasks"])
     events = host_events(database)

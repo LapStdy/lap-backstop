@@ -22,7 +22,6 @@ AC_ZERO = b"    Current AC Power Setting Index: 0x00000000\n"
 TASK_NAMES = (
     tasks.TASK_CORE,
     tasks.TASK_WATCHDOG,
-    tasks.TASK_PREHEAT,
     tasks.TASK_BACKUP,
 )
 
@@ -192,7 +191,6 @@ def _task_query_script(tmp_path: Path) -> dict[tuple[str, ...], subprocess.Compl
         },
         registered_at=NOW,
     )
-    (tasks_dir / f"{tasks.TASK_PREHEAT}.xml").write_text("<Task />", encoding="utf-16")
     script: dict[tuple[str, ...], subprocess.CompletedProcess[bytes]] = {}
     for name in TASK_NAMES:
         local = tasks_dir / f"{name}.xml"
@@ -205,21 +203,31 @@ def _task_query_script(tmp_path: Path) -> dict[tuple[str, ...], subprocess.Compl
 def test_check_scheduled_tasks(tmp_path: Path) -> None:
     script = _task_query_script(tmp_path)
     deps = make_deps(tmp_path, runner=scripted(script))
-    assert single(deps, 11).level is doctor.Level.PASS
+    result = single(deps, 11)
+    assert result.level is doctor.Level.PASS
+    assert result.detail == "三个任务在位"
 
     script[("schtasks", "/query", "/tn", tasks.TASK_WATCHDOG)] = completed(returncode=1)
     result = single(deps, 11)
     assert result.level is doctor.Level.WARN
-    assert tasks.TASK_WATCHDOG in result.detail
+    assert result.detail == f"{tasks.TASK_WATCHDOG}；跑 lap-backstop tasks register 修复"
 
+    # backup 缺失同样按可修复项报出，不再有「随后续里程碑启用」的观察项
+    script = _task_query_script(tmp_path)
+    script[("schtasks", "/query", "/tn", tasks.TASK_BACKUP)] = completed(returncode=1)
+    result = single(make_deps(tmp_path, runner=scripted(script)), 11)
+    assert result.level is doctor.Level.WARN
+    assert result.detail == f"{tasks.TASK_BACKUP}；跑 lap-backstop tasks register 修复"
+
+    script = _task_query_script(tmp_path)
     drifted = (
         "<Task><Actions><Exec><Command>other.exe</Command>"
         "<Arguments>x</Arguments></Exec></Actions></Task>"
     )
     script[("schtasks", "/query", "/tn", tasks.TASK_WATCHDOG)] = completed(drifted.encode())
-    result = single(deps, 11)
+    result = single(make_deps(tmp_path, runner=scripted(script)), 11)
     assert result.level is doctor.Level.WARN
-    assert "漂移" in result.detail
+    assert f"{tasks.TASK_WATCHDOG} 动作漂移" in result.detail
 
 
 def test_check_time_service(tmp_path: Path) -> None:
