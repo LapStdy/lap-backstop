@@ -219,7 +219,14 @@ def test_watchdog_gave_up_notifies_without_run(
     append_global_event(
         connection,
         EventType.HOST_EVENT,
-        {"event": WATCHDOG_GAVE_UP_EVENT, "detail": "30 分钟内 3 次验收失败"},
+        {
+            "event": WATCHDOG_GAVE_UP_EVENT,
+            "detail": "30 分钟内 3 次验收失败",
+            "failed_count": 3,
+            "last_failure_at": "2026-10-25T07:50:00+00:00",
+            "heartbeat": {"pid": 4242},
+            "log_tail": ["first line"],
+        },
     )
     service.poll()
     assert stub.delivered.wait(2.0)
@@ -227,6 +234,8 @@ def test_watchdog_gave_up_notifies_without_run(
     assert notification.level is NotificationLevel.ERROR
     assert notification.title == "看门狗停手"
     assert "30 分钟内 3 次验收失败" in notification.body
+    # 正文只取 detail，四个证据字段留在事件 payload 里，不进通知正文
+    assert "first line" not in notification.body
     assert record_outcomes_within(service, lambda: len(core_events(connection, "notify.sent")) == 1)
     assert core_events(connection, "notify.sent")[0]["payload"]["channel"] == "serverchan"
     assert run_event_payloads(connection, EventType.NOTIFY_SENT) == []

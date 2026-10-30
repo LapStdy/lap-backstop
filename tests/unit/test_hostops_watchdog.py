@@ -264,6 +264,37 @@ def test_log_tail_without_logs_dir_returns_empty(tmp_path: Path) -> None:
     assert watchdog._core_log_tail(tmp_path / "logs") == []
 
 
+def test_log_tail_caps_total_chars_and_keeps_newest(tmp_path: Path) -> None:
+    """行数在上限内但总字符超限时砍掉更旧的行，最新一行必留。"""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    lines = [f"line-{index:03d}-" + "x" * 400 for index in range(50)]
+    (logs_dir / "core-2026-10-25.jsonl").write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
+    tail = watchdog._core_log_tail(logs_dir)
+    assert sum(len(line) for line in tail) <= watchdog._LOG_TAIL_MAX_CHARS
+    assert tail[-1] == lines[-1]
+    assert len(tail) < 50
+
+
+def test_log_tail_truncates_newest_line_over_cap(tmp_path: Path) -> None:
+    """最新一行自身超上限时只留它的前段，总字符仍不越界。"""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "core-2026-10-25.jsonl").write_text("y" * 20_000 + "\n", encoding="utf-8")
+    assert watchdog._core_log_tail(logs_dir) == ["y" * watchdog._LOG_TAIL_MAX_CHARS]
+
+
+def test_latest_core_log_tie_picks_base_name(tmp_path: Path) -> None:
+    """基名与 .1 并列时按文件名定序，挑选不依赖 iterdir 顺序。"""
+    logs_dir = tmp_path / "logs"
+    logs_dir.mkdir()
+    (logs_dir / "core-2026-10-25.1.jsonl").write_text("rotated\n", encoding="utf-8")
+    (logs_dir / "core-2026-10-25.jsonl").write_text("live\n", encoding="utf-8")
+    latest = watchdog._latest_core_log(logs_dir)
+    assert latest is not None
+    assert latest.name == "core-2026-10-25.jsonl"
+
+
 def test_failures_outside_window_are_dropped_and_watchdog_resumes(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     stale = [(BASE - timedelta(minutes=31)).isoformat()] * 3
