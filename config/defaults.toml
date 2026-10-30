@@ -55,3 +55,21 @@ timeout_seconds = 10
 attempts = 3
 backoff_seconds = [5, 30]
 use_proxy = false
+
+[retention]
+# 每日本地执行时刻（HH:MM），时区取 scheduler.timezone；到点后的第一个 tick 执行一次。
+daily_at = "03:30"
+# 终态运行的证据文件保留天数；文件删除后 evidence 行保留到 90 天整棵清理。
+evidence_days = 30
+# 证据根总字节上限（GB）；超过时按 evidence.created_at 从旧到新删终态运行的文件。
+evidence_total_gb = 20
+# 运行事件与阶段行的保留天数，只作用于终态运行。
+run_records_days = 30
+# 判定、运行行及其外键子行的保留天数，只作用于终态运行。
+verdicts_days = 90
+# 原始日志文件（core-YYYY-MM-DD[.N].jsonl）的保留天数，按 UTC 日界。
+logs_days = 14
+# 压缩日志文件（.jsonl.gz）的保留天数，按 UTC 日界。
+logs_archive_days = 90
+# advisor_calls 行的保留天数。
+advisor_days = 90
