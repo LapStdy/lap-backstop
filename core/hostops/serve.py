@@ -47,6 +47,7 @@ from core.events.maintenance import GlobalEventsPruner
 from core.hostops import heartbeat, instance, tailscale, tasks, watchdog
 from core.hostops.doctor import DATABASE_FILENAME, WINLOGON_KEY, RegistryGet, registry_get
 from core.hostops.environment_actions import EnvironmentActionService
+from core.hostops.retention import RetentionRunner
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
 from core.notify.service import NotifyService
@@ -135,7 +136,7 @@ class HeartbeatWriter:
 
 
 class ServeLoop:
-    """tick 循环：每轮推进一次 Supervisor、追一次通知、按日闸门清一次全局事件，到心跳间隔写心跳。"""
+    """tick 循环：每轮推进一次 Supervisor、追一次通知、按日闸门清一次过期数据，到心跳间隔写心跳。"""
 
     def __init__(
         self,
@@ -145,11 +146,12 @@ class ServeLoop:
         options: ServeOptions,
         notify: NotifyService | None = None,
         pruner: GlobalEventsPruner | None = None,
+        retention: RetentionRunner | None = None,
     ) -> None:
         """装配循环部件；协作对象传 None 即关闭对应侧工作。
 
         构造参数超过上限 4 属评审已说明的例外：supervisor、runs、writer、
-        options 是循环的既定部件，notify 与 pruner 是两个可选协作对象，
+        options 是循环的既定部件，notify、pruner 与 retention 是可选的协作对象，
         测试按需注入，语义互不重叠。
         """
         self._supervisor = supervisor
@@ -158,6 +160,7 @@ class ServeLoop:
         self._options = options
         self._notify = notify
         self._pruner = pruner
+        self._retention = retention
         self._last_heartbeat_at: float | None = None
 
     def run(self) -> int:
@@ -169,6 +172,7 @@ class ServeLoop:
             self._supervisor.tick()
             self._poll_notify()
             self._prune_global_events()
+            self._prune_retention()
             if self._supervisor.is_disk_critical:
                 return EXIT_DISK_LOW
             ticks += 1
@@ -194,6 +198,17 @@ class ServeLoop:
         except Exception as error:
             self._options.log.error(
                 {"event": "maintenance.global_events_prune_failed", "error": str(error)}
+            )
+
+    def _prune_retention(self) -> None:
+        """过期数据保留清理：文件或库失败只记日志，当天不推进，下个 tick 重试。"""
+        if self._retention is None:
+            return
+        try:
+            self._retention.run_once()
+        except (OSError, sqlite3.Error) as error:
+            self._options.log.error(
+                {"event": "maintenance.retention_prune_failed", "error": str(error)}
             )
 
     def _write_heartbeat_if_due(self) -> None:
@@ -405,6 +420,9 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             options,
             notify=notify,
             pruner=GlobalEventsPruner(connection, options.clock, log=options.log),
+            retention=RetentionRunner(
+                connection, options.clock, data_root=data_root, log=options.log
+            ),
         )
         return loop.run()
     except BackupError as error:

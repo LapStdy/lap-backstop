@@ -1,16 +1,20 @@
-"""保留清理：serve 日闸门按 docs/03 保留表清理过期运行记录与 advisor 调用。
+"""保留清理：serve 日闸门按 docs/03 保留表清理证据文件、运行记录与日志。
 
 日闸门的形状照 GlobalEventsPruner：本地时刻到点后的第一个 tick 执行一次，
 日期键、删除行与结果事件在同一事务里落盘，崩溃重启既不重复也不漏。
+文件删除先于事务且逐份容错：事务回滚只会留下「记录在、文件缺」，
+下载按既有 410 口径处理；单份文件失败不拦住整轮清理。
 """
 
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass
-from datetime import date, time, timedelta
+from datetime import UTC, date, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -24,7 +28,14 @@ from storage.repositories.iso_time import format_at
 
 RETENTION_PRUNED_ON_KEY = "maintenance.retention_pruned_on"
 RETENTION_PRUNED_EVENT = "core.retention_pruned"
+EVIDENCE_DIRNAME = "evidence"
+LOGS_DIRNAME = "logs"
 _GIB = 1024**3
+# 文件名形态由 core/logging.py 的轮转器决定；这里只解析日期，不复制写入逻辑。
+_RAW_LOG_NAME = re.compile(r"^core-(?P<day>\d{4}-\d{2}-\d{2})(?:\.(?P<index>\d+))?\.jsonl$")
+_ARCHIVED_LOG_NAME = re.compile(
+    r"^core-(?P<day>\d{4}-\d{2}-\d{2})(?:\.(?P<index>\d+))?\.jsonl\.gz$"
+)
 _TERMINAL_STATES = tuple(state.value for state in TERMINAL_RUN_STATES)
 _TERMINAL_MARKS = ",".join("?" for _ in _TERMINAL_STATES)
 
@@ -89,6 +100,15 @@ class RetentionOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class _EvidencePass:
+    """文件清理的结果：份数、释放字节与清理后的证据根总量。"""
+
+    files: int = 0
+    bytes_freed: int = 0
+    bytes_after: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class _RowCounts:
     """一次事务里各表的删除行数。"""
 
@@ -134,21 +154,24 @@ class RetentionRunner:
     def run_once(self) -> RetentionOutcome | None:
         """到点且今天还没清理就清理一次；未到点或当天已清理返回 None。
 
-        数据库删除、日期键与结果事件同事务提交：进程在事务内崩溃时整体回滚，
-        下个 tick 重试。
+        文件删除在事务之前完成，数据库删除、日期键与结果事件同事务提交：
+        进程在事务内崩溃时整体回滚，下个 tick 重试，文件删除可重复执行。
 
         Returns:
             RetentionOutcome: 本次删除统计；未到点或当天已执行过则为 None。
 
         Raises:
+            OSError: 数据目录不可读。
             sqlite3.Error: 数据库不可写；由调用方记日志，不拖垮核心循环。
         """
         today = self._due_date()
         if today is None:
             return None
+        files = self._prune_evidence_files()
+        logs = self._prune_logs()
         with transaction(self._connection):
             counts = self._prune_rows()
-            outcome = self._outcome(today, counts)
+            outcome = self._outcome(today, files, counts, logs)
             moment = self._clock.utc_now()
             put_settings(
                 self._connection,
@@ -171,20 +194,64 @@ class RetentionRunner:
         today = local.date()
         return None if _pruned_on(self._connection) == today else today
 
-    def _outcome(self, today: date, counts: _RowCounts) -> RetentionOutcome:
-        """把行删除统计合成结果；detail 字段在这里一次定型。"""
+    def _outcome(
+        self,
+        today: date,
+        files: _EvidencePass,
+        counts: _RowCounts,
+        logs: int,
+    ) -> RetentionOutcome:
+        """把文件与行两组统计合成结果；detail 字段在这里一次定型。"""
         return RetentionOutcome(
             date=today.isoformat(),
-            evidence_files_deleted=0,
-            evidence_bytes_freed=0,
-            evidence_bytes_after=0,
+            evidence_files_deleted=files.files,
+            evidence_bytes_freed=files.bytes_freed,
+            evidence_bytes_after=files.bytes_after,
             run_events_deleted=counts.run_events,
             run_phases_deleted=counts.run_phases,
             verdicts_deleted=counts.verdicts,
             runs_deleted=counts.runs,
             advisor_deleted=counts.advisor,
-            log_files_deleted=0,
+            log_files_deleted=logs,
         )
+
+    def _prune_evidence_files(self) -> _EvidencePass:
+        """先按天数删终态运行的证据文件，再按总量上限从最旧补删；证据行保留。"""
+        root = (self._data_root / EVIDENCE_DIRNAME).resolve()
+        if not root.is_dir():
+            return _EvidencePass()
+        cutoff = format_at(self._clock.utc_now() - timedelta(days=self._policy.evidence_days))
+        deleted = 0
+        freed = 0
+        for relative in _evidence_paths(self._connection, cutoff):
+            removed = _unlink_evidence(root, relative, self._log)
+            if removed is not None:
+                deleted += 1
+                freed += removed
+        quota_files, quota_bytes = self._enforce_quota(root)
+        return _EvidencePass(
+            files=deleted + quota_files,
+            bytes_freed=freed + quota_bytes,
+            bytes_after=_evidence_bytes(root, self._log),
+        )
+
+    def _enforce_quota(self, root: Path) -> tuple[int, int]:
+        """证据根总量超过上限时，按 evidence.created_at 从旧到新删终态运行的文件。"""
+        total = _evidence_bytes(root, self._log)
+        if total <= self._policy.evidence_total_bytes:
+            return 0, 0
+        deleted = 0
+        freed = 0
+        for relative in _evidence_paths_by_age(self._connection):
+            if total <= self._policy.evidence_total_bytes:
+                break
+            removed = _unlink_evidence(root, relative, self._log)
+            if removed is None:
+                continue
+            deleted += 1
+            freed += removed
+            total -= removed
+        return deleted, freed
 
     def _prune_rows(self) -> _RowCounts:
         """按 30 天删运行事件与阶段、按 90 天整棵删终态运行、按 90 天删 advisor。"""
@@ -233,6 +300,125 @@ class RetentionRunner:
             runs=runs,
             advisor=advisor,
         )
+
+    def _prune_logs(self) -> int:
+        """原始日志按 14 天、压缩件按 90 天删除；watchdog 与不匹配文件不动。"""
+        logs_dir = self._data_root / LOGS_DIRNAME
+        if not logs_dir.is_dir():
+            return 0
+        today = self._clock.utc_now().astimezone(UTC).date()
+        raw_cutoff = today - timedelta(days=self._policy.logs_days)
+        archive_cutoff = today - timedelta(days=self._policy.logs_archive_days)
+        deleted = 0
+        for path in logs_dir.iterdir():
+            parsed = _log_file(path)
+            if parsed is None:
+                continue
+            day, archived = parsed
+            cutoff = archive_cutoff if archived else raw_cutoff
+            if day >= cutoff or not _remove_file(path, self._log):
+                continue
+            deleted += 1
+        return deleted
+
+
+def _log_file(path: Path) -> tuple[date, bool] | None:
+    """解析 core-日界日志文件名；返回日期与是否压缩件，不匹配返回 None。"""
+    if not path.is_file():
+        return None
+    for pattern, archived in ((_ARCHIVED_LOG_NAME, True), (_RAW_LOG_NAME, False)):
+        match = pattern.fullmatch(path.name)
+        if match is None:
+            continue
+        try:
+            return date.fromisoformat(match.group("day")), archived
+        except ValueError:
+            return None
+    return None
+
+
+def _remove_file(path: Path, log: Logger) -> bool:
+    """删一个日志文件；删不掉只记日志，本轮其余文件继续处理。"""
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        log.warn({"event": "retention.log_delete_failed", "file": path.name, "error": str(error)})
+        return False
+    return True
+
+
+def _unlink_evidence(root: Path, relative: str, log: Logger) -> int | None:
+    """删一份证据文件并返回释放字节；缺失、越界或失败返回 None。"""
+    candidate = (root / relative).resolve()
+    if not candidate.is_relative_to(root):
+        log.warn({"event": "retention.evidence_path_outside_root", "path": relative})
+        return None
+    try:
+        size = candidate.stat().st_size
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        log.warn({"event": "retention.evidence_stat_failed", "path": relative, "error": str(error)})
+        return None
+    try:
+        candidate.unlink()
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        log.warn(
+            {"event": "retention.evidence_delete_failed", "path": relative, "error": str(error)}
+        )
+        return None
+    _drop_empty_dirs(root, candidate.parent)
+    return size
+
+
+def _drop_empty_dirs(root: Path, start: Path) -> None:
+    """删完文件后自下而上收掉空目录；非空或不存在都停手。"""
+    current = start
+    while current != root and current.is_relative_to(root):
+        with suppress(OSError):
+            current.rmdir()
+        if current.exists():
+            break
+        current = current.parent
+
+
+def _evidence_bytes(root: Path, log: Logger) -> int:
+    """证据根下全部文件的总字节；单个文件读不到只记日志并跳过。"""
+    total = 0
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            total += path.stat().st_size
+        except OSError as error:
+            log.warn(
+                {"event": "retention.evidence_stat_failed", "path": path.name, "error": str(error)}
+            )
+    return total
+
+
+def _evidence_paths(connection: sqlite3.Connection, cutoff: str) -> tuple[str, ...]:
+    """早于 cutoff 的终态运行证据路径，按创建时间从旧到新。"""
+    rows = connection.execute(
+        "SELECT e.path FROM evidence e JOIN job_runs r ON r.id = e.run_id "
+        f"WHERE r.state IN ({_TERMINAL_MARKS}) AND e.created_at < ? ORDER BY e.created_at",
+        (*_TERMINAL_STATES, cutoff),
+    ).fetchall()
+    return tuple(str(row[0]) for row in rows)
+
+
+def _evidence_paths_by_age(connection: sqlite3.Connection) -> tuple[str, ...]:
+    """终态运行的全部证据路径，按创建时间从旧到新。"""
+    rows = connection.execute(
+        "SELECT e.path FROM evidence e JOIN job_runs r ON r.id = e.run_id "
+        f"WHERE r.state IN ({_TERMINAL_MARKS}) ORDER BY e.created_at",
+        _TERMINAL_STATES,
+    ).fetchall()
+    return tuple(str(row[0]) for row in rows)
 
 
 def _terminal_run_ids(connection: sqlite3.Connection, cutoff: str) -> tuple[str, ...]:
@@ -292,6 +478,8 @@ def _pruned_on(connection: sqlite3.Connection) -> date | None:
 
 
 __all__ = [
+    "EVIDENCE_DIRNAME",
+    "LOGS_DIRNAME",
     "RETENTION_PRUNED_EVENT",
     "RETENTION_PRUNED_ON_KEY",
     "RetentionOutcome",
