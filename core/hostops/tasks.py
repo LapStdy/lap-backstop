@@ -1,10 +1,9 @@
 r"""计划任务定义：XML 生成、落盘与 schtasks 注册。
 
-四个任务按 docs/08 计划任务一节：触发器与动作固定，实例策略「不启动新实例」、
+三个任务按 docs/08 计划任务一节：触发器与动作固定，实例策略「不启动新实例」、
 不限运行时长、不关 AC 电源条件都写进 XML 字段。任务以 XML 导入，文件留在
-``data\host\tasks\`` 供比对与重建。P0 只注册 core 与 watchdog 两个动作型任务；
-backup 的生成器就绪但不注册（backup 子命令未发布）；preheat 的动作是 HTTP
-调用，计划任务没有对应形态，随 API 里程碑定义。
+``data\host\tasks\`` 供比对与重建；备份每日 04:00 注册；预热没有计划任务，
+由调度在 ``preheat_minutes`` 之前建运行完成。
 """
 
 from __future__ import annotations
@@ -22,12 +21,11 @@ TASKS_DIRNAME = "host/tasks"
 TASK_CORE = "lap-backstop-core"
 TASK_WATCHDOG = "lap-backstop-watchdog"
 TASK_BACKUP = "lap-backstop-backup"
-TASK_PREHEAT = "lap-backstop-preheat"
 # 注册结果的落点事件（docs/03 host.event 取值表）；serve 启动与本端点共用。
 TASKS_REGISTERED_EVENT = "host.tasks_registered"
 
-# P0 注册清单：动作只依赖本命令行（docs/08 计划任务一节）；backup 与 preheat 后补。
-REGISTERED_TASKS = (TASK_CORE, TASK_WATCHDOG)
+# 注册清单：动作只依赖本命令行（docs/08 计划任务一节）。
+REGISTERED_TASKS = (TASK_CORE, TASK_WATCHDOG, TASK_BACKUP)
 
 # schtasks 偶发慢盘会到秒级；注册发生在 serve 启动路径上，超时按失败处理可重试。
 _REGISTER_TIMEOUT_SECONDS = 10.0
@@ -131,7 +129,7 @@ def watchdog_task_xml(action: TaskAction, *, registered_at: datetime) -> str:
 
 
 def backup_task_xml(action: TaskAction, *, registered_at: datetime) -> str:
-    """每日 04:00 备份；允许唤醒计算机。P0 只生成定义，不注册。"""
+    """每日 04:00 备份；允许唤醒计算机。"""
     triggers = (
         "    <CalendarTrigger>\n"
         f"      <StartBoundary>{registered_at:%Y-%m-%d}T04:00:00</StartBoundary>\n"
@@ -259,12 +257,14 @@ def startup_actions(data_root: Path) -> dict[str, TaskAction]:
         return {
             TASK_CORE: TaskAction(executable, "serve"),
             TASK_WATCHDOG: TaskAction(executable, "watchdog check"),
+            TASK_BACKUP: TaskAction(executable, "backup"),
         }
     python = sys.executable
     root = str(data_root.resolve())
     return {
         TASK_CORE: TaskAction(python, f"-m core serve --data-root {root}"),
         TASK_WATCHDOG: TaskAction(python, f"-m core watchdog check --data-root {root}"),
+        TASK_BACKUP: TaskAction(python, f"-m core backup --data-root {root}"),
     }
 
 
@@ -274,7 +274,7 @@ def register_registered_tasks(
     runner: Runner = subprocess.run,
     registered_at: datetime,
 ) -> TaskRegistration:
-    """生成 P0 注册清单的任务定义并逐个注册，返回明细与汇总。
+    """生成注册清单的任务定义并逐个注册，返回明细与汇总。
 
     供 serve 启动、``lap-backstop tasks register`` 手动入口与设置页重新注册
     端点共用；汇总口径只有这一份，写成 ``host.tasks_registered`` 事件的 detail。
@@ -310,7 +310,6 @@ __all__ = [
     "TASKS_REGISTERED_EVENT",
     "TASK_BACKUP",
     "TASK_CORE",
-    "TASK_PREHEAT",
     "TASK_WATCHDOG",
     "TaskAction",
     "TaskRegisterOutcome",
