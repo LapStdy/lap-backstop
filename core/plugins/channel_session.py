@@ -85,7 +85,13 @@ class ChannelSession:
         return self._config.limits
 
     def ensure_started(self) -> None:
-        """降级期直接拒绝调用；降级窗口刚过去或进程已死时重新拉起。"""
+        """降级期直接拒绝调用；降级窗口刚过去或进程已死时重新拉起。
+
+        Raises:
+            PluginDegradedError: 插件处于降级期。
+            WorkerCrashError: 启动超时、启动即退出、加载失败或协议版本不匹配。
+            OSError: 拉起子进程本身失败（可执行文件消失、权限、句柄耗尽）。
+        """
         if self.is_degraded:
             raise PluginDegradedError(f"插件 {self.plugin_id} 处于降级期，停止接收调用")
         if self._degraded_until is not None:
@@ -96,7 +102,15 @@ class ChannelSession:
         self._start()
 
     def send(self, message: Mapping[str, Any], *, counts_as_failure: bool = True) -> None:
-        """把一条协议消息写进 worker 的 stdin；写失败按进程故障收尾。"""
+        """把一条协议消息写进 worker 的 stdin；写失败按进程故障收尾。
+
+        Args:
+            message: 协议消息，行分隔 JSON 编码。
+            counts_as_failure: 写入失败是否计入降级预算；用户取消引发的写失败为 False。
+
+        Raises:
+            WorkerCrashError: worker 未启动，或写入失败（进程树已随之结束）。
+        """
         process = self._process
         if process is None or process.stdin is None:
             raise WorkerCrashError(f"插件 {self.plugin_id} 的 worker 未启动")
@@ -108,7 +122,18 @@ class ChannelSession:
             raise WorkerCrashError(f"写入 worker 失败：{error}") from error
 
     def receive(self, deadline: float, now: float) -> Mapping[str, Any] | None:
-        """取一条 worker 消息；队列空或进程退出时给出对应结论。"""
+        """取一条 worker 消息；队列空或进程退出时给出对应结论。
+
+        Args:
+            deadline: 本次调用的绝对单调时刻，超过即不再等待。
+            now: 当前单调时刻，用于压缩空转等待。
+
+        Returns:
+            一条协议消息；队列空返回 None，调用方继续轮询。
+
+        Raises:
+            WorkerCrashError: worker 在调用中退出（进程树已随之结束）。
+        """
         wait = min(_POLL_SECONDS, max(deadline - now, 0.0) or _POLL_SECONDS)
         try:
             reply = self._messages.get(timeout=wait)
@@ -128,7 +153,12 @@ class ChannelSession:
     ) -> None:
         """结束整棵进程树并计数；用户取消不是重启失败，不计入降级预算。
 
-        reason 记触发本次失败的具体形态，降级后随 ``degradation_reason`` 暴露给路由。
+        达到 ``max_restarts`` 时进入降级期并记 ERROR 日志。可重复调用：进程已不在时
+        只补记账。
+
+        Args:
+            counts_as_failure: 是否计入降级预算；用户取消传 False。
+            reason: 触发本次失败的具体形态，降级后随 ``degradation_reason`` 暴露给路由。
         """
         self._discard_process()
         if not counts_as_failure:
