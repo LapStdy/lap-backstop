@@ -23,12 +23,12 @@ from storage.db.integrity import verify_integrity
 from storage.repositories.config_export import collect_export_data
 from storage.repositories.iso_time import format_at, parse_at
 
-SnapshotKind = Literal["daily", "weekly", "pre-migrate"]
+SnapshotKind = Literal["daily", "weekly", "pre-migrate", "pre-upgrade"]
 
 _MANIFEST_SUFFIX = ".manifest.json"
 # 文件名时间戳形状：快照、pre-migrate 与配置导出统一走这一份，别处不再复制。
 TIMESTAMP_FORMAT = "%Y%m%d-%H%M%S"
-_KINDS: tuple[SnapshotKind, ...] = ("daily", "weekly", "pre-migrate")
+_KINDS: tuple[SnapshotKind, ...] = ("daily", "weekly", "pre-migrate", "pre-upgrade")
 # 导出文件名规则 {prefix}-{stamp}.json；构造与修剪必须共用同一形状。
 _EXPORT_PREFIXES: tuple[str, ...] = ("settings", "plugins")
 
@@ -111,6 +111,40 @@ def create_pre_migrate_snapshot(
     spec = _SnapshotSpec(
         stem=f"pre-migrate-{version}-{created_at.strftime(TIMESTAMP_FORMAT)}",
         kind="pre-migrate",
+        created_at=created_at,
+    )
+    return _write_verified_snapshot(connection, backups_dir, spec)
+
+
+def create_pre_upgrade_snapshot(
+    connection: sqlite3.Connection,
+    backups_dir: Path,
+    *,
+    version: str,
+    clock: Clock,
+) -> SnapshotResult:
+    """生成版本切换前的回滚快照（docs/08「升级与回滚」），文件名携带目标版本号。
+
+    数据库只前滚（docs/13），新版本一旦迁移就回不去，回滚材料只能是这份快照；
+    它不参与例行修剪，去留由升级流程按保留策略决定。
+
+    Args:
+        connection: 已打开并设好 PRAGMA 的源库连接。
+        backups_dir: 备份目录，不存在时创建。
+        version: 即将切换到的目标版本目录名。
+        clock: 时间唯一来源；文件名时间戳与 manifest 时间取自它。
+
+    Returns:
+        SnapshotResult: kind 为 ``pre-upgrade``，不参与例行修剪。
+
+    Raises:
+        BackupError: 同秒同名快照已存在、快照不可读、integrity_check
+            未通过或备份目录不可写。
+    """
+    created_at = clock.utc_now().astimezone(UTC)
+    spec = _SnapshotSpec(
+        stem=f"pre-upgrade-{version}-{created_at.strftime(TIMESTAMP_FORMAT)}",
+        kind="pre-upgrade",
         created_at=created_at,
     )
     return _write_verified_snapshot(connection, backups_dir, spec)

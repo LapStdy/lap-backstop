@@ -15,6 +15,7 @@ from core.clock import VirtualClock
 from storage import (
     BackupError,
     create_pre_migrate_snapshot,
+    create_pre_upgrade_snapshot,
     create_snapshot,
     export_configs,
     migrate,
@@ -232,3 +233,14 @@ def _advance(clock: VirtualClock, seconds: int = 1) -> None:
 def _sha256(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def test_pre_upgrade_snapshot_is_exempt_from_routine_pruning(
+    database: sqlite3.Connection, clock: VirtualClock, backups_dir: Path
+) -> None:
+    snapshot = create_pre_upgrade_snapshot(database, backups_dir, version="1.2.0", clock=clock)
+
+    assert verify_snapshot(snapshot.path).kind == "pre-upgrade"
+    assert snapshot.path.name.startswith("pre-upgrade-1.2.0-")
+    prune_backups(backups_dir)
+    assert snapshot.path.exists(), "pre-upgrade 快照被例行备份修剪删除"
