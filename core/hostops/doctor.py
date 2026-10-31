@@ -267,7 +267,7 @@ def _check_autologon(deps: DoctorDeps) -> CheckResult:
 
 
 def _check_scheduled_tasks(deps: DoctorDeps) -> CheckResult:
-    """第 11 项：三个计划任务已注册且定义文件在位。
+    """第 11 项：注册清单里的计划任务已注册且定义文件在位。
 
     schtasks 实际注册与登录触发按 docs/12 手工核对；这里查注册存在性，
     已注册任务的动作与本地 XML 的动作字段一致。
@@ -275,8 +275,8 @@ def _check_scheduled_tasks(deps: DoctorDeps) -> CheckResult:
     tasks_dir = deps.data_root / tasks.TASKS_DIRNAME
     fixable: list[str] = []
     drifted: list[str] = []
-    # 检查范围就是注册清单：三个任务全部注册，没有「随后续里程碑启用」的
-    # 观察项，缺失一律按可修复项报出。
+    # 检查范围就是注册清单：清单里的任务全部注册，没有「随后续里程碑启用」
+    # 的观察项，缺失一律按可修复项报出。
     for name in tasks.REGISTERED_TASKS:
         completed = deps.runner(["schtasks", "/query", "/tn", name])
         local = tasks_dir / f"{name}.xml"
@@ -287,7 +287,7 @@ def _check_scheduled_tasks(deps: DoctorDeps) -> CheckResult:
             drifted.append(name)
     problems = fixable + [f"{name} 动作漂移" for name in drifted]
     if not problems:
-        return _result(11, "计划任务", Level.PASS, "三个任务在位")
+        return _result(11, "计划任务", Level.PASS, f"{len(tasks.REGISTERED_TASKS)} 个任务在位")
     detail = "、".join(problems) + "；跑 lap-backstop tasks register 修复"
     return _result(11, "计划任务", Level.WARN, detail)
 

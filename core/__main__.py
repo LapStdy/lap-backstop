@@ -75,6 +75,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_doctor(Path(arguments.data_root))
     if arguments.command == "backup":
         return _run_backup(Path(arguments.data_root))
+    if arguments.command == "evidence-mirror":
+        return _run_evidence_mirror(Path(arguments.data_root))
     if arguments.command == "db":
         return _run_db_check(Path(arguments.data_root))
     from core.clock import SystemClock
@@ -153,6 +155,63 @@ def _run_backup(data_root: Path) -> int:
     return EXIT_OK
 
 
+def _run_evidence_mirror(data_root: Path) -> int:
+    """证据增量镜像：超阈值按 verdict 引用裁剪，失败写事件（docs/08「备份与恢复」）。"""
+    from core.clock import SystemClock
+    from core.hostops.doctor import DATABASE_FILENAME
+    from core.hostops.evidence_mirror import (
+        EvidenceMirrorError,
+        mirror_evidence,
+        mirror_threshold_bytes,
+        plan_evidence,
+        record_finished,
+    )
+    from storage import open_database
+
+    database_path = data_root / DATABASE_FILENAME
+    if not database_path.is_file():
+        print(f"库文件不存在，先启动一次 serve 完成初始化：{database_path}", file=sys.stderr)
+        return EXIT_ERROR
+    try:
+        connection = open_database(database_path)
+        try:
+            plan = plan_evidence(
+                connection,
+                data_root / "evidence",
+                threshold_bytes=mirror_threshold_bytes(),
+            )
+            outcome = mirror_evidence(plan, data_root / "backups" / "evidence")
+            record_finished(connection, outcome, at=SystemClock().utc_now())
+        finally:
+            connection.close()
+    except (EvidenceMirrorError, OSError, sqlite3.Error) as error:
+        _record_mirror_failure(database_path, error)
+        print(f"证据镜像失败：{error}；重跑同一命令续做", file=sys.stderr)
+        return EXIT_ERROR
+    print(
+        f"证据镜像完成：新增 {outcome.copied_new}、变更 {outcome.copied_changed}、"
+        f"跳过一致 {outcome.skipped_unchanged}、按策略跳过 {outcome.skipped_by_policy}，"
+        f"共 {outcome.bytes_copied} 字节"
+    )
+    return EXIT_OK
+
+
+def _record_mirror_failure(database_path: Path, error: Exception) -> None:
+    """镜像失败补记一条 host.event；事件写不进去只提示，不掩盖退出码。"""
+    from core.clock import SystemClock
+    from core.hostops.evidence_mirror import record_failure
+    from storage import open_database
+
+    try:
+        connection = open_database(database_path)
+        try:
+            record_failure(connection, str(error), at=SystemClock().utc_now())
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error) as event_error:
+        print(f"失败事件未写入：{event_error}", file=sys.stderr)
+
+
 def _run_db_check(data_root: Path) -> int:
     """数据库检查：integrity_check 加迁移到当前版本（docs/08 恢复顺序第 4 步）。"""
     from core.hostops.doctor import DATABASE_FILENAME
@@ -224,7 +283,8 @@ def _notify_failure(
 
 def _build_parser() -> argparse.ArgumentParser:
     """子命令表：serve 常驻，watchdog 看门狗，doctor 自检，backup 备份，
-    db check 库检查，tasks 计划任务；worker 由 main 拦截转发，不出现在帮助里。"""
+    evidence-mirror 证据镜像，db check 库检查，tasks 计划任务；worker 由 main
+    拦截转发，不出现在帮助里。"""
     parser = argparse.ArgumentParser(
         prog="lap-backstop",
         description="lap-backstop 宿主操作：常驻核心与排障入口",
@@ -249,6 +309,10 @@ def _build_parser() -> argparse.ArgumentParser:
     doctor_parser.add_argument("--data-root", default=str(resolve_data_root()))
     backup_parser = subparsers.add_parser("backup", help="每日备份：快照、配置导出与修剪")
     backup_parser.add_argument("--data-root", default=str(resolve_data_root()))
+    mirror_parser = subparsers.add_parser(
+        "evidence-mirror", help="证据增量镜像：把证据目录搬进备份目标"
+    )
+    mirror_parser.add_argument("--data-root", default=str(resolve_data_root()))
     db_parser = subparsers.add_parser("db", help="数据库维护")
     db_sub = db_parser.add_subparsers(dest="db_command", required=True)
     db_check_parser = db_sub.add_parser("check", help="完整性检查并迁移到当前版本（恢复流程用）")
