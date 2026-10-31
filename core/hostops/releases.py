@@ -90,20 +90,25 @@ def read_current(app_dir: Path) -> Path:
     return target
 
 
-def switch_current(app_dir: Path, target: Path) -> None:
-    """把 app\\current 重建为指向 target 的目录联接；重复执行结果一致。
+def switch_current(app_dir: Path, target: Path, *, action: str = "升级") -> None:
+    r"""把 app\current 重建为指向 target 的目录联接；重复执行结果一致。
 
     联接只是名字，不承载版本内容；删除只摘联接本身，版本目录不受影响。
+    目标目录必须已存在，否则联接创建失败。
+
+    Args:
+        action: 占用拒绝文案里的动作名，指引用户删掉联接后重做哪个动作。
 
     Raises:
-        UpgradeError: app\\current 被普通目录或文件占用，或联接创建失败。
+        UpgradeError: app\current 被普通目录或文件占用，或联接创建失败。
     """
     link = app_dir / CURRENT_DIRNAME
     if os.path.lexists(link) and not (link.is_junction() or link.is_symlink()):
-        raise UpgradeError(f"{link} 不是目录联接，拒绝覆盖；请人工确认后删除再升级")
+        raise UpgradeError(f"{link} 不是目录联接，拒绝覆盖；请人工确认后删除再{action}")
     if os.path.lexists(link):
         os.rmdir(link)
     try:
+        # junction 创建用 CPython 自带的 _winapi，避免为此拉起 cmd；参数方向由单测锁定。
         _winapi.CreateJunction(str(target), str(link))
     except OSError as error:
         raise UpgradeError(f"无法把 {link} 联接到 {target}：{error}") from error

@@ -10,10 +10,6 @@
 
 - [ ] DEBT D-003：`tests/unit/test_hostops_doctor.py` 两例依赖本机当刻状态，并行与机器状态变化时误报。
 
-## 消重收件箱
-
-- [ ] 联接重建逻辑在 `scripts/build_app.py` 与 `core/hostops/releases.py` 各有一份：下次动 build_app 时合并到 releases 并反向引用。
-
 ## P1：MAA 插件与方舟环境
 
 - [ ] 冷启动采样：开机到模拟器可用、到游戏主界面，至少 10 次，记录 P50/P95。

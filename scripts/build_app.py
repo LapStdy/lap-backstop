@@ -7,7 +7,6 @@ onedir 产物，exe 直接位于版本目录根；data\ 与 plugins\ 不进版�
 
 from __future__ import annotations
 
-import _winapi
 import argparse
 import importlib.util
 import os
@@ -19,6 +18,14 @@ import tomllib
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+# 本脚本按文件路径直接运行，包搜索不含仓库根；补上才能引用 core 的共享实现。
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from core.hostops.releases import switch_current  # noqa: E402
+from core.hostops.upgrade_state import UpgradeError  # noqa: E402
 
 APP_DIRNAME = "app"
 RELEASES_DIRNAME = "releases"
@@ -103,18 +110,15 @@ def build_pyinstaller_command(repo_root: Path, work_root: Path) -> list[str]:
 
 
 def replace_current_junction(app_root: Path, target: Path) -> None:
-    r"""把 app\current 重建为指向 target 的目录联接。
-
-    已存在的旧联接先摘除再创建，重复执行结果一致；联接不是普通目录，
-    删除只摘联接本身，目标目录内容不受影响。
+    r"""把 app\current 重建为指向 target 的目录联接，实现与判据在 core.hostops.releases。
 
     Raises:
-        BuildError: app\current 被普通目录或文件占用时拒绝覆盖。
+        BuildError: app\current 被普通目录或文件占用时拒绝覆盖，或联接创建失败。
     """
-    link = app_root / CURRENT_DIRNAME
-    _remove_junction(link)
-    # junction 创建用 CPython 自带的 _winapi，避免为此拉起 cmd；参数方向由单测锁定。
-    _winapi.CreateJunction(str(target), str(link))
+    try:
+        switch_current(app_root, target, action="构建")
+    except UpgradeError as error:
+        raise BuildError(str(error)) from error
 
 
 def build(options: BuildOptions) -> Path:
@@ -216,15 +220,6 @@ def _require_exe(version_dir: Path) -> None:
         raise BuildError(f"版本目录缺少入口 {EXE_NAME}，构建产物不完整：{version_dir}")
 
 
-def _remove_junction(link: Path) -> None:
-    if not os.path.lexists(link):
-        return
-    if link.is_junction() or link.is_symlink():
-        os.rmdir(link)
-        return
-    raise BuildError(f"{link} 不是目录联接，拒绝覆盖；请人工确认后删除再构建")
-
-
 def main(argv: Sequence[str] | None = None) -> int:
     """命令行入口：--version 覆盖版本号，--dry-run 只打印计划。"""
     parser = argparse.ArgumentParser(
@@ -236,7 +231,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true", help="只打印将执行的动作，不写盘")
     arguments = parser.parse_args(argv)
-    repo_root = Path(__file__).resolve().parents[1]
+    repo_root = _REPO_ROOT
     options = BuildOptions(
         repo_root=repo_root,
         version=resolve_version(repo_root, arguments.version),
