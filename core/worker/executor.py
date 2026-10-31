@@ -149,12 +149,12 @@ class WorkerExecutor:
         run = self._runs.get(run_id)
         if run.state is RunState.RECOVERING:
             # 停机不推进：恢复等待不再入队，留给下次启动扫描按持久状态处置。
-            if self._shutdown() and not self._cancel.is_cancelled():
+            if self._drain_requested():
                 return self._drain(run)
             run = self.resume(run_id)
         if run.state not in (RunState.QUEUED, RunState.WAITING):
             return run
-        if self._shutdown() and not self._cancel.is_cancelled():
+        if self._drain_requested():
             return self._drain(run)
         template = self._templates.get(run.template_id)
         if template is None:
@@ -193,11 +193,16 @@ class WorkerExecutor:
             )
             return self._recover(scope, "E_PLUGIN_CRASH", str(error))
 
+    def _drain_requested(self) -> bool:
+        """停机已请求且用户取消没有同时置位：取消优先于停机（ADR 0007）。"""
+        return self._shutdown() and not self._cancel.is_cancelled()
+
     def _advance(self, scope: RunScope) -> JobRunRecord:
         """按阶段推进；阶段之间是取消与停机的检查点（ADR 0007）。
 
-        取消优先于停机：用户取消仍按既有路径落终态。停机只写事件，运行状态、阶段
-        记录与租约保持原样，交下次启动扫描收尾（docs/08）。
+        取消优先于停机：用户取消仍按既有路径落终态。停机在阶段边界收尾：当前阶段
+        先跑完写清阶段结论，再写 run.interrupted，之后不再开新阶段；运行状态与租约
+        保持原样，交下次启动扫描收尾（docs/08）。
         """
         for step in (self._prepare, self._run_script, self._verify, self._clean):
             result = step(scope)
@@ -210,19 +215,21 @@ class WorkerExecutor:
         return self._runs.get(scope.run_id)
 
     def _drain(self, run: JobRunRecord) -> JobRunRecord:
-        """停机收尾：写 run.interrupted，不改状态、不动租约。
+        """停机收尾：写一条 run.interrupted，不改状态、不动租约。
 
         进行中的运行由下次启动扫描置 unknown 并回收孤儿租约，等待中的运行继续持租约、
         重启后接着跑；强杀 worker 与阶段收尾也不在这里做，执行器同步运行，停机后由
-        进程退出结束 worker（docs/09 租约、docs/08 关机与重启）。
+        进程退出结束 worker（docs/09 租约、docs/08 停机与阶段边界）。重复信号幂等：
+        已有停机收尾事件的运行不再写第二条。
         """
         try:
-            self._events.append_run(
-                run.id,
-                EventType.RUN_INTERRUPTED,
-                {"run_id": run.id, "reason": SHUTDOWN_REASON},
-                at=self._clock.utc_now(),
-            )
+            if not self._has_shutdown_interrupt(run.id):
+                self._events.append_run(
+                    run.id,
+                    EventType.RUN_INTERRUPTED,
+                    {"run_id": run.id, "reason": SHUTDOWN_REASON},
+                    at=self._clock.utc_now(),
+                )
         except sqlite3.Error as error:
             # 事件写不进时仍要保留停机的状态承诺：不改状态，只留日志给排障。
             self._log.error(
@@ -232,6 +239,14 @@ class WorkerExecutor:
             return self._runs.get(run.id)
         except (RunNotFoundError, sqlite3.Error):
             return run
+
+    def _has_shutdown_interrupt(self, run_id: str) -> bool:
+        """该运行是否已有停机收尾的 run.interrupted：与用户取消靠 reason 区分。"""
+        return any(
+            event.type == EventType.RUN_INTERRUPTED.value
+            and event.payload.get("reason") == SHUTDOWN_REASON
+            for event in self._events.events_for_run(run_id)
+        )
 
     def _begin(self, run: JobRunRecord, template: JobTemplateRow) -> RunScope:
         """组装一次执行用的插件、环境引用与运行上下文。"""
@@ -303,12 +318,12 @@ class WorkerExecutor:
         )
         scope.handle = handle
         observation = self._wait_for_script(scope.script, handle, scope.context)
-        # 停机只停止推进：不落阶段结论、不停脚本，运行交下次启动扫描收尾。
-        if self._shutdown() and not self._cancel.is_cancelled():
-            return self._drain(scope.run)
         if observation is None:
             self._phases.finish(phase, state=PhaseState.TIMED_OUT, detail="deadline")
             self._stop_script(scope)
+            # 阶段行已收好：停机在阶段边界排水，不再走恢复（docs/08）。
+            if self._drain_requested():
+                return self._drain(scope.run)
             return self._recover(scope, "E_DEADLINE", "deadline")
         for signal in observation.signals:
             self._events.append_run(
@@ -337,6 +352,9 @@ class WorkerExecutor:
             return self._cancel_run(scope, started=True)
         if hung:
             self._stop_script(scope)
+        # 阶段行已收好：停机在阶段边界排水，不进恢复与下一阶段（docs/08）。
+        if self._drain_requested():
+            return self._drain(scope.run)
         if script_failed:
             return self._recover(scope, "E_SCRIPT_TASK_FAILED", "script")
         return None
@@ -407,12 +425,16 @@ class WorkerExecutor:
         handle: ScriptHandle,
         context: RunContext,
     ) -> ScriptObservation | None:
-        """观察脚本直到结束；观察次数用尽或到截止时间返回 None，由调用方按超时收尾。"""
+        """观察脚本直到结束；观察次数用尽或到截止时间返回 None，由调用方按超时收尾。
+
+        停机不提前退出：当前阶段要跑完写清阶段结论，阶段行不留半途（docs/08）；
+        取消仍立即返回，取消优先于停机。
+        """
         for _ in range(_MAX_OBSERVATIONS):
             observation = script.observe(handle, context)
             if observation.state is not ScriptState.RUNNING:
                 return observation
-            if self._cancel.is_cancelled() or self._shutdown():
+            if self._cancel.is_cancelled():
                 return observation
             if self._clock.utc_now() >= context.deadline_at:
                 return None

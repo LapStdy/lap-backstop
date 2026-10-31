@@ -1,4 +1,4 @@
-"""停机收尾：阶段边界写 run.interrupted，不改运行状态、不动租约。"""
+"""停机收尾：当前阶段跑完写清结果，在阶段边界写 run.interrupted；不改状态、不动租约。"""
 
 from __future__ import annotations
 
@@ -8,16 +8,27 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from contracts import RunContext, RunState, ScriptHandle, ScriptObservation, ScriptState
+from contracts import (
+    EnvironmentRef,
+    PhaseResult,
+    PhaseState,
+    RunContext,
+    RunState,
+    ScriptHandle,
+    ScriptObservation,
+    ScriptState,
+)
 from core.api.app import ApiApp
 from core.api.store import TOKEN_KEY, put_settings
 from core.api.wire import ApiRequest
 from core.clock import VirtualClock
 from core.hostops.serve import run_serve
+from core.jobs.phases import PhaseTracker
 from core.jobs.run_service import JobRunService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
 from core.supervisor import Supervisor
+from core.worker.executor import WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
@@ -78,6 +89,31 @@ class _ShutdownOnObserveScript(FakeScriptAdapter):
     def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
         self._stop.set()
         return ScriptObservation(state=ScriptState.RUNNING, since=ctx.clock.utc_now())
+
+
+class _ShutdownThenExitScript(FakeScriptAdapter):
+    """第一次观察时置位停机事件，脚本随即正常结束：停机要等执行阶段跑完。"""
+
+    def __init__(self, stop: threading.Event) -> None:
+        super().__init__()
+        self._stop = stop
+
+    def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
+        self._stop.set()
+        return super().observe(handle, ctx)
+
+
+class _ShutdownAfterPrepareProvider(FakeEnvironmentProvider):
+    """准备成功后置位停机事件，模拟两次阶段之间收到停机信号。"""
+
+    def __init__(self, stop: threading.Event) -> None:
+        super().__init__()
+        self._stop = stop
+
+    def prepare(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
+        result = super().prepare(env, ctx)
+        self._stop.set()
+        return result
 
 
 def test_shutdown_during_execution_writes_interrupted_and_keeps_lease(
@@ -216,5 +252,141 @@ def test_drain_endpoint_sets_stop_event_and_due_run_stays_queued(tmp_path: Path)
 
         record = runs.get(run_id)
         assert record.state is RunState.SCHEDULED, f"排水后到点的运行仍被执行：{record.state.value}"
+    finally:
+        connection.close()
+
+
+def test_shutdown_during_execution_finishes_phase_then_interrupts(tmp_path: Path) -> None:
+    """执行中收到停机：当前阶段跑完写清结果再退出，不开验证，interrupt 只一条。"""
+    connection = open_database(tmp_path / "state.db")
+    migrate(connection)
+    clock = VirtualClock(T0)
+    runs = JobRunService(connection, clock)
+    try:
+        _insert_template(connection)
+        run_id = _create_run(runs, scheduled_at=T0, key="shutdown-phase-done")
+        runs.enqueue(run_id)
+        stop = threading.Event()
+        registry = PluginRegistry()
+        registry.register(
+            PluginCapabilities(
+                plugin_id="fake",
+                environment=FakeEnvironmentProvider(),
+                script=_ShutdownThenExitScript(stop),
+                verifier=FakeVerifier(),
+            )
+        )
+        supervisor = Supervisor(
+            connection,
+            clock,
+            registry,
+            data_root=tmp_path,
+            disk_free=lambda: _STABLE_DISK_FREE,
+            shutdown=stop.is_set,
+        )
+        supervisor.tick()
+
+        record = runs.get(run_id)
+        assert record.state is RunState.EXECUTING, f"停机后运行状态被改写：{record.state.value}"
+        assert record.finished_at is None
+        phases = PhaseTracker(connection, clock).for_run(run_id)
+        assert sorted(row.phase for row in phases) == ["execute", "prepare"], (
+            f"停机后开了验证或清理：{phases}"
+        )
+        execute = next(row for row in phases if row.phase == "execute")
+        assert execute.state is PhaseState.OK, f"执行阶段没有写清结果：{execute.state.value}"
+        assert execute.finished_at is not None, "执行阶段行还开着"
+        events = runs.events(run_id)
+        interrupted = [event for event in events if event.type == "run.interrupted"]
+        assert len(interrupted) == 1, f"run.interrupted 条数不对：{[e.type for e in events]}"
+        assert interrupted[0].payload == {"run_id": run_id, "reason": "shutdown"}
+        assert not any(event.type == "run.finished" for event in events)
+        assert LeaseService(connection, clock).active_for_run(run_id), "停机释放了运行租约"
+    finally:
+        connection.close()
+
+
+def test_shutdown_between_phases_starts_no_new_phase(tmp_path: Path) -> None:
+    """两次阶段之间收到停机：当前阶段已收尾，不再开新阶段，直接写 interrupt 退出。"""
+    connection = open_database(tmp_path / "state.db")
+    migrate(connection)
+    clock = VirtualClock(T0)
+    runs = JobRunService(connection, clock)
+    try:
+        _insert_template(connection)
+        run_id = _create_run(runs, scheduled_at=T0, key="shutdown-between-phases")
+        runs.enqueue(run_id)
+        stop = threading.Event()
+        registry = PluginRegistry()
+        registry.register(
+            PluginCapabilities(
+                plugin_id="fake",
+                environment=_ShutdownAfterPrepareProvider(stop),
+                script=FakeScriptAdapter(),
+                verifier=FakeVerifier(),
+            )
+        )
+        supervisor = Supervisor(
+            connection,
+            clock,
+            registry,
+            data_root=tmp_path,
+            disk_free=lambda: _STABLE_DISK_FREE,
+            shutdown=stop.is_set,
+        )
+        supervisor.tick()
+
+        record = runs.get(run_id)
+        assert record.state is RunState.WAITING, f"停机后运行状态被改写：{record.state.value}"
+        phases = PhaseTracker(connection, clock).for_run(run_id)
+        assert [row.phase for row in phases] == ["prepare"], f"停机后开了新阶段：{phases}"
+        assert phases[0].state is PhaseState.OK and phases[0].finished_at is not None
+        events = runs.events(run_id)
+        interrupted = [event for event in events if event.type == "run.interrupted"]
+        assert len(interrupted) == 1, f"run.interrupted 条数不对：{[e.type for e in events]}"
+        assert interrupted[0].payload == {"run_id": run_id, "reason": "shutdown"}
+        assert LeaseService(connection, clock).active_for_run(run_id), "停机释放了运行租约"
+    finally:
+        connection.close()
+
+
+def test_repeated_shutdown_signal_writes_single_interrupt(tmp_path: Path) -> None:
+    """重复收到停机信号：幂等，同一运行不写第二条 interrupt。"""
+    connection = open_database(tmp_path / "state.db")
+    migrate(connection)
+    clock = VirtualClock(T0)
+    runs = JobRunService(connection, clock)
+    try:
+        _insert_template(connection)
+        run_id = _create_run(runs, scheduled_at=T0, key="shutdown-repeat")
+        runs.enqueue(run_id)
+        stop = threading.Event()
+        stop.set()
+        registry = PluginRegistry()
+        registry.register(
+            PluginCapabilities(
+                plugin_id="fake",
+                environment=FakeEnvironmentProvider(),
+                script=FakeScriptAdapter(),
+                verifier=FakeVerifier(),
+            )
+        )
+        executor = WorkerExecutor(
+            connection,
+            clock,
+            registry,
+            data_root=tmp_path,
+            shutdown=stop.is_set,
+        )
+        executor.execute(run_id)
+        executor.execute(run_id)
+
+        record = runs.get(run_id)
+        assert record.state is RunState.QUEUED, f"停机后运行状态被改写：{record.state.value}"
+        interrupted = [event for event in runs.events(run_id) if event.type == "run.interrupted"]
+        assert len(interrupted) == 1, (
+            f"重复信号写了多条 interrupt：{[e.payload for e in interrupted]}"
+        )
+        assert interrupted[0].payload == {"run_id": run_id, "reason": "shutdown"}
     finally:
         connection.close()
