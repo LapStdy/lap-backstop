@@ -149,12 +149,12 @@ class WorkerExecutor:
         run = self._runs.get(run_id)
         if run.state is RunState.RECOVERING:
             # 停机不推进：恢复等待不再入队，留给下次启动扫描按持久状态处置。
-            if self._shutdown() and not self._cancel.is_cancelled():
+            if self._drain_requested():
                 return self._drain(run)
             run = self.resume(run_id)
         if run.state not in (RunState.QUEUED, RunState.WAITING):
             return run
-        if self._shutdown() and not self._cancel.is_cancelled():
+        if self._drain_requested():
             return self._drain(run)
         template = self._templates.get(run.template_id)
         if template is None:
@@ -192,6 +192,10 @@ class WorkerExecutor:
                 {"event": "executor.error", "run_id": scope.run_id, "error": str(error)}
             )
             return self._recover(scope, "E_PLUGIN_CRASH", str(error))
+
+    def _drain_requested(self) -> bool:
+        """停机已请求且用户取消没有同时置位：取消优先于停机（ADR 0007）。"""
+        return self._shutdown() and not self._cancel.is_cancelled()
 
     def _advance(self, scope: RunScope) -> JobRunRecord:
         """按阶段推进；阶段之间是取消与停机的检查点（ADR 0007）。
@@ -318,7 +322,7 @@ class WorkerExecutor:
             self._phases.finish(phase, state=PhaseState.TIMED_OUT, detail="deadline")
             self._stop_script(scope)
             # 阶段行已收好：停机在阶段边界排水，不再走恢复（docs/08）。
-            if self._shutdown() and not self._cancel.is_cancelled():
+            if self._drain_requested():
                 return self._drain(scope.run)
             return self._recover(scope, "E_DEADLINE", "deadline")
         for signal in observation.signals:
@@ -349,7 +353,7 @@ class WorkerExecutor:
         if hung:
             self._stop_script(scope)
         # 阶段行已收好：停机在阶段边界排水，不进恢复与下一阶段（docs/08）。
-        if self._shutdown() and not self._cancel.is_cancelled():
+        if self._drain_requested():
             return self._drain(scope.run)
         if script_failed:
             return self._recover(scope, "E_SCRIPT_TASK_FAILED", "script")
