@@ -96,7 +96,7 @@ def _redact_secrets(result: DeliveryResult, config: NotifyConfig) -> DeliveryRes
     detail = result.detail
     for url in (config.webhook, config.url):
         if url and url in detail:
-            detail = detail.replace(url, _redacted_url(url))
+            detail = detail.replace(url, redacted_url(url))
     if config.token and config.token in detail:
         detail = detail.replace(config.token, _REDACTED_PLACEHOLDER)
     if detail == result.detail:
@@ -104,11 +104,23 @@ def _redact_secrets(result: DeliveryResult, config: NotifyConfig) -> DeliveryRes
     return replace(result, detail=detail)
 
 
-def _redacted_url(url: str) -> str:
-    """docs/08 脱敏口径：域名加前 6 位。"""
+def redacted_url(url: str) -> str:
+    """URL 脱敏：只保留来源（scheme://域名）与其后前 6 位，其余打码（docs/08 口径）。
+
+    Args:
+        url: 原始地址；不要求可解析，不可解析时按原文截取。
+
+    Returns:
+        脱敏后的地址，供日志与事件使用。
+    """
     parts = urllib.parse.urlsplit(url)
     origin = f"{parts.scheme}://{parts.netloc}"
     return f"{origin}{url[len(origin) :][:6]}"
 
 
-__all__ = ["TestDelivery", "build_kernel_delivery_context", "deliver_test_notification"]
+__all__ = [
+    "TestDelivery",
+    "build_kernel_delivery_context",
+    "deliver_test_notification",
+    "redacted_url",
+]

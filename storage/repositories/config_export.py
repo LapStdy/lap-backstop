@@ -12,9 +12,10 @@ from typing import TypedDict
 
 # docs/03「不包含 token 与密钥」：这些键是凭据，任何配置导出都不得带走。
 # notify.url 存的是 ntfy 主题地址，主题本身就是访问凭据（知道主题即可收发），
-# 与 token、webhook 同等对待。
+# 与 token、webhook 同等对待；notify.heartbeat_url 是外部监控的 ping 地址，
+# 知道即可伪造或打断心跳信号，同等对待。
 SECRET_SETTING_KEYS: frozenset[str] = frozenset(
-    {"api.token", "notify.token", "notify.webhook", "notify.url"}
+    {"api.token", "notify.token", "notify.webhook", "notify.url", "notify.heartbeat_url"}
 )
 
 

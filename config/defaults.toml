@@ -49,12 +49,14 @@ remote_enabled = false
 # webhook 供钉钉机器人使用；url 供 ntfy 主题地址使用，也可覆盖 ServerChan 官方接口。
 # enabled: bool；channel: serverchan/dingtalk/ntfy；timeout_seconds: 秒，>0；
 # attempts: 总尝试次数，≥1；backoff_seconds: 秒序列，每项 ≥0；use_proxy: bool。
+# heartbeat_url: dead-man 外部 Push 服务地址（docs/08 外部报警）；空串不启用。
 enabled = false
 channel = "serverchan"
 timeout_seconds = 10
 attempts = 3
 backoff_seconds = [5, 30]
 use_proxy = false
+heartbeat_url = ""
 
 [retention]
 # 每日本地执行时刻（HH:MM），时区取 scheduler.timezone；到点后的第一个 tick 执行一次。
