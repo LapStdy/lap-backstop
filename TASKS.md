@@ -9,11 +9,14 @@
 ## 宿主运维自动化（docs/08 已按现状收敛，下列为待实现的能力）
 
 - [ ] SIGTERM 收尾的强制时限与阶段行收尾：执行器在阶段边界响应停机，硬上限依赖 D-001 执行器异步化。
-- [ ] 升级与回滚：drain、升级前快照、60 s 健康检查、自动回滚、保留 3 版（现只有 `scripts/build_app.py` 的版本目录与 `current` 联接）。
 
 ## 测试整备
 
 - [ ] DEBT D-003：`tests/unit/test_hostops_doctor.py` 两例依赖本机当刻状态，并行与机器状态变化时误报。
+
+## 消重收件箱
+
+- [ ] 联接重建逻辑在 `scripts/build_app.py` 与 `core/hostops/releases.py` 各有一份：下次动 build_app 时合并到 releases 并反向引用。
 
 ## P1：MAA 插件与方舟环境
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -151,3 +151,34 @@ def test_register_requires_token(app: ApiApp) -> None:
     assert missing.status == 401
     assert wrong.status == 401
     assert error_of(wrong)["code"] == "E_AUTH"
+
+
+def _requester(seen: list[int]) -> Callable[[], int]:
+    def request() -> int:
+        seen.append(1)
+        return 2
+
+    return request
+
+
+def test_drain_endpoint_reports_accepted_and_active_runs(
+    database: Path, schtasks: tuple[FakeRunner, list[list[str]]]
+) -> None:
+    runner, _calls = schtasks
+    seen: list[int] = []
+    app = ApiApp(
+        database, clock=VirtualClock(NOW), task_runner=runner, drain_requester=_requester(seen)
+    )
+
+    response = call(app, "POST", "/api/v1/host/drain")
+
+    assert response.status == 200
+    assert payload_of(response) == {"status": "draining", "active_runs": 2}
+    assert seen, "排水动作未被触达"
+
+
+def test_drain_endpoint_without_kernel_answers_conflict(app: ApiApp) -> None:
+    response = call(app, "POST", "/api/v1/host/drain")
+
+    assert response.status == 409
+    assert error_of(response)["code"] == "E_CONFLICT"

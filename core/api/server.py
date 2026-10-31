@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from contracts import Clock, ContractError, ErrorCode, Logger, parse_event_id
 from core.api.app import API_PREFIX, EVENTS_CAPABILITY, ApiApp
+from core.api.hostops_api import DrainRequester
 from core.api.runs_api import RunStopper
 from core.api.store import ensure_server_id
 from core.api.wire import ApiRequest, ApiResponse, FileBody, encode_json, error_response
@@ -62,6 +63,8 @@ class ApiOptions:
     environment_actions: EnvironmentActions | None = None
     # 运行叫停；serve 装配注入，缺省时叫停端点按未接入应答（409）。
     run_stopper: RunStopper | None = None
+    # 排水停机；serve 装配注入，缺省时排水端点按未接入应答（409）。
+    drain_requester: DrainRequester | None = None
     max_requests: int | None = None
 
 
@@ -158,6 +161,7 @@ def start_api_server(
         task_runner=active.task_runner,
         environment_actions=active.environment_actions,
         run_stopper=active.run_stopper,
+        drain_requester=active.drain_requester,
     )
     counter = _RequestCounter()
     servers: list[tuple[ThreadingHTTPServer, threading.Thread]] = []
