@@ -37,10 +37,15 @@ from core.supervisor_leases import LeaseSupervision
 from core.supervisor_recovery import StartupRecovery, retry_due, scheduled_due
 from core.worker.executor import CancelFlag, WorkerExecutor
 from storage import open_database
+from storage.defaults import default
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
 from storage.repositories.job_templates import JobTemplateRepository
 from storage.repositories.schedules import ScheduleRepository
+
+SUSPENDED_EVENT = "host.suspended"
+# 运行中墙钟相对单调时钟的跳变上限（docs/08 时钟与 NTP）。
+_JUMP_THRESHOLD_SECONDS = float(default("host", "clock_jump_seconds"))
 
 
 class Supervisor:
@@ -75,6 +80,9 @@ class Supervisor:
         # 标记的增删归 tick 线程，请求线程只置位；字典读写都在锁内。
         self._cancel_flags: dict[str, CancelFlag] = {}
         self._cancel_lock = threading.Lock()
+        # 跳变检测的基线：首轮只记录不判定，两轮之间才可算跳变量。
+        self._last_wall: datetime | None = None
+        self._last_mono: float | None = None
         self._disk_watermark = DiskWatermark(self._disk_free, self._log, self._emit_global)
         self._lease_watch = LeaseSupervision(
             self._runs,
@@ -120,7 +128,7 @@ class Supervisor:
         return tuple(settled)
 
     def tick(self) -> None:
-        """推进一轮：停机、水位、调度、逾期、租约、保温、队列。
+        """推进一轮：停机、跳变、水位、调度、逾期、租约、保温、队列。
 
         停机事件置位后本轮不再推进任何一步：不查磁盘水位、不扫新运行，在途运行由
         执行器在阶段边界收尾（docs/08）。
@@ -130,6 +138,7 @@ class Supervisor:
         if self._shutdown():
             return
         now = self._clock.utc_now()
+        self._check_wall_jump(now)
         if self._disk_watermark.check():
             return
         try:
@@ -206,6 +215,32 @@ class Supervisor:
             PluginError: provider 缺失或未声明 environment 能力。
         """
         return self._environment_watch.reset(environment_id)
+
+    def _check_wall_jump(self, now: datetime) -> None:
+        """检测墙钟相对单调时钟的跳变；超过阈值按休眠恢复处置（docs/08 时钟与 NTP）。
+
+        两次 tick 之间墙钟增量与单调增量之差即跳变量：进程内无论空闲还是执行运行，
+        两个时钟同速前进，差值接近 0，不会误报；休眠恢复或校时回拨才拉出大差值。
+        基线每轮都更新，磁盘水位等提前返回不会把两轮间隔攒成假跳变。
+        """
+        mono = self._clock.monotonic()
+        previous_wall, previous_mono = self._last_wall, self._last_mono
+        self._last_wall, self._last_mono = now, mono
+        if previous_wall is None or previous_mono is None:
+            return
+        jump = (now - previous_wall).total_seconds() - (mono - previous_mono)
+        if abs(jump) <= _JUMP_THRESHOLD_SECONDS:
+            return
+        self._events.append_global(
+            EventType.HOST_EVENT,
+            {
+                "event": SUSPENDED_EVENT,
+                "detail": f"墙钟跳变 {jump:.1f} 秒，全部环境置 unknown 并重新探测",
+                "jump_seconds": round(jump, 3),
+            },
+            at=now,
+        )
+        self._environment_watch.recover_suspend(detail=f"墙钟跳变 {jump:.1f} 秒")
 
     def _dispatch(self, now: datetime) -> None:
         """推进一个可执行运行：优先排队，其次到点的 waiting 与 recovering。"""

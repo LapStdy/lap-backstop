@@ -65,12 +65,23 @@ class EnvironmentSupervision:
         row = self._environments.get(environment_id)
         return self._environments.reset(self._environment_call(row, "reset"))
 
+    def recover_suspend(self, *, detail: str) -> None:
+        """休眠恢复处置：全部环境先置 unknown，再各探一次。
+
+        休眠让持久状态脱离现实，off 与 ready 都不能当作还成立；先整体置 unknown
+        留下 env.state.changed 事件，probe 立刻跟一轮，探后仍 unknown 的等下一次
+        启动再判（docs/09 崩溃恢复）。
+        """
+        for row in self._environments.list_all():
+            self._environments.mark_unknown(row.id, detail=detail)
+        self.probe_environments()
+
     def probe_environments(self) -> None:
         """启动时对每个环境各探一次，探针结果按状态机迁移。
 
         崩溃与唤醒都会让持久状态脱离现实，off 与 ready 也不能当作还成立；探针与
-        当前状态相同时只刷新观测时间。只挂在启动扫描上，tick 不探测；探后仍
-        unknown 的等下一次启动再判，本轮不补探。
+        当前状态相同时只刷新观测时间。挂在启动扫描与休眠恢复上，tick 不主动探测；
+        探后仍 unknown 的等下一次启动再判，本轮不补探。
         """
         now = self._clock.utc_now()
         for row in self._environments.list_all():
