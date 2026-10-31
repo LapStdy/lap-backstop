@@ -40,6 +40,36 @@ def scripted(script: dict[tuple[str, ...], subprocess.CompletedProcess[bytes]]) 
     return run
 
 
+WSAECONNREFUSED = 10061
+
+
+class _RefusingProbe:
+    """假端口探针：connect_ex 一律按连接被拒返回，探测不落真实端口。"""
+
+    def connect_ex(self, _address: tuple[str, int]) -> int:
+        return WSAECONNREFUSED
+
+    def __enter__(self) -> _RefusingProbe:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+def stub_port_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把 doctor 的端口探测换成假件；被拒的回环 connect_ex 在本机要 2 秒，真实探测会拖垮用例。"""
+
+    class _FakeSocketModule:
+        AF_INET = socket.AF_INET
+        SOCK_STREAM = socket.SOCK_STREAM
+
+        @staticmethod
+        def socket(*_args: object, **_kwargs: object) -> _RefusingProbe:
+            return _RefusingProbe()
+
+    monkeypatch.setattr(doctor, "socket", _FakeSocketModule)
+
+
 def make_deps(tmp_path: Path, **overrides: object) -> doctor.DoctorDeps:
     values: dict[str, object] = {
         "data_root": tmp_path,
@@ -150,7 +180,8 @@ def test_check_heartbeat_fresh(tmp_path: Path) -> None:
 
 
 def test_check_lock_and_mutex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """锁文件与互斥量的对应关系；互斥量用假件，不碰本机全局命名互斥量。"""
+    """锁文件与互斥量的对应关系；互斥量与端口探测用假件，不碰本机全局命名互斥量。"""
+    stub_port_probe(monkeypatch)
     held: list[bool] = []
 
     def fake_acquire(_name: str) -> int | None:
@@ -384,6 +415,7 @@ def test_run_doctor_prints_each_check_and_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """14 项逐条打印并给汇总；外部依赖换成假件，结论不随本机状态变化。"""
+    stub_port_probe(monkeypatch)
     make_database(tmp_path)
     (tmp_path / "app" / "current").mkdir(parents=True)
     fake = make_deps(tmp_path, api_address=("127.0.0.1", 1))
