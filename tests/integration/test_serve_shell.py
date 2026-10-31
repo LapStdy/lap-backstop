@@ -170,8 +170,8 @@ def test_run_serve_bounded_ticks_write_heartbeat_and_cleanup(tmp_path: Path) -> 
         ("host.event", AUTOLOGON_CHECKED_EVENT),
         ("host.event", TASKS_REGISTERED_EVENT),
     }
-    # 注册走 schtasks 覆盖式导入，清单是 core、watchdog、backup 三个任务
-    assert [call[3] for call in task_calls] == ["/tn", "/tn", "/tn"]
+    # 注册走 schtasks 覆盖式导入，清单以 tasks.REGISTERED_TASKS 为准
+    assert [call[3] for call in task_calls] == ["/tn"] * len(tasks.REGISTERED_TASKS)
     assert {call[4] for call in task_calls} == set(tasks.REGISTERED_TASKS)
 
 

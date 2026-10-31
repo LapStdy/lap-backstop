@@ -26,6 +26,10 @@ def test_host_section_matches_watchdog_baseline() -> None:
     assert default("host", "give_up_max_failures") == 3
 
 
+def test_backup_section_carries_evidence_mirror_threshold() -> None:
+    assert default("backup", "evidence_mirror_threshold_gb") == 20
+
+
 def test_unknown_key_reports_section_and_key() -> None:
     with pytest.raises(KeyError) as excinfo:
         default("worker", "does_not_exist")

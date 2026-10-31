@@ -1,9 +1,9 @@
 r"""计划任务定义：XML 生成、落盘与 schtasks 注册。
 
-三个任务按 docs/08 计划任务一节：触发器与动作固定，实例策略「不启动新实例」、
+四个任务按 docs/08 计划任务一节：触发器与动作固定，实例策略「不启动新实例」、
 不限运行时长、不关 AC 电源条件都写进 XML 字段。任务以 XML 导入，文件留在
-``data\host\tasks\`` 供比对与重建；备份每日 04:00 注册；预热没有计划任务，
-由调度在 ``preheat_minutes`` 之前建运行完成。
+``data\host\tasks\`` 供比对与重建；备份每日 04:00、证据镜像每周日 04:30 注册；
+预热没有计划任务，由调度在 ``preheat_minutes`` 之前建运行完成。
 """
 
 from __future__ import annotations
@@ -21,11 +21,12 @@ TASKS_DIRNAME = "host/tasks"
 TASK_CORE = "lap-backstop-core"
 TASK_WATCHDOG = "lap-backstop-watchdog"
 TASK_BACKUP = "lap-backstop-backup"
+TASK_EVIDENCE_MIRROR = "lap-backstop-evidence-mirror"
 # 注册结果的落点事件（docs/03 host.event 取值表）；serve 启动与本端点共用。
 TASKS_REGISTERED_EVENT = "host.tasks_registered"
 
 # 注册清单：动作只依赖本命令行（docs/08 计划任务一节）。
-REGISTERED_TASKS = (TASK_CORE, TASK_WATCHDOG, TASK_BACKUP)
+REGISTERED_TASKS = (TASK_CORE, TASK_WATCHDOG, TASK_BACKUP, TASK_EVIDENCE_MIRROR)
 
 # schtasks 偶发慢盘会到秒级；注册发生在 serve 启动路径上，超时按失败处理可重试。
 _REGISTER_TIMEOUT_SECONDS = 10.0
@@ -149,6 +150,30 @@ def backup_task_xml(action: TaskAction, *, registered_at: datetime) -> str:
     )
 
 
+def evidence_mirror_task_xml(action: TaskAction, *, registered_at: datetime) -> str:
+    """每周日 04:30 证据增量镜像；允许唤醒计算机。"""
+    triggers = (
+        "    <CalendarTrigger>\n"
+        f"      <StartBoundary>{registered_at:%Y-%m-%d}T04:30:00</StartBoundary>\n"
+        "      <ScheduleByWeek>\n"
+        "        <WeeksInterval>1</WeeksInterval>\n"
+        "        <DaysOfWeek>\n"
+        "          <Sunday />\n"
+        "        </DaysOfWeek>\n"
+        "      </ScheduleByWeek>\n"
+        "    </CalendarTrigger>\n"
+    )
+    return _render(
+        TaskSpec(
+            name=TASK_EVIDENCE_MIRROR,
+            description="lap-backstop 证据增量镜像：每周日 04:30 执行",
+            triggers=triggers,
+            action=action,
+            wake_to_run=True,
+        )
+    )
+
+
 def write_definitions(
     tasks_dir: Path,
     actions: Mapping[str, TaskAction],
@@ -165,6 +190,7 @@ def write_definitions(
         TASK_CORE: lambda action, _registered_at: core_task_xml(action),
         TASK_WATCHDOG: lambda action, at: watchdog_task_xml(action, registered_at=at),
         TASK_BACKUP: lambda action, at: backup_task_xml(action, registered_at=at),
+        TASK_EVIDENCE_MIRROR: lambda action, at: evidence_mirror_task_xml(action, registered_at=at),
     }
     tasks_dir.mkdir(parents=True, exist_ok=True)
     written: dict[str, Path] = {}
@@ -258,6 +284,7 @@ def startup_actions(data_root: Path) -> dict[str, TaskAction]:
             TASK_CORE: TaskAction(executable, "serve"),
             TASK_WATCHDOG: TaskAction(executable, "watchdog check"),
             TASK_BACKUP: TaskAction(executable, "backup"),
+            TASK_EVIDENCE_MIRROR: TaskAction(executable, "evidence-mirror"),
         }
     python = sys.executable
     root = str(data_root.resolve())
@@ -265,6 +292,7 @@ def startup_actions(data_root: Path) -> dict[str, TaskAction]:
         TASK_CORE: TaskAction(python, f"-m core serve --data-root {root}"),
         TASK_WATCHDOG: TaskAction(python, f"-m core watchdog check --data-root {root}"),
         TASK_BACKUP: TaskAction(python, f"-m core backup --data-root {root}"),
+        TASK_EVIDENCE_MIRROR: TaskAction(python, f"-m core evidence-mirror --data-root {root}"),
     }
 
 
@@ -310,6 +338,7 @@ __all__ = [
     "TASKS_REGISTERED_EVENT",
     "TASK_BACKUP",
     "TASK_CORE",
+    "TASK_EVIDENCE_MIRROR",
     "TASK_WATCHDOG",
     "TaskAction",
     "TaskRegisterOutcome",
@@ -317,6 +346,7 @@ __all__ = [
     "TaskSpec",
     "backup_task_xml",
     "core_task_xml",
+    "evidence_mirror_task_xml",
     "register_registered_tasks",
     "register_task",
     "startup_actions",
