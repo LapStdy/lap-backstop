@@ -61,6 +61,20 @@ def test_backup_task_xml_runs_daily_four_and_wakes_computer() -> None:
     assert "<WakeToRun>true</WakeToRun>" in xml
 
 
+def test_evidence_mirror_task_xml_runs_sunday_0430_and_wakes_computer() -> None:
+    xml = tasks.evidence_mirror_task_xml(
+        tasks.TaskAction("C:\\app\\current\\lap-backstop.exe", "evidence-mirror"),
+        registered_at=REGISTERED_AT,
+    )
+    assert "<CalendarTrigger>" in xml
+    assert "T04:30:00</StartBoundary>" in xml
+    assert "<ScheduleByWeek>" in xml
+    assert "<WeeksInterval>1</WeeksInterval>" in xml
+    assert "<Sunday />" in xml
+    assert "<WakeToRun>true</WakeToRun>" in xml
+    assert "<Arguments>evidence-mirror</Arguments>" in xml
+
+
 def test_xml_generation_is_deterministic_and_escapes_input() -> None:
     action = tasks.TaskAction("C:\\tools\\a&b.exe", "serve & watch <core>")
     first = tasks.core_task_xml(action)
@@ -155,6 +169,9 @@ def test_startup_actions_cover_frozen_and_source_modes(
     assert dev[tasks.TASK_BACKUP] == tasks.TaskAction(
         sys.executable, f"-m core backup --data-root {root}"
     )
+    assert dev[tasks.TASK_EVIDENCE_MIRROR] == tasks.TaskAction(
+        sys.executable, f"-m core evidence-mirror --data-root {root}"
+    )
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", "C:\\app\\current\\lap-backstop.exe")
     frozen = tasks.startup_actions(tmp_path)
@@ -165,6 +182,9 @@ def test_startup_actions_cover_frozen_and_source_modes(
     # 打包形态：backup 指向自身 exe
     assert frozen[tasks.TASK_BACKUP] == tasks.TaskAction(
         "C:\\app\\current\\lap-backstop.exe", "backup"
+    )
+    assert frozen[tasks.TASK_EVIDENCE_MIRROR] == tasks.TaskAction(
+        "C:\\app\\current\\lap-backstop.exe", "evidence-mirror"
     )
 
 
@@ -177,11 +197,12 @@ def test_register_registered_tasks_reports_outcome(tmp_path: Path) -> None:
     assert tasks.TASK_CORE in registration.detail
     assert tasks.TASK_WATCHDOG in registration.detail
     assert tasks.TASK_BACKUP in registration.detail
+    assert tasks.TASK_EVIDENCE_MIRROR in registration.detail
     # 逐任务结果各带成功确认
     assert all(outcome.ok and outcome.detail == "已注册" for outcome in registration.outcomes)
-    # 注册清单三个任务，按清单顺序先写定义文件再逐个注册
+    # 注册清单四个任务，按清单顺序先写定义文件再逐个注册
     assert [call[4] for call in calls] == list(tasks.REGISTERED_TASKS)
-    assert len(calls) == 3
+    assert len(calls) == 4
     tasks_dir = tmp_path / tasks.TASKS_DIRNAME
     for name in tasks.REGISTERED_TASKS:
         definition = (tasks_dir / f"{name}.xml").read_text(encoding="utf-16")
@@ -196,4 +217,5 @@ def test_register_registered_tasks_reports_outcome(tmp_path: Path) -> None:
         tasks.TASK_CORE,
         tasks.TASK_WATCHDOG,
         tasks.TASK_BACKUP,
+        tasks.TASK_EVIDENCE_MIRROR,
     }

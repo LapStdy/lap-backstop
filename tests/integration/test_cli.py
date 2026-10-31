@@ -132,6 +132,66 @@ def test_db_check_without_database_hints_to_restore(
     assert "库文件不存在" in capsys.readouterr().err
 
 
+def test_evidence_mirror_copies_into_backups_and_writes_finished_event(
+    data_root: Path,
+) -> None:
+    evidence = data_root / "evidence" / "shot.png"
+    evidence.parent.mkdir(parents=True)
+    evidence.write_bytes(b"alpha")
+
+    assert main(["evidence-mirror", "--data-root", str(data_root)]) == EXIT_OK
+
+    copied = data_root / "backups" / "evidence" / "shot.png"
+    assert copied.read_bytes() == b"alpha"
+    connection = open_database(data_root / "backstop.sqlite")
+    try:
+        rows = connection.execute(
+            "SELECT payload FROM events_global WHERE type = 'host.event'"
+        ).fetchall()
+    finally:
+        connection.close()
+    events = [json.loads(str(row["payload"]))["event"] for row in rows]
+    assert "host.evidence_mirror_finished" in events
+
+
+def test_evidence_mirror_without_database_hints_to_initialize(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["evidence-mirror", "--data-root", str(tmp_path)]) == EXIT_ERROR
+    assert "库文件不存在" in capsys.readouterr().err
+    assert not (tmp_path / "backups" / "evidence").exists()
+
+
+def test_evidence_mirror_failure_records_event_and_exits_error(
+    data_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from core.hostops import evidence_mirror
+    from core.hostops.evidence_mirror import EvidenceMirrorError
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise EvidenceMirrorError("shot.png：注入的搬运故障")
+
+    monkeypatch.setattr(evidence_mirror, "mirror_evidence", fail)
+    assert main(["evidence-mirror", "--data-root", str(data_root)]) == EXIT_ERROR
+    assert "证据镜像失败" in capsys.readouterr().err
+    connection = open_database(data_root / "backstop.sqlite")
+    try:
+        rows = connection.execute(
+            "SELECT payload FROM events_global WHERE type = 'host.event'"
+        ).fetchall()
+    finally:
+        connection.close()
+    failures = [
+        json.loads(str(row["payload"]))
+        for row in rows
+        if json.loads(str(row["payload"]))["event"] == "host.evidence_mirror_failed"
+    ]
+    assert len(failures) == 1
+    assert failures[0]["detail"] == "shot.png：注入的搬运故障"
+
+
 def test_worker_subcommand_stays_out_of_help(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as raised:
         main(["--help"])

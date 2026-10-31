@@ -24,6 +24,7 @@ TASK_NAMES = (
     tasks.TASK_CORE,
     tasks.TASK_WATCHDOG,
     tasks.TASK_BACKUP,
+    tasks.TASK_EVIDENCE_MIRROR,
 )
 
 
@@ -203,6 +204,7 @@ def _task_query_script(tmp_path: Path) -> dict[tuple[str, ...], subprocess.Compl
             tasks.TASK_CORE: tasks.TaskAction("exe", "serve"),
             tasks.TASK_WATCHDOG: tasks.TaskAction("exe", "watchdog check"),
             tasks.TASK_BACKUP: tasks.TaskAction("exe", "backup"),
+            tasks.TASK_EVIDENCE_MIRROR: tasks.TaskAction("exe", "evidence-mirror"),
         },
         registered_at=NOW,
     )
@@ -220,7 +222,7 @@ def test_check_scheduled_tasks(tmp_path: Path) -> None:
     deps = make_deps(tmp_path, runner=scripted(script))
     result = single(deps, 11)
     assert result.level is doctor.Level.PASS
-    assert result.detail == "三个任务在位"
+    assert result.detail == "4 个任务在位"
 
     script[("schtasks", "/query", "/tn", tasks.TASK_WATCHDOG)] = completed(returncode=1)
     result = single(deps, 11)

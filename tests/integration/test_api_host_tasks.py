@@ -22,8 +22,9 @@ from tests.fixtures.subprocess_fakes import FakeRunner, fake_runner
 NOW = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)
 TOKEN = "secret-token"
 REGISTER_PATH = "/api/v1/host/tasks/register"
-SUCCESS_DETAIL = "已注册并写入定义：lap-backstop-core、lap-backstop-watchdog、lap-backstop-backup"
-FAILURE_DETAIL = "注册失败：lap-backstop-core、lap-backstop-watchdog、lap-backstop-backup"
+# 汇总口径与 serve 启动路径同一构造：清单来自 tasks.REGISTERED_TASKS
+SUCCESS_DETAIL = "已注册并写入定义：" + "、".join(tasks.REGISTERED_TASKS)
+FAILURE_DETAIL = "注册失败：" + "、".join(tasks.REGISTERED_TASKS)
 
 
 @pytest.fixture
@@ -88,13 +89,9 @@ def test_register_returns_per_task_result_and_writes_definitions(
     payload = payload_of(response)
     assert payload["ok"] is True
     assert payload["detail"] == SUCCESS_DETAIL
-    assert [task["name"] for task in payload["tasks"]] == [
-        tasks.TASK_CORE,
-        tasks.TASK_WATCHDOG,
-        tasks.TASK_BACKUP,
-    ]
+    assert [task["name"] for task in payload["tasks"]] == list(tasks.REGISTERED_TASKS)
     assert all(task["ok"] and task["detail"] == "已注册" for task in payload["tasks"])
-    assert len(calls) == 3
+    assert len(calls) == len(tasks.REGISTERED_TASKS)
     # 定义文件落在数据目录，供比对与重建（docs/08 计划任务一节）
     tasks_dir = database.parent / tasks.TASKS_DIRNAME
     assert (tasks_dir / f"{tasks.TASK_CORE}.xml").is_file()
