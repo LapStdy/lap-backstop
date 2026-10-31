@@ -23,6 +23,7 @@ NOW = datetime(2026, 10, 26, 9, 0, tzinfo=UTC)
 TOKEN = "secret-token"
 NOTIFY_TOKEN = "SCT-secret-9x"
 NOTIFY_URL = "https://ntfy.sh/topic-secret"
+HEARTBEAT_URL = "https://hc-ping.com/secret-uuid"
 EXPORT_PATH = "/api/v1/export"
 FILENAME_PATTERN = r"lap-backstop-export-\d{8}-\d{6}\.zip"
 ENTRY_NAMES = frozenset(
@@ -55,6 +56,7 @@ def database(tmp_path: Path) -> Iterator[Path]:
                 TOKEN_KEY: TOKEN,
                 "notify.token": NOTIFY_TOKEN,
                 "notify.url": NOTIFY_URL,
+                "notify.heartbeat_url": HEARTBEAT_URL,
                 "api.host": "127.0.0.1",
             },
             at=NOW,
@@ -162,7 +164,10 @@ def test_export_hides_token_and_credentials(app: ApiApp) -> None:
     assert "notify.token" not in entries["settings.json"]["values"]
     # ntfy 主题地址等同凭据，一并过滤
     assert "notify.url" not in entries["settings.json"]["values"]
+    # dead-man 的 ping 地址同样即凭据，不入导出
+    assert "notify.heartbeat_url" not in entries["settings.json"]["values"]
     assert response.binary is not None
+    assert HEARTBEAT_URL.encode("utf-8") not in response.binary.data
     assert TOKEN.encode("utf-8") not in response.binary.data
     assert NOTIFY_TOKEN.encode("utf-8") not in response.binary.data
     assert NOTIFY_URL.encode("utf-8") not in response.binary.data

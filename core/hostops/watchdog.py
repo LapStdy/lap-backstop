@@ -22,7 +22,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any, NamedTuple, TypedDict
 
 WATCHDOG_MUTEX_NAME = "Global\\lap-backstop-watchdog"
 STATE_FILENAME = "watchdog.state.json"
@@ -86,12 +86,25 @@ class CheckPolicy:
 
 @dataclass(frozen=True, slots=True)
 class CheckInputs:
-    """一次检查的注入项：时刻、数值、schtasks 执行器与 pid 判定。"""
+    """一次检查的注入项：时刻、数值、schtasks 执行器、pid 判定与 dead-man 挂载点。"""
 
     now: datetime
     policy: CheckPolicy
     runner: Runner
     pid_alive: Callable[[int], bool]
+    # dead-man 挂载点（core.hostops.deadman）；注入件必须自行吞掉所有异常，
+    # None 表示不挂载（进程内测试与未启用 dead-man 的路径都走 None）。
+    deadman: Callable[[CheckReport], None] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class CheckReport:
+    """一轮检查的结果快照：dead-man 据此决定发心跳还是报 fail。"""
+
+    passed: bool
+    action: str
+    heartbeat_age_s: float | None
+    core_pid: int | None
 
 
 class GaveUpReport(TypedDict):
@@ -104,12 +117,14 @@ class GaveUpReport(TypedDict):
 
 
 class WatchdogState(TypedDict, total=False):
-    """状态文件 schema：拉起待验收时刻、验收失败时刻列表、停手待上报标记与停手报告。"""
+    """状态文件 schema：拉起待验收时刻、验收失败时刻列表、停手待上报标记、
+    停手报告与 dead-man 失败通知去重标记（键由 core.hostops.deadman 读写）。"""
 
     pending_start: str | None
     failures: list[str]
     gave_up_pending_report: bool
     gave_up_report: GaveUpReport | None
+    deadman_fail_notified: bool
 
 
 def run_check(data_root: Path, *, inputs: CheckInputs) -> int:
@@ -143,6 +158,7 @@ def read_state(path: Path) -> WatchdogState:
         ),
         "gave_up_pending_report": bool(data.get("gave_up_pending_report")),
         "gave_up_report": _parse_gave_up_report(data.get("gave_up_report")),
+        "deadman_fail_notified": bool(data.get("deadman_fail_notified")),
     }
 
 
@@ -200,6 +216,13 @@ def is_pid_alive(pid: int) -> bool:
         _kernel32.CloseHandle(handle)
 
 
+class DeathOutcome(NamedTuple):
+    """判死后的处置结果：动作名与「是否按通过处理」（误报豁免记通过）。"""
+
+    action: str
+    passed: bool
+
+
 def _execute_check(data_root: Path, inputs: CheckInputs) -> None:
     run_dir = data_root / "run"
     state_path = run_dir / STATE_FILENAME
@@ -210,13 +233,19 @@ def _execute_check(data_root: Path, inputs: CheckInputs) -> None:
     dead, age, core_pid = _judge_death(run_dir, inputs)
     _settle_acceptance(state, failures, age, inputs)
     if dead:
-        action = _act_on_death(data_root, state, failures, inputs)
+        outcome = _act_on_death(data_root, state, failures, inputs)
+        action, passed = outcome.action, outcome.passed
     else:
         state["failures"] = [moment.isoformat() for moment in failures]
         action = ACTION_NONE
+        passed = True
     write_state(state_path, state)
     log_path = data_root / "logs" / LOG_FILENAME
     _append_log(log_path, now=inputs.now, age=age, core_pid=core_pid, action=action)
+    if inputs.deadman is not None:
+        inputs.deadman(
+            CheckReport(passed=passed, action=action, heartbeat_age_s=age, core_pid=core_pid)
+        )
 
 
 def _judge_death(run_dir: Path, inputs: CheckInputs) -> tuple[bool, float | None, int | None]:
@@ -255,12 +284,17 @@ def _act_on_death(
     state: WatchdogState,
     failures: list[datetime],
     inputs: CheckInputs,
-) -> str:
-    """死了之后做什么：误报豁免、停手或请求拉起；就地更新 state 并返回动作名。"""
+) -> DeathOutcome:
+    """死了之后做什么：误报豁免、停手或请求拉起；就地更新 state。
+
+    Returns:
+        动作名与「是否按通过处理」。误报豁免说明核心确认存活，dead-man 照常
+        发心跳、不发 fail；拉起失败与停手都按未通过处理。
+    """
     run_dir = data_root / "run"
     state["failures"] = [moment.isoformat() for moment in failures]
     if _core_actually_running(run_dir, alive=inputs.pid_alive):
-        return ACTION_NONE
+        return DeathOutcome(ACTION_NONE, passed=True)
     if len(failures) >= inputs.policy.give_up_max_failures:
         return _handle_give_up(data_root, state, failures)
     try:
@@ -271,18 +305,22 @@ def _act_on_death(
             timeout=_SCHEDULING_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired:
-        return ACTION_NONE
+        return DeathOutcome(ACTION_NONE, passed=False)
     if completed.returncode != 0:
-        return ACTION_NONE
+        return DeathOutcome(ACTION_NONE, passed=False)
     state["pending_start"] = inputs.now.isoformat()
-    return ACTION_START_REQUESTED
+    return DeathOutcome(ACTION_START_REQUESTED, passed=False)
 
 
-def _handle_give_up(data_root: Path, state: WatchdogState, failures: list[datetime]) -> str:
+def _handle_give_up(
+    data_root: Path,
+    state: WatchdogState,
+    failures: list[datetime],
+) -> DeathOutcome:
     """停手分支：取证载荷就地写进 state，待核心下次启动取走补写（docs/08 停手一节）。"""
     state["gave_up_pending_report"] = True
     state["gave_up_report"] = _collect_gave_up_report(data_root, failures)
-    return ACTION_GAVE_UP
+    return DeathOutcome(ACTION_GAVE_UP, passed=False)
 
 
 def _core_actually_running(run_dir: Path, *, alive: Callable[[int], bool]) -> bool:
@@ -591,6 +629,7 @@ __all__ = [
     "WATCHDOG_MUTEX_NAME",
     "CheckInputs",
     "CheckPolicy",
+    "CheckReport",
     "GaveUpReport",
     "WatchdogState",
     "claim_gave_up_report",

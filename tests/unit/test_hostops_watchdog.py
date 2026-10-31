@@ -150,6 +150,58 @@ def test_lock_pid_reuse_breaks_exemption(tmp_path: Path, monkeypatch: pytest.Mon
     assert len(calls) == 1
 
 
+def check_with_deadman(
+    data_root: Path,
+    *,
+    now: datetime,
+    pid_alive: bool,
+    returncode: int = 0,
+) -> list[watchdog.CheckReport]:
+    """跑一次检查并收集 dead-man 挂载点收到的报告快照。"""
+    reports: list[watchdog.CheckReport] = []
+    runner, _ = fake_runner(returncode)
+    code = watchdog.run_check(
+        data_root,
+        inputs=watchdog.CheckInputs(
+            now=now,
+            policy=POLICY,
+            runner=runner,
+            pid_alive=lambda _pid: pid_alive,
+            deadman=reports.append,
+        ),
+    )
+    assert code == 0
+    return reports
+
+
+def test_deadman_receives_pass_report_on_healthy_round(tmp_path: Path) -> None:
+    write_heartbeat(tmp_path / "run", pid=101, age_seconds=10)
+    [report] = check_with_deadman(tmp_path, now=BASE, pid_alive=True)
+    assert report.passed is True
+    assert report.action == watchdog.ACTION_NONE
+    assert report.heartbeat_age_s == pytest.approx(10.0)
+    assert report.core_pid == 101
+
+
+def test_deadman_receives_fail_report_on_dead_round(tmp_path: Path) -> None:
+    # 心跳缺失判死：按未通过处理，动作是请求拉起
+    [report] = check_with_deadman(tmp_path, now=BASE, pid_alive=True)
+    assert report.passed is False
+    assert report.action == watchdog.ACTION_START_REQUESTED
+    assert report.heartbeat_age_s is None
+    assert report.core_pid is None
+
+
+def test_deadman_receives_pass_on_lock_exemption(tmp_path: Path) -> None:
+    # 误报豁免说明核心确认存活：dead-man 按通过处理，发心跳、不发 fail
+    run_dir = tmp_path / "run"
+    write_heartbeat(run_dir, pid=101, age_seconds=400)
+    write_lock(run_dir, pid=101, started_at=(BASE - timedelta(hours=1)).isoformat())
+    [report] = check_with_deadman(tmp_path, now=BASE, pid_alive=True)
+    assert report.passed is True
+    assert report.action == watchdog.ACTION_NONE
+
+
 def test_acceptance_failures_accumulate_then_give_up(tmp_path: Path) -> None:
     # 拉起后从未出现新心跳：每轮验收失败一次，窗口内第 3 次停手并留待上报标记
     run_dir = tmp_path / "run"
@@ -236,6 +288,18 @@ def test_claim_with_legacy_marker_returns_fallback_payload(tmp_path: Path) -> No
     assert state["gave_up_report"] is None
     # 取走即清：二次调用返回 None
     assert watchdog.claim_gave_up_report(state_path) is None
+
+
+def test_claim_preserves_deadman_marker(tmp_path: Path) -> None:
+    """停手补报取走式改写状态文件，不得丢掉 dead-man 的去重标记。"""
+    state_path = tmp_path / "run" / watchdog.STATE_FILENAME
+    watchdog.write_state(
+        state_path, {"gave_up_pending_report": True, "deadman_fail_notified": True}
+    )
+    watchdog.claim_gave_up_report(state_path)
+    state = watchdog.read_state(state_path)
+    assert state["gave_up_pending_report"] is False
+    assert state["deadman_fail_notified"] is True
 
 
 def test_claim_takes_stored_report_and_clears_marker(tmp_path: Path) -> None:

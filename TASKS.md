@@ -8,7 +8,6 @@
 
 ## 宿主运维自动化（docs/08 已按现状收敛，下列为待实现的能力）
 
-- [ ] dead-man 外部心跳：settings 键 `notify.heartbeat_url` 存外部 Push 服务地址；看门狗每次检查通过后 ping，核心死、看门狗死、断电、断网、自动登录失败都会停发；任一条件不满足立即发 fail，日志与事件里 URL 脱敏为域名加前 6 位。
 - [ ] 校时与时钟跳变：启动执行 `w32tm /resync`；偏移 >30 s 记 `host.clock_skew` 并暂停补跑；墙钟跳变 >120 s 记 `host.suspended` 且全环境置 unknown 强制 probe。两个事件已登记在 docs/03，代码无写入点。
 - [ ] SIGTERM 收尾的强制时限与阶段行收尾：执行器在阶段边界响应停机，硬上限依赖 D-001 执行器异步化。
 - [ ] 升级与回滚：drain、升级前快照、60 s 健康检查、自动回滚、保留 3 版（现只有 `scripts/build_app.py` 的版本目录与 `current` 联接）。

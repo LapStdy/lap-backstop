@@ -7,11 +7,16 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import sqlite3
 import subprocess
 import sys
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from core.hostops.watchdog import CheckInputs
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -82,13 +87,20 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run_watchdog_check(data_root: Path) -> int:
-    """看门狗单次检查；数值取 [host] 默认值（唯一真源，docs/08 独立看门狗一节）。"""
-    from datetime import UTC, datetime
+    """看门狗单次检查；注入项见 _watchdog_check_inputs。"""
+    from core.hostops.watchdog import run_check
 
-    from core.hostops.watchdog import CheckInputs, CheckPolicy, is_pid_alive, run_check
+    return run_check(data_root, inputs=_watchdog_check_inputs(data_root))
+
+
+def _watchdog_check_inputs(data_root: Path) -> CheckInputs:
+    """看门狗检查的注入项：数值取 [host] 默认值，dead-man 挂真实传输与渠道（docs/08）。"""
+    from core.clock import SystemClock
+    from core.hostops import deadman
+    from core.hostops.watchdog import CheckInputs, CheckPolicy, is_pid_alive
     from storage.defaults import default
 
-    inputs = CheckInputs(
+    return CheckInputs(
         now=datetime.now(UTC),
         policy=CheckPolicy(
             stale_seconds=float(default("host", "stale_seconds")),
@@ -98,8 +110,12 @@ def _run_watchdog_check(data_root: Path) -> int:
         ),
         runner=subprocess.run,
         pid_alive=is_pid_alive,
+        deadman=functools.partial(
+            deadman.on_check_report,
+            data_root=data_root,
+            inputs=deadman.DeadmanInputs(clock=SystemClock()),
+        ),
     )
-    return run_check(data_root, inputs=inputs)
 
 
 def _run_backup(data_root: Path) -> int:
