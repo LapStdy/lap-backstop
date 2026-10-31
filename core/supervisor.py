@@ -35,6 +35,12 @@ from core.supervisor_disk import DiskWatermark
 from core.supervisor_environments import EnvironmentSupervision
 from core.supervisor_leases import LeaseSupervision
 from core.supervisor_recovery import StartupRecovery, retry_due, scheduled_due
+from core.supervisor_routing import (
+    ROUTE_WINDOW,
+    RouteAnnouncer,
+    RouteCandidate,
+    route_dispatch,
+)
 from core.worker.executor import CancelFlag, WorkerExecutor
 from storage import open_database
 from storage.defaults import default
@@ -75,6 +81,7 @@ class Supervisor:
         self._runs = JobRunService(connection, clock, disk_free=self._disk_free)
         self._scanner = ScheduleScanner(connection, clock, self._runs)
         self._schedules = ScheduleRepository(connection)
+        self._templates = JobTemplateRepository(connection)
         self._leases = LeaseService(connection, clock)
         self._events = EventLog(connection)
         # 标记的增删归 tick 线程，请求线程只置位；字典读写都在锁内。
@@ -87,7 +94,7 @@ class Supervisor:
         self._lease_watch = LeaseSupervision(
             self._runs,
             self._leases,
-            JobTemplateRepository(connection),
+            self._templates,
             clock,
             log=self._log,
         )
@@ -99,6 +106,9 @@ class Supervisor:
             data_root=data_root,
             log=self._log,
             emit_global=self._emit_global,
+        )
+        self._route_announcer = RouteAnnouncer(
+            self._log, self._emit_global, self._registry.degradation_reason
         )
 
     def startup(self) -> tuple[JobRunRecord, ...]:
@@ -243,11 +253,22 @@ class Supervisor:
         self._environment_watch.recover_suspend(detail=f"墙钟跳变 {jump:.1f} 秒")
 
     def _dispatch(self, now: datetime) -> None:
-        """推进一个可执行运行：优先排队，其次到点的 waiting 与 recovering。"""
-        queued = self._runs.next_queued(limit=1)
+        """推进一个可执行运行：排队候选先按插件降级路由，其次到点的 waiting 与 recovering。
+
+        路由只作用于排队候选（docs/05 多插件路由与降级）：降级插件的运行让位给可用
+        插件的运行，全部降级时不派发并留事件；waiting 与 recovering 仍按原有顺序推进。
+        """
+        queued = self._runs.next_queued(limit=ROUTE_WINDOW)
         if queued:
-            self._execute(queued[0])
-            return
+            decision = route_dispatch(
+                self._queued_candidates(queued), self._registry.degradation_reason
+            )
+            self._route_announcer.record(decision)
+            if decision.chosen is not None:
+                self._execute(decision.chosen.run)
+                return
+            if decision.error_code is not None:
+                return
         for run in self._runs.non_terminal():
             if run.state is RunState.SCHEDULED:
                 self._runs.enqueue(run.id)
@@ -258,6 +279,15 @@ class Supervisor:
             if run.state is RunState.RECOVERING and retry_due(run, now):
                 self._execute(run)
                 return
+
+    def _queued_candidates(self, queued: tuple[JobRunRecord, ...]) -> tuple[RouteCandidate, ...]:
+        """把排队运行映射成路由候选；模板缺失按空插件 id 交执行器按配置错误收尾。"""
+        candidates: list[RouteCandidate] = []
+        for run in queued:
+            template = self._templates.get(run.template_id)
+            plugin_id = template.plugin_id if template is not None else ""
+            candidates.append(RouteCandidate(run=run, plugin_id=plugin_id))
+        return tuple(candidates)
 
     def _execute(self, run: JobRunRecord) -> None:
         schedule = None if run.schedule_id is None else self._schedules.get(run.schedule_id)
