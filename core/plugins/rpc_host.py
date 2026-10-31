@@ -144,10 +144,11 @@ class RpcPluginHost:
         *,
         log: Logger | None = None,
     ) -> None:
-        self.registry = PluginRegistry()
         self._plugins_root = plugins_root
         self._log = log
         self._channels: dict[str, WorkerChannel] = {}
+        # 降级视图先于任何注册挂上：路由判定读的是通道的实时状态。
+        self.registry = PluginRegistry(degradation=self._degradation_reason)
         self._rejected: dict[str, str] = {}
         self._versions: dict[str, str] = {}
         for plugin_id in plugin_ids:
@@ -192,9 +193,14 @@ class RpcPluginHost:
         """已启动的 worker 通道。"""
         return dict(self._channels)
 
+    def _degradation_reason(self, plugin_id: str) -> str | None:
+        """注册表的降级视图：实时读通道状态；未启动的插件视为可用。"""
+        channel = self._channels.get(plugin_id)
+        return None if channel is None else channel.degradation_reason
+
     @property
     def degraded_plugin_ids(self) -> tuple[str, ...]:
-        """处于降级期的插件；路由接入多插件后据此跳过。"""
+        """处于降级期的插件；派发路由据此跳过（docs/05 多插件路由与降级）。"""
         return tuple(
             sorted(
                 plugin_id for plugin_id, channel in self._channels.items() if channel.is_degraded

@@ -71,6 +71,7 @@ class WorkerChannel:
         self._call_id = 0
         self._restart_failures = 0
         self._degraded_until: float | None = None
+        self._degraded_reason: str = "worker 故障"
         self._capabilities: frozenset[str] = frozenset()
 
     @property
@@ -84,6 +85,13 @@ class WorkerChannel:
         if self._degraded_until is None:
             return False
         return time.monotonic() < self._degraded_until
+
+    @property
+    def degradation_reason(self) -> str | None:
+        """降级期内的原因描述；未降级为 None。每次读取实时判定，不缓存。"""
+        if not self.is_degraded:
+            return None
+        return f"连续 {self._restart_failures} 次失败（{self._degraded_reason}）"
 
     @property
     def capabilities(self) -> frozenset[str]:
@@ -185,7 +193,7 @@ class WorkerChannel:
                     f"{capability}.{method} 在取消宽限期内未返回，worker 已结束"
                 )
             if now >= deadline:
-                self._fail_process()
+                self._fail_process(reason="调用超时")
                 raise WorkerTimeoutError(
                     f"{capability}.{method} 超过调用超时 {limits.call_timeout_seconds:.1f} 秒，"
                     "worker 已结束"
@@ -206,7 +214,7 @@ class WorkerChannel:
             return None
         if reply is None:
             tail = self._stderr_tail()
-            self._fail_process()
+            self._fail_process(reason="调用中退出")
             raise WorkerCrashError(f"worker 在调用中退出：{tail}")
         return reply
 
@@ -222,7 +230,7 @@ class WorkerChannel:
         kind = reply.get("kind")
         if kind == rpc.RESULT:
             if reply.get("id") != call_id:
-                self._fail_process()
+                self._fail_process(reason="结果 id 错配")
                 raise WorkerPayloadError(
                     f"{capability}.{method} 收到错配的结果 id：{reply.get('id')}"
                 )
@@ -232,7 +240,7 @@ class WorkerChannel:
             self._degraded_until = None
             return reply.get("value")
         if kind == rpc.FAULT:
-            self._fail_process()
+            self._fail_process(reason="worker 报故障")
             raise WorkerCrashError(f"worker 在调用中报故障：{reply.get('message')}")
         if kind == rpc.NOTIFY:
             self._handle_notify(reply, ctx)
@@ -240,7 +248,7 @@ class WorkerChannel:
         if kind == rpc.CALLBACK:
             self._handle_callback(reply, ctx)
             return _PENDING
-        self._fail_process()
+        self._fail_process(reason="未知协议消息")
         raise WorkerPayloadError(f"未知协议消息：{kind!r}")
 
     def _ensure_started(self) -> None:
@@ -291,7 +299,7 @@ class WorkerChannel:
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                self._fail_process()
+                self._fail_process(reason="启动超时")
                 raise WorkerCrashError(f"插件 {self.plugin_id} 启动超时")
             try:
                 message = messages.get(timeout=min(remaining, _POLL_SECONDS))
@@ -299,16 +307,16 @@ class WorkerChannel:
                 continue
             if message is None:
                 tail = self._stderr_tail()
-                self._fail_process()
+                self._fail_process(reason="启动即退出")
                 raise WorkerCrashError(f"插件 {self.plugin_id} 启动即退出：{tail}")
             kind = message.get("kind")
             if kind == rpc.FAULT:
-                self._fail_process()
+                self._fail_process(reason="加载失败")
                 raise WorkerCrashError(f"插件 {self.plugin_id} 加载失败：{message.get('message')}")
             if kind != rpc.READY:
                 continue
             if message.get("protocol") != rpc.PROTOCOL_VERSION:
-                self._fail_process()
+                self._fail_process(reason="协议版本不匹配")
                 raise WorkerCrashError(
                     f"插件 {self.plugin_id} 的协议版本不匹配：{message.get('protocol')}"
                 )
@@ -425,11 +433,19 @@ class WorkerChannel:
             process.stdin.write(rpc.encode_line(message) + "\n")
             process.stdin.flush()
         except OSError as error:
-            self._fail_process(counts_as_failure=counts_as_failure)
+            self._fail_process(counts_as_failure=counts_as_failure, reason="写入失败")
             raise WorkerCrashError(f"写入 worker 失败：{error}") from error
 
-    def _fail_process(self, *, counts_as_failure: bool = True) -> None:
-        """结束整棵进程树并计数；用户取消不是重启失败，不计入降级预算。"""
+    def _fail_process(
+        self,
+        *,
+        counts_as_failure: bool = True,
+        reason: str = "worker 故障",
+    ) -> None:
+        """结束整棵进程树并计数；用户取消不是重启失败，不计入降级预算。
+
+        reason 记触发本次失败的具体形态，降级后随 ``degradation_reason`` 暴露给路由。
+        """
         self._discard_process()
         if not counts_as_failure:
             return
@@ -437,12 +453,14 @@ class WorkerChannel:
         if self._restart_failures < self._config.limits.max_restarts:
             return
         self._degraded_until = time.monotonic() + self._config.limits.degraded_retry_seconds
+        self._degraded_reason = reason
         self._log.error(
             {
                 "event": "plugin.degraded",
                 "plugin_id": self.plugin_id,
                 "failures": self._restart_failures,
                 "retry_after_seconds": self._config.limits.degraded_retry_seconds,
+                "reason": reason,
             }
         )
 

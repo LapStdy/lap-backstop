@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from contracts import (
@@ -17,6 +18,9 @@ from contracts import (
     Verifier,
 )
 from core.plugins.errors import PluginCapabilityError, PluginNotFoundError
+
+# 插件 id 到当前降级原因的实时查询；None 表示可用（docs/05 多插件路由与降级）。
+DegradationReason = Callable[[str], str | None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,14 +51,24 @@ class PluginCapabilities:
 class PluginRegistry:
     """内存中的插件能力表；加载时机与持久化由上层决定。"""
 
-    def __init__(self) -> None:
+    def __init__(self, degradation: DegradationReason | None = None) -> None:
         self._plugins: dict[str, PluginCapabilities] = {}
+        self._degradation = degradation
 
     def register(self, plugin: PluginCapabilities) -> None:
         """登记插件；id 重复时抛 ``PluginCapabilityError``。"""
         if plugin.plugin_id in self._plugins:
             raise PluginCapabilityError(f"插件已注册：{plugin.plugin_id}")
         self._plugins[plugin.plugin_id] = plugin
+
+    def degradation_reason(self, plugin_id: str) -> str | None:
+        """插件的当前降级原因；未降级或没有降级视图时返回 None。
+
+        每次调用实时读取，不缓存跨请求的通道状态。
+        """
+        if self._degradation is None:
+            return None
+        return self._degradation(plugin_id)
 
     def get(self, plugin_id: str) -> PluginCapabilities:
         """取插件能力表；未注册抛 ``PluginNotFoundError``。"""
