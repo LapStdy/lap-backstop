@@ -80,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_evidence_mirror(Path(arguments.data_root))
     if arguments.command == "db":
         return _run_db_check(Path(arguments.data_root))
+    if arguments.command == "upgrade":
+        return _run_upgrade(Path(arguments.data_root), Path(arguments.target))
+    if arguments.command == "rollback":
+        return _run_rollback(Path(arguments.data_root))
     from core.clock import SystemClock
     from core.hostops.tasks import register_registered_tasks
 
@@ -240,6 +244,22 @@ def _run_db_check(data_root: Path) -> int:
     return EXIT_OK
 
 
+def _run_upgrade(data_root: Path, target: Path) -> int:
+    """升级编排：外部动作全部走生产默认（真实 HTTP、schtasks 与进程存活检查）。"""
+    from core.hostops.core_control import UpgradeInputs
+    from core.hostops.upgrade import run_upgrade
+
+    return run_upgrade(data_root, target, inputs=UpgradeInputs())
+
+
+def _run_rollback(data_root: Path) -> int:
+    r"""手动回滚：按 data\run\upgrade.state.json 的标记执行，无标记即空操作。"""
+    from core.hostops.core_control import UpgradeInputs
+    from core.hostops.upgrade import run_rollback
+
+    return run_rollback(data_root, inputs=UpgradeInputs())
+
+
 def _notify_failure(
     data_root: Path,
     database_path: Path,
@@ -284,8 +304,8 @@ def _notify_failure(
 
 def _build_parser() -> argparse.ArgumentParser:
     """子命令表：serve 常驻，watchdog 看门狗，doctor 自检，backup 备份，
-    evidence-mirror 证据镜像，db check 库检查，tasks 计划任务；worker 由 main
-    拦截转发，不出现在帮助里。"""
+    evidence-mirror 证据镜像，db check 库检查，tasks 计划任务，upgrade 与
+    rollback 升级回滚；worker 由 main 拦截转发，不出现在帮助里。"""
     parser = argparse.ArgumentParser(
         prog="lap-backstop",
         description="lap-backstop 宿主操作：常驻核心与排障入口",
@@ -327,6 +347,15 @@ def _build_parser() -> argparse.ArgumentParser:
     tasks_sub = tasks_parser.add_subparsers(dest="tasks_command", required=True)
     register_parser = tasks_sub.add_parser("register", help="注册或修复 P0 计划任务")
     register_parser.add_argument("--data-root", default=str(resolve_data_root()))
+    upgrade_parser = subparsers.add_parser(
+        "upgrade", help="升级到 app\\releases 下的新版本：drain、快照、切换与健康检查"
+    )
+    upgrade_parser.add_argument("target", help="新版本目录，须已在 app\\releases\\<版本>\\ 下")
+    upgrade_parser.add_argument("--data-root", default=str(resolve_data_root()))
+    rollback_parser = subparsers.add_parser(
+        "rollback", help="按升级标记手动回滚到前一版本；无标记即空操作"
+    )
+    rollback_parser.add_argument("--data-root", default=str(resolve_data_root()))
     return parser
 
 
