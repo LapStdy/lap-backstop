@@ -36,6 +36,8 @@ _STDERR_LINES: Final = 20
 _MAX_LINE_CHARS: Final = 8 * 1024 * 1024
 _REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 _PENDING: Final = object()
+# 降级原因的兜底描述：失败路径都应传入具体形态，取不到时才有它。
+_DEFAULT_DEGRADED_REASON: Final = "worker 故障"
 
 
 def _worker_launch(is_frozen: bool) -> tuple[list[str], Path]:
@@ -71,7 +73,7 @@ class WorkerChannel:
         self._call_id = 0
         self._restart_failures = 0
         self._degraded_until: float | None = None
-        self._degraded_reason: str = "worker 故障"
+        self._degraded_reason: str = _DEFAULT_DEGRADED_REASON
         self._capabilities: frozenset[str] = frozenset()
 
     @property
@@ -440,7 +442,7 @@ class WorkerChannel:
         self,
         *,
         counts_as_failure: bool = True,
-        reason: str = "worker 故障",
+        reason: str = _DEFAULT_DEGRADED_REASON,
     ) -> None:
         """结束整棵进程树并计数；用户取消不是重启失败，不计入降级预算。
 

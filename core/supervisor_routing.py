@@ -11,13 +11,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
-from contracts import Logger
+from contracts import ErrorCode, Logger
 from storage.repositories.job_runs import JobRunRecord
 
 # 一次路由最多查看的排队运行数；窗口内全是同一降级插件的运行时按现状派发队首。
 ROUTE_WINDOW: Final = 8
 # 全部候选插件都降级时的错误码；沿用既有插件故障约定（contracts/errors.py）。
-ALL_DEGRADED_CODE: Final = "E_PLUGIN"
+ALL_DEGRADED_CODE: Final = ErrorCode.PLUGIN.value
 ROUTE_SKIPPED_EVENT: Final = "core.route.skipped"
 ROUTE_ALL_DEGRADED_EVENT: Final = "core.route.all_degraded"
 
@@ -55,13 +55,16 @@ def route_dispatch(
     """按出队顺序选第一个可用插件的候选；全部降级且不止一个插件时不派发。
 
     Args:
-        candidates: 按出队顺序排列的排队候选。
+        candidates: 按出队顺序排列的排队候选；空元组是合法输入，结论为不派发。
         degradation_of: 插件 id 到降级原因的实时查询；None 表示可用。
 
     Returns:
-        RouteDecision：chosen 为空且 error_code 非空表示全部降级，候选原地等待
-        降级窗口过去；单插件降级时维持现状派发队首，交执行器按既有恢复路径收尾。
+        RouteDecision：chosen 与 error_code 都为空表示无可派发候选；error_code
+        非空表示全部降级，候选原地等待降级窗口过去；单插件降级时维持现状派发
+        队首，交执行器按既有恢复路径收尾。
     """
+    if not candidates:
+        return RouteDecision(None, (), None)
     skips: list[RouteSkip] = []
     for candidate in candidates:
         reason = degradation_of(candidate.plugin_id)
@@ -74,7 +77,11 @@ def route_dispatch(
 
 
 class RouteAnnouncer:
-    """路由留痕：每次决策写调试日志，降级参与情况按边沿写全局事件。"""
+    """路由留痕：每次决策写调试日志，降级参与情况按事件种类边沿写全局事件。
+
+    同一种事件里同一插件的降级只报一次，插件真恢复后重新武装；跳过与全部降级
+    各记各的账，全部降级后恢复一方的插件再被跳过时仍会补写跳过事件。
+    """
 
     def __init__(
         self,
@@ -85,10 +92,10 @@ class RouteAnnouncer:
         self._log = log
         self._emit_global = emit_global
         self._degradation_of = degradation_of
-        self._reported: set[str] = set()
+        self._reported: dict[str, set[str]] = {}
 
     def record(self, decision: RouteDecision) -> None:
-        """留痕一次路由决策；同一插件的降级只在参与集变化时补写事件。"""
+        """留痕一次路由决策；同一插件的降级在同种事件里只在参与集变化时补写。"""
         self._log.debug(
             {
                 "event": "supervisor.route",
@@ -97,32 +104,56 @@ class RouteAnnouncer:
                 "error_code": decision.error_code or "",
             }
         )
-        current = {skip.plugin_id for skip in decision.skipped}
-        for plugin_id in sorted(self._reported - current):
-            # 插件仍在降级但本轮没参与路由时不解除武装；真恢复才允许再次上报。
-            if self._degradation_of(plugin_id) is None:
-                self._reported.discard(plugin_id)
-        if not current - self._reported:
+        self._rearm(decision)
+        event_name = self._event_name(decision)
+        if event_name is None:
             return
-        self._reported |= current - self._reported
+        seen = self._reported.setdefault(event_name, set())
+        fresh = {skip.plugin_id for skip in decision.skipped} - seen
+        if not fresh:
+            return
+        seen |= fresh
+        self._emit(event_name, decision)
+
+    def _rearm(self, decision: RouteDecision) -> None:
+        """按本轮参与情况解除已上报插件的武装；仍在降级的不解除。"""
+        participants = {skip.plugin_id for skip in decision.skipped}
+        for seen in self._reported.values():
+            for plugin_id in sorted(seen - participants):
+                if self._degradation_of(plugin_id) is None:
+                    seen.discard(plugin_id)
+
+    def _event_name(self, decision: RouteDecision) -> str | None:
+        """本轮决策对应的留痕事件；无降级参与时不留事件，只留调试日志。"""
+        if decision.error_code is not None:
+            return ROUTE_ALL_DEGRADED_EVENT
+        if decision.skipped:
+            return ROUTE_SKIPPED_EVENT
+        return None
+
+    def _emit(self, event_name: str, decision: RouteDecision) -> None:
+        """把参与判定与各自降级原因写成全局事件；全部降级时带约定错误码。"""
         plugins = [
             {"run_id": skip.run_id, "plugin_id": skip.plugin_id, "reason": skip.reason}
             for skip in decision.skipped
         ]
-        if decision.error_code is not None:
+        if event_name == ROUTE_ALL_DEGRADED_EVENT:
             self._emit_global(
-                ROUTE_ALL_DEGRADED_EVENT,
+                event_name,
                 {"plugins": plugins, "error_code": decision.error_code},
             )
-        elif decision.chosen is not None:
-            self._emit_global(
-                ROUTE_SKIPPED_EVENT,
-                {
-                    "plugins": plugins,
-                    "chosen_run_id": decision.chosen.run.id,
-                    "chosen_plugin_id": decision.chosen.plugin_id,
-                },
-            )
+            return
+        chosen = decision.chosen
+        if chosen is None:
+            return
+        self._emit_global(
+            event_name,
+            {
+                "plugins": plugins,
+                "chosen_run_id": chosen.run.id,
+                "chosen_plugin_id": chosen.plugin_id,
+            },
+        )
 
 
 __all__ = [
