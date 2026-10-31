@@ -1,4 +1,4 @@
-"""worker 通道的故障注入：调用超时强杀、崩溃重启、连续失败降级与取消宽限。
+"""worker 通道的单元用例：调用往返、故障注入与降级，以及拆分后的模块边界。
 
 全部用例都用真实子进程与真实单调时间，每条只盯一条隔离约束：错误类型、进程号是否
 变 None、降级标记，以及进程是否真的被结束。短超时保证整套远低于十秒。
@@ -20,6 +20,7 @@ import pytest
 
 from contracts import RunContext
 from core.clock import VirtualClock
+from core.plugins import channel as channel_module
 from core.plugins.channel import WorkerChannel, _worker_launch
 from core.plugins.errors import (
     PluginDegradedError,
@@ -246,6 +247,14 @@ def test_call_returns_worker_value(channels: _ChannelFactory) -> None:
     assert channel.is_degraded is False
 
 
+def test_exchange_call_roundtrip_returns_worker_value(channels: _ChannelFactory) -> None:
+    """消息往返落在交换模块：发请求、等到本调用 id 的结果。"""
+    channel = channels("ok")
+    channel.start()
+    value = channel._exchange.call("environment", "probe", {}, _context(channels.tmp_path))
+    assert value == OK_VALUE
+
+
 def test_call_timeout_kills_worker(channels: _ChannelFactory) -> None:
     channel = channels("silent")
     channel.start()
@@ -321,6 +330,26 @@ def test_success_resets_failure_counter(channels: _ChannelFactory) -> None:
         with pytest.raises(WorkerCrashError):
             channel.call("environment", "probe", {}, _context(channels.tmp_path))
     assert channel.is_degraded is False
+
+
+def test_session_fail_discards_process_and_counts_degradation(
+    channels: _ChannelFactory,
+) -> None:
+    """失败收尾落在会话模块：整树结束进程，连续失败计入降级预算并记因。"""
+    log = _RecordingLog()
+    channel = channels("ok", max_restarts=2, log=log)
+    channel.start()
+    session = channel._session
+    pid = channel.pid
+    assert pid is not None
+    session.fail_process(reason="测试收尾")
+    assert session.pid is None
+    assert _process_ended(pid) is True
+    session.fail_process(reason="测试收尾")
+    assert session.is_degraded is True
+    assert session.degradation_reason == "连续 2 次失败（测试收尾）"
+    degraded = [fields for level, fields in log.entries if fields.get("event") == "plugin.degraded"]
+    assert degraded[-1]["reason"] == "测试收尾"
 
 
 def test_cancel_grace_kills_worker(channels: _ChannelFactory) -> None:
@@ -555,3 +584,9 @@ def test_channel_picks_launch_branch_by_frozen_environment(
     channel = WorkerChannel("fake", WorkerConfig(plugins_root=tmp_path))
     assert channel._command == [sys.executable, "worker"]
     assert channel._cwd == Path(sys.executable).resolve().parent
+
+
+def test_channel_module_stays_within_line_limit() -> None:
+    """门面模块行数钉在 docs/11 的 500 行上限内。"""
+    lines = Path(channel_module.__file__).read_text(encoding="utf-8").splitlines()
+    assert len(lines) <= 500, f"channel.py 现有 {len(lines)} 行，超过上限 500"
