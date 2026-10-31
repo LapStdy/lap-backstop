@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
@@ -109,6 +110,21 @@ def test_dead_by_dead_pid_requests_start(tmp_path: Path) -> None:
 
 def test_start_request_failure_leaves_no_pending(tmp_path: Path) -> None:
     check(tmp_path, now=BASE, pid_alive=False, returncode=1)
+    assert state_of(tmp_path)["pending_start"] is None
+    assert last_log_entry(tmp_path)["action"] == watchdog.ACTION_NONE
+
+
+def test_start_request_timeout_treated_as_no_action(tmp_path: Path) -> None:
+    def slow(_command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(cmd=_command, timeout=2.0)
+
+    code = watchdog.run_check(
+        tmp_path,
+        inputs=watchdog.CheckInputs(
+            now=BASE, policy=POLICY, runner=slow, pid_alive=lambda _pid: True
+        ),
+    )
+    assert code == 0
     assert state_of(tmp_path)["pending_start"] is None
     assert last_log_entry(tmp_path)["action"] == watchdog.ACTION_NONE
 

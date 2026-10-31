@@ -41,6 +41,21 @@ def fake_task_runner() -> tuple[tasks.Runner, list[list[str]]]:
     return run, calls
 
 
+def failing_task_runner(mode: str) -> tasks.Runner:
+    """假 schtasks：按 mode 一律非零退出或一律超时。"""
+    if mode == "timeout":
+
+        def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            raise subprocess.TimeoutExpired(cmd=command, timeout=10.0)
+
+        return run
+
+    def failed(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 1, b"", b"")
+
+    return failed
+
+
 def autologon_registry(logon: str, user: str) -> dict[str, str]:
     return {"AutoAdminLogon": logon, "DefaultUserName": user}
 
@@ -158,6 +173,28 @@ def test_run_serve_bounded_ticks_write_heartbeat_and_cleanup(tmp_path: Path) -> 
     # 注册走 schtasks 覆盖式导入，清单是 core、watchdog、backup 三个任务
     assert [call[3] for call in task_calls] == ["/tn", "/tn", "/tn"]
     assert {call[4] for call in task_calls} == set(tasks.REGISTERED_TASKS)
+
+
+@pytest.mark.parametrize("mode", ["nonzero_exit", "timeout"])
+def test_run_serve_records_failed_registration_and_still_serves(tmp_path: Path, mode: str) -> None:
+    """注册命令失败（非零退出、超时）不算启动失败：失败口径照落事件，核心照常进循环。"""
+    options = ServeOptions(
+        clock=VirtualClock(datetime(2026, 10, 25, 8, 0, tzinfo=UTC)),
+        max_ticks=1,
+        tick_interval_seconds=0.0,
+        registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
+        task_runner=failing_task_runner(mode),
+    )
+    assert run_serve(tmp_path, options) == 0
+    payload = next(
+        payload
+        for payload in global_event_payloads(tmp_path / "backstop.sqlite")
+        if payload.get("event") == TASKS_REGISTERED_EVENT
+    )
+    assert payload["detail"] == "注册失败：" + "、".join(tasks.REGISTERED_TASKS)
+    # 核心没有被注册失败拖住：心跳照写，锁文件照常收尾
+    assert read_heartbeat(tmp_path / "run" / HEARTBEAT_FILENAME) is not None
+    assert not (tmp_path / "run" / instance.LOCK_FILENAME).exists()
 
 
 def test_run_serve_reports_watchdog_gave_up_marker(tmp_path: Path) -> None:
