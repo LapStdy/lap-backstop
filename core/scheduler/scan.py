@@ -2,6 +2,7 @@
 
 每个调度一次 tick 只推进自己的 next_run_at；创建运行与推进发生在同一事务里，
 崩溃时要么两件事都落盘，要么都不落盘，重启后按补跑策略重算。
+补跑暂停（启动校时写入的 settings 标记，docs/08）期间跳过错过的发生点。
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import sqlite3
 from datetime import datetime, timedelta
 
 from contracts import Clock, RunState
+from core.hostops.timesync import catch_up_paused
 from core.jobs.run_service import JobRunService
 from core.scheduler.occurrences import (
     CatchUp,
@@ -42,10 +44,12 @@ class ScheduleScanner:
     def tick(self, now: datetime | None = None) -> tuple[JobRunRecord, ...]:
         """推进一步；返回本次新建（并已入队）的运行。"""
         moment = self._clock.utc_now() if now is None else now
+        rows = self._schedules.enabled()
+        paused = catch_up_paused(self._connection) if rows else False
         created: list[JobRunRecord] = []
-        for row in self._schedules.enabled():
+        for row in rows:
             spec = spec_from_row(row)
-            created.extend(self._advance(row, spec, moment))
+            created.extend(self._advance(row, spec, moment, paused))
         return tuple(created)
 
     def _advance(
@@ -53,6 +57,7 @@ class ScheduleScanner:
         row: ScheduleRow,
         spec: ScheduleSpec,
         moment: datetime,
+        paused: bool,
     ) -> tuple[JobRunRecord, ...]:
         if spec.next_run_at is None:
             with transaction(self._connection):
@@ -66,7 +71,9 @@ class ScheduleScanner:
         if moment < trigger:
             return ()
         if moment >= spec.next_run_at:
-            occurrences = plan_missed(spec, moment)
+            # 补跑暂停时把已到点的发生点整段跳过，next_run_at 照常推进；
+            # 时钟不可信期间的欠账不补，等暂停解除后从下一个发生点继续。
+            occurrences = () if paused else plan_missed(spec, moment)
             advance_from = moment
         else:
             occurrences = (Occurrence(scheduled_at=spec.next_run_at),)

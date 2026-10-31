@@ -28,6 +28,10 @@ stale_seconds = 300
 acceptance_seconds = 120
 give_up_window_minutes = 30
 give_up_max_failures = 3
+# 启动校时后允许的墙钟偏移上限（秒）；超过记 host.clock_skew 并暂停补跑（docs/08）。
+clock_skew_seconds = 30
+# 运行中墙钟相对单调时钟的跳变上限（秒）；超过记 host.suspended，全环境置 unknown 并 probe（docs/08）。
+clock_jump_seconds = 120
 
 [scheduler]
 timezone = "Asia/Shanghai"

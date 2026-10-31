@@ -10,7 +10,9 @@ from pathlib import Path
 import pytest
 
 from contracts import RunState
+from core.api.store import put_settings
 from core.clock import VirtualClock
+from core.hostops.timesync import CATCH_UP_PAUSED_KEY
 from core.jobs.run_service import JobRunService
 from core.scheduler.scan import ScheduleScanner
 from storage import migrate, open_database
@@ -207,3 +209,30 @@ def test_schedule_row_exposes_updated_at(env: Env) -> None:
     after = repository.get(SCHEDULE_ID)
     assert after is not None
     assert after.updated_at == later
+
+
+def set_catch_up_paused(connection: sqlite3.Connection, paused: bool) -> None:
+    put_settings(connection, {CATCH_UP_PAUSED_KEY: paused}, at=T0)
+
+
+def test_catch_up_paused_skips_missed_occurrences_without_run(
+    env: Env,
+) -> None:
+    """补跑暂停：错过的发生点整段跳过，next_run_at 照常推进，不欠账。"""
+    connection, _clock, _runs, scanner = env
+    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1))
+    set_catch_up_paused(connection, True)
+    assert scanner.tick(T0 + timedelta(hours=4)) == ()
+    assert read_next_run(connection) == T0 + timedelta(hours=5)
+
+
+def test_catch_up_resumes_once_pause_is_cleared(
+    env: Env,
+) -> None:
+    """暂停解除后的第一轮 tick 按既有补跑策略收敛，只补最近一次。"""
+    connection, _clock, _runs, scanner = env
+    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1))
+    set_catch_up_paused(connection, False)
+    created = scanner.tick(T0 + timedelta(hours=4))
+    assert len(created) == 1
+    assert created[0].scheduled_at == T0 + timedelta(hours=4)

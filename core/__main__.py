@@ -59,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
             log=DailyRotatingJsonLineLogger(data_root / "logs"),
             stop=install_stop_handlers(),
             register_tasks=not arguments.no_register_tasks,
+            run_timesync=not arguments.no_timesync,
         )
         code = run_serve(data_root, options)
         if code != EXIT_OK:
@@ -300,6 +301,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--no-register-tasks",
         action="store_true",
         help="跳过启动时的计划任务注册（测试与开发联调用）",
+    )
+    serve_parser.add_argument(
+        "--no-timesync",
+        action="store_true",
+        help="跳过启动时的系统校时（测试与开发联调用）",
     )
     watchdog_parser = subparsers.add_parser("watchdog", help="看门狗：检查核心心跳")
     watchdog_sub = watchdog_parser.add_subparsers(dest="watchdog_command", required=True)

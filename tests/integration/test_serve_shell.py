@@ -15,7 +15,7 @@ from typing import Any, cast
 import pytest
 
 from core.clock import VirtualClock
-from core.hostops import instance, serve, tasks, watchdog
+from core.hostops import instance, serve, tasks, timesync, watchdog
 from core.hostops.heartbeat import HEARTBEAT_FILENAME, read_heartbeat
 from core.hostops.serve import (
     AUTOLOGON_CHECKED_EVENT,
@@ -54,6 +54,35 @@ def failing_task_runner(mode: str) -> tasks.Runner:
         return subprocess.CompletedProcess(command, 1, b"", b"")
 
     return failed
+
+
+def missing_timesync_runner() -> timesync.Runner:
+    """假 w32tm：命令不存在。"""
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise FileNotFoundError(2, "系统找不到指定的文件", command[0])
+
+    return run
+
+
+def failing_timesync_runner() -> timesync.Runner:
+    """假 w32tm：一律非零退出。"""
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(command, 1, b"", b"denied")
+
+    return run
+
+
+def skewed_timesync_runner(offset_line: bytes) -> timesync.Runner:
+    """假 w32tm：校时成功，stripchart 报固定偏移。"""
+
+    def run(command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        if command == list(timesync.SYNC_COMMAND):
+            return subprocess.CompletedProcess(command, 0, b"", b"")
+        return subprocess.CompletedProcess(command, 0, offset_line, b"")
+
+    return run
 
 
 def autologon_registry(logon: str, user: str) -> dict[str, str]:
@@ -114,7 +143,7 @@ def wait_for_heartbeat_pid(path: Path, pid: int, timeout: float = WAIT_SECONDS) 
 def spawn_serve(data_root: Path) -> subprocess.Popen[bytes]:
     """拉起 serve 子进程；stdout/stderr 留管道便于排障。
 
-    子进程跳过计划任务注册：测试环境不应改动宿主的 schtasks。
+    子进程跳过计划任务注册与系统校时：测试环境不改宿主的 schtasks，也不动系统时钟。
     """
     return subprocess.Popen(
         [
@@ -125,6 +154,7 @@ def spawn_serve(data_root: Path) -> subprocess.Popen[bytes]:
             "--data-root",
             str(data_root),
             "--no-register-tasks",
+            "--no-timesync",
         ],
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
@@ -147,6 +177,7 @@ def test_run_serve_bounded_ticks_write_heartbeat_and_cleanup(tmp_path: Path) -> 
         tick_interval_seconds=0.0,
         registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
         task_runner=task_runner,
+        run_timesync=False,
     )
     code = run_serve(tmp_path, options)
     assert code == 0
@@ -184,6 +215,7 @@ def test_run_serve_records_failed_registration_and_still_serves(tmp_path: Path, 
         tick_interval_seconds=0.0,
         registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
         task_runner=failing_task_runner(mode),
+        run_timesync=False,
     )
     assert run_serve(tmp_path, options) == 0
     payload = next(
@@ -195,6 +227,73 @@ def test_run_serve_records_failed_registration_and_still_serves(tmp_path: Path, 
     # 核心没有被注册失败拖住：心跳照写，锁文件照常收尾
     assert read_heartbeat(tmp_path / "run" / HEARTBEAT_FILENAME) is not None
     assert not (tmp_path / "run" / instance.LOCK_FILENAME).exists()
+
+
+def test_run_serve_records_missing_timesync_and_still_serves(tmp_path: Path) -> None:
+    """校时命令不存在不算启动失败：失败口径照落事件，核心照常进循环。"""
+    options = ServeOptions(
+        clock=VirtualClock(datetime(2026, 10, 25, 8, 0, tzinfo=UTC)),
+        max_ticks=1,
+        tick_interval_seconds=0.0,
+        registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
+        register_tasks=False,
+        timesync_runner=missing_timesync_runner(),
+    )
+    assert run_serve(tmp_path, options) == 0
+    payload = next(
+        payload
+        for payload in global_event_payloads(tmp_path / "backstop.sqlite")
+        if payload.get("event") == timesync.TIMESYNC_EVENT
+    )
+    assert payload["ok"] is False
+    assert "找不到 w32tm" in str(payload["detail"])
+    assert read_heartbeat(tmp_path / "run" / HEARTBEAT_FILENAME) is not None
+
+
+def test_run_serve_records_failed_timesync_command_and_still_serves(tmp_path: Path) -> None:
+    """校时命令非零退出同样不算启动失败：失败口径照落事件，核心照常进循环。"""
+    options = ServeOptions(
+        clock=VirtualClock(datetime(2026, 10, 25, 8, 0, tzinfo=UTC)),
+        max_ticks=1,
+        tick_interval_seconds=0.0,
+        registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
+        register_tasks=False,
+        timesync_runner=failing_timesync_runner(),
+    )
+    assert run_serve(tmp_path, options) == 0
+    payload = next(
+        payload
+        for payload in global_event_payloads(tmp_path / "backstop.sqlite")
+        if payload.get("event") == timesync.TIMESYNC_EVENT
+    )
+    assert payload["ok"] is False
+    assert "退出码 1" in str(payload["detail"])
+    assert read_heartbeat(tmp_path / "run" / HEARTBEAT_FILENAME) is not None
+
+
+def test_run_serve_pauses_catch_up_on_measured_skew(tmp_path: Path) -> None:
+    """启动测得偏移 31 秒：host.clock_skew 落库，补跑暂停标记置位。"""
+    options = ServeOptions(
+        clock=VirtualClock(datetime(2026, 10, 25, 8, 0, tzinfo=UTC)),
+        max_ticks=1,
+        tick_interval_seconds=0.0,
+        registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
+        register_tasks=False,
+        timesync_runner=skewed_timesync_runner(b"16:02:36, +31.0s\n"),
+    )
+    assert run_serve(tmp_path, options) == 0
+    payloads = global_event_payloads(tmp_path / "backstop.sqlite")
+    skew = next(payload for payload in payloads if payload.get("event") == timesync.SKEW_EVENT)
+    assert skew["offset_seconds"] == 31.0
+    reader = sqlite3.connect(tmp_path / "backstop.sqlite")
+    try:
+        row = reader.execute(
+            "SELECT value FROM settings WHERE key = ?", (timesync.CATCH_UP_PAUSED_KEY,)
+        ).fetchone()
+    finally:
+        reader.close()
+    assert row is not None
+    assert json.loads(str(row[0])) is True
 
 
 def test_run_serve_reports_watchdog_gave_up_marker(tmp_path: Path) -> None:
@@ -213,6 +312,7 @@ def test_run_serve_reports_watchdog_gave_up_marker(tmp_path: Path) -> None:
         max_ticks=1,
         tick_interval_seconds=0.0,
         register_tasks=False,
+        run_timesync=False,
         registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
     )
     assert run_serve(tmp_path, options) == 0
@@ -254,6 +354,7 @@ def test_run_serve_reports_stored_watchdog_report_with_evidence(tmp_path: Path) 
         max_ticks=1,
         tick_interval_seconds=0.0,
         register_tasks=False,
+        run_timesync=False,
         registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
     )
     assert run_serve(tmp_path, options) == 0
@@ -294,6 +395,7 @@ def test_run_serve_falls_back_when_stored_report_lacks_log_tail(tmp_path: Path) 
         max_ticks=1,
         tick_interval_seconds=0.0,
         register_tasks=False,
+        run_timesync=False,
         registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
     )
     assert run_serve(tmp_path, options) == 0
@@ -317,6 +419,7 @@ def test_run_serve_skips_gave_up_event_when_state_corrupt(tmp_path: Path) -> Non
         max_ticks=1,
         tick_interval_seconds=0.0,
         register_tasks=False,
+        run_timesync=False,
         registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
     )
     assert run_serve(tmp_path, options) == 0
@@ -362,6 +465,7 @@ def test_autologon_failed_check_marks_event_payload(tmp_path: Path) -> None:
         max_ticks=1,
         tick_interval_seconds=0.0,
         register_tasks=False,
+        run_timesync=False,
         registry_get=lambda _key, name: autologon_registry("0", "")[name],
     )
     assert run_serve(tmp_path, options) == 0
@@ -385,6 +489,7 @@ def test_serve_snapshots_database_before_pending_migration(tmp_path: Path) -> No
         max_ticks=1,
         tick_interval_seconds=0.0,
         register_tasks=False,
+        run_timesync=False,
         registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
     )
     assert run_serve(tmp_path, options) == 0
@@ -410,6 +515,7 @@ def test_serve_refuses_start_when_pre_migrate_snapshot_fails(tmp_path: Path) -> 
         max_ticks=1,
         tick_interval_seconds=0.0,
         register_tasks=False,
+        run_timesync=False,
         registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
     )
     assert run_serve(tmp_path, options) == 1
@@ -435,6 +541,7 @@ def test_serve_logs_program_error_and_reraises(
         max_ticks=1,
         tick_interval_seconds=0.0,
         register_tasks=False,
+        run_timesync=False,
         registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
     )
 

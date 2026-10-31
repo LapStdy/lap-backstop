@@ -44,7 +44,7 @@ from core.api.version import executable_version
 from core.clock import SystemClock
 from core.environments.actions import EnvironmentActions
 from core.events.maintenance import GlobalEventsPruner
-from core.hostops import heartbeat, instance, tailscale, tasks, watchdog
+from core.hostops import heartbeat, instance, tailscale, tasks, timesync, watchdog
 from core.hostops.doctor import DATABASE_FILENAME, WINLOGON_KEY, RegistryGet, registry_get
 from core.hostops.environment_actions import EnvironmentActionService
 from core.hostops.retention import RetentionRunner
@@ -82,9 +82,13 @@ class ServeOptions:
     max_ticks: int | None = None
     tick_interval_seconds: float = TICK_INTERVAL_SECONDS
     register_tasks: bool = True
+    # 校时真的改宿主时钟：进程内测试关掉这个开关，避免 pytest 动系统时间（docs/08）。
+    run_timesync: bool = True
     # 插件根缺省与 data 同级（docs/08 路径布局）；测试指向只含 fake 的临时目录。
     plugins_root: Path | None = None
     task_runner: tasks.Runner = field(default_factory=lambda: subprocess.run)
+    # 校时命令的执行器（docs/08 时钟与 NTP）；测试替换为假件，不碰真实 w32tm。
+    timesync_runner: timesync.Runner = field(default_factory=lambda: subprocess.run)
     registry_get: RegistryGet = field(default_factory=lambda: registry_get)
     tailscale_runner: tailscale.Runner = field(default_factory=lambda: tailscale.default_runner)
     on_api_listening: Callable[[str, int], None] | None = None
@@ -238,6 +242,17 @@ def _active_run(runs: JobRunService) -> str | None:
         if run.state in _ACTIVE_RUN_STATES:
             return run.id
     return None
+
+
+def _startup_clock_events(
+    connection: sqlite3.Connection,
+    options: ServeOptions,
+) -> list[tuple[str, Mapping[str, object]]]:
+    """启动校时的结果事件：命令失败不阻断启动；开关关闭时不校时也不记事件（docs/08）。"""
+    if not options.run_timesync:
+        return []
+    clock_check = timesync.startup_check(options.timesync_runner)
+    return timesync.apply_startup_check(connection, clock_check, at=options.clock.utc_now())
 
 
 def _host_setup_events(
@@ -403,9 +418,14 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             shutdown=options.stop.is_set,
         )
         supervisor.startup()
+        # 校时先于其余宿主动作：注册与补报落在尽量校准过的钟上。
+        clock_events = _startup_clock_events(connection, options)
         setup_at = options.clock.utc_now()
-        events = _host_setup_events(data_root, options, at=setup_at)
-        _record_events(connection, events, at=setup_at)
+        _record_events(
+            connection,
+            [*clock_events, *_host_setup_events(data_root, options, at=setup_at)],
+            at=setup_at,
+        )
         # 环境动作在请求线程自开连接：supervisor 的连接只归 tick 线程。
         actions = EnvironmentActionService(database, options.clock, registry, log=options.log)
         api_server, exit_code = _start_api(connection, options, actions, supervisor)
