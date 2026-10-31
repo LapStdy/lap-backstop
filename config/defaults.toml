@@ -58,6 +58,10 @@ backoff_seconds = [5, 30]
 use_proxy = false
 heartbeat_url = ""
 
+[backup]
+# 证据增量镜像的体积阈值（GB）：证据根总量超过时只搬 verdict 引用到的证据（docs/08 备份与恢复）。
+evidence_mirror_threshold_gb = 20
+
 [retention]
 # 每日本地执行时刻（HH:MM），时区取 scheduler.timezone；到点后的第一个 tick 执行一次。
 daily_at = "03:30"
