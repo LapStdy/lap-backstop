@@ -9,6 +9,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from contracts import RunContext, RunState, ScriptHandle, ScriptObservation, ScriptState
+from core.api.app import ApiApp
+from core.api.store import TOKEN_KEY, put_settings
+from core.api.wire import ApiRequest
 from core.clock import VirtualClock
 from core.hostops.serve import run_serve
 from core.jobs.run_service import JobRunService
@@ -19,7 +22,7 @@ from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, Fake
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository
-from tests.integration.test_serve_api import configure, serve_options
+from tests.integration.test_serve_api import TOKEN, configure, serve_options
 
 T0 = datetime(2026, 10, 30, 3, 0, tzinfo=UTC)
 TEMPLATE_ID = "template-1"
@@ -164,3 +167,54 @@ def test_shutdown_without_active_run_exits_zero_and_keeps_waiting_run(tmp_path: 
     assert active is not None and int(active[0]) == 1
     assert interrupted is not None and int(interrupted[0]) == 0
     assert state is not None and str(state[0]) == "waiting"
+
+
+def test_drain_endpoint_sets_stop_event_and_due_run_stays_queued(tmp_path: Path) -> None:
+    """排水端点置位的停机事件与 SIGINT 同源：不接新作业，在跑的到边界收尾。"""
+    connection = open_database(tmp_path / "state.db")
+    try:
+        migrate(connection)
+        put_settings(connection, {TOKEN_KEY: TOKEN}, at=T0)
+        _insert_template(connection)
+        runs = JobRunService(connection, VirtualClock(T0))
+        run_id = _create_run(runs, scheduled_at=T0, key="drain-queue")
+        stop = threading.Event()
+
+        def request() -> int:
+            stop.set()
+            return 0
+
+        app = ApiApp(tmp_path / "state.db", clock=VirtualClock(T0), drain_requester=request)
+        response = app.handle(
+            ApiRequest(
+                method="POST",
+                path="/api/v1/host/drain",
+                query={},
+                headers={"authorization": f"Bearer {TOKEN}"},
+                body=b"",
+            )
+        )
+        assert response.status == 200
+        registry = PluginRegistry()
+        registry.register(
+            PluginCapabilities(
+                plugin_id="fake",
+                environment=FakeEnvironmentProvider(),
+                script=FakeScriptAdapter(),
+                verifier=FakeVerifier(),
+            )
+        )
+        supervisor = Supervisor(
+            connection,
+            VirtualClock(T0),
+            registry,
+            data_root=tmp_path,
+            disk_free=lambda: _STABLE_DISK_FREE,
+            shutdown=stop.is_set,
+        )
+        supervisor.tick()
+
+        record = runs.get(run_id)
+        assert record.state is RunState.SCHEDULED, f"排水后到点的运行仍被执行：{record.state.value}"
+    finally:
+        connection.close()
