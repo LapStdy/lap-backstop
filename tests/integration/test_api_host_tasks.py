@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
@@ -123,6 +124,24 @@ def test_register_failure_keeps_structured_result_and_event(app: ApiApp, databas
     assert payload["detail"] == FAILURE_DETAIL
     assert all(task["ok"] is False for task in payload["tasks"])
     assert all(task["detail"] == "schtasks 退出码 1" for task in payload["tasks"])
+    events = host_events(database)
+    assert len(events) == 1
+    assert events[0]["payload"]["detail"] == payload["detail"]
+
+
+def test_register_timeout_keeps_structured_result_and_event(database: Path) -> None:
+    def slow(_command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(cmd=_command, timeout=10.0)
+
+    timing_out = ApiApp(database, clock=VirtualClock(NOW), task_runner=slow)
+
+    response = call(timing_out, "POST", REGISTER_PATH)
+
+    assert response.status == 200
+    payload = payload_of(response)
+    assert payload["ok"] is False
+    assert payload["detail"] == FAILURE_DETAIL
+    assert all(task["detail"] == "schtasks 超时" for task in payload["tasks"])
     events = host_events(database)
     assert len(events) == 1
     assert events[0]["payload"]["detail"] == payload["detail"]

@@ -95,3 +95,9 @@ def test_probe_bad_output_reports_unparseable() -> None:
     status = tailscale.probe(lambda command: completed(b"garbage bytes"))
     assert status.note == "输出不可解析"
     assert status.down_detail == "不可查：输出不可解析"
+
+
+def test_default_runner_survives_missing_command() -> None:
+    """命令缺失走 OSError 分支：按退出码 -1 返回，不抛错；-1 的解读由 probe 假件用例覆盖。"""
+    outcome = tailscale.default_runner(["lap-backstop-test-no-such-command"])
+    assert outcome.returncode == -1
