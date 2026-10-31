@@ -263,6 +263,7 @@ def test_run_serve_executes_prune_once_and_survives_restart(tmp_path: Path) -> N
         max_ticks=1,
         tick_interval_seconds=0.0,
         register_tasks=False,
+        run_timesync=False,
         registry_get=lambda _key, _name: "0",
     )
     assert run_serve(tmp_path, options) == 0

@@ -70,6 +70,7 @@ def serve_options(**kwargs: Any) -> ServeOptions:
         "max_ticks": 1,
         "tick_interval_seconds": 0.0,
         "register_tasks": False,
+        "run_timesync": False,
         "registry_get": lambda _key, name: autologon_registry("1", "backstop")[name],
         "task_runner": task_runner,
     }

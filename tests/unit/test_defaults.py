@@ -24,6 +24,8 @@ def test_host_section_matches_watchdog_baseline() -> None:
     assert default("host", "acceptance_seconds") == 120
     assert default("host", "give_up_window_minutes") == 30
     assert default("host", "give_up_max_failures") == 3
+    assert default("host", "clock_skew_seconds") == 30
+    assert default("host", "clock_jump_seconds") == 120
 
 
 def test_backup_section_carries_evidence_mirror_threshold() -> None:
