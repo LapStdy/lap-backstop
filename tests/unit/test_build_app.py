@@ -197,3 +197,12 @@ def test_build_refuses_current_occupied_by_real_directory(tmp_path: Path) -> Non
     with pytest.raises(build_app.BuildError):
         build_app.build(make_options(repo, make_runner([])))
     assert keeper.is_file()
+
+
+def test_build_refusal_message_keeps_build_wording(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    current = repo / "app" / "current"
+    current.mkdir(parents=True)
+    with pytest.raises(build_app.BuildError) as raised:
+        build_app.build(make_options(repo, make_runner([])))
+    assert str(raised.value).endswith("请人工确认后删除再构建"), "构建脚本的拒绝文案按构建口径"
