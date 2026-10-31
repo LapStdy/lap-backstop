@@ -296,6 +296,20 @@ def test_repeated_failures_degrade_channel(channels: _ChannelFactory) -> None:
     assert channel.is_degraded is True
 
 
+def test_degradation_reason_reflects_last_failure(channels: _ChannelFactory) -> None:
+    """降级原因实时反映触发降级的失败形态；未降级时为 None。"""
+    control = _control(channels, "crash", "crash")
+    channel = channels("sequence", control=control, max_restarts=2)
+    assert channel.degradation_reason is None
+    for _ in range(2):
+        with pytest.raises(WorkerCrashError):
+            channel.call("environment", "probe", {}, _context(channels.tmp_path))
+    assert channel.degradation_reason == "连续 2 次失败（调用中退出）"
+    with pytest.raises(PluginDegradedError):
+        channel.call("environment", "probe", {}, _context(channels.tmp_path))
+    assert channel.degradation_reason == "连续 2 次失败（调用中退出）"
+
+
 def test_success_resets_failure_counter(channels: _ChannelFactory) -> None:
     control = _control(channels, "crash", "ok", "crash", "crash")
     channel = channels("sequence", control=control)
