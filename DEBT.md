@@ -30,10 +30,8 @@
 
 | 编号 | 日期 | 债务 | 原因 | 影响 | 归还期限 | 状态 |
 |---|---|---|---|---|---|---|
-| D-001 | 2026-10-24 | 执行器在核心进程同步跑完整运行（`core/worker/executor.py`），长运行占住 supervisor 的 tick | 本轮隔离先落在插件调用层（ADR 0010），阶段编排留在核心 | API/SSE 接入后，一次长运行期间接口会卡住 | P3 客户端与远程前 | 未还 |
 | D-002 | 2026-10-27 | `core/supervisor.py` 540 行，连续两次超 docs/11 模块上限 500 | 环境动作端点在既有 509 行基础上加 31 行；拆分属独立重构，不混入本功能卡 | 改动热点继续膨胀，tick 主循环可读性与可测性下降 | 下一张内核重构卡 | 已还（2026-10-27 归还：supervisor.py 216 行；新增 supervisor_disk 103 行、supervisor_environments 167 行、supervisor_leases 126 行、supervisor_recovery 129 行） |
 | D-005 | 2026-10-28 | 渠道实现违反 `Notifier` 契约抛出异常时，投递工作线程终止，该条通知的 `pending` 行无终态（`core/notify/delivery.py`） | 契约约定渠道以 `DeliveryResult` 表达失败，投递循环未做异常兜底 | 一处渠道实现缺陷会使整个通知线程停摆，之后的通知全部不再投递 | 下一张通知卡 | 已还（2026-10-31 归还：渠道抛异常折成一次失败尝试并照常退避重试；工作线程再兜一层，任何意外都落失败终态，线程继续服务后续通知） |
 | D-007 | 2026-10-28 | tick 抛出的非 IO 异常在 `core/hostops/serve.py` 里没有结构化日志：`_run_core` 只捕 `OSError`/`sqlite3.Error`/`MigrationError`，其它异常经 `finally` 收尾后带 traceback 退出，不写 `serve.run_failed` | 错误契约未定义「程序错误」在 serve 顶层的记账口径 | 核心因程序错误退出时日志台账缺一条可检索的失败事件，排障只能靠 stderr | 下一张宿主卡 | 已还（2026-10-31 归还：`_run_core` 增非 IO 异常分支，写 `serve.run_failed` 带 `error` 与 `error_type` 后再上抛，堆栈仍留在 stderr） |
-| D-008 | 2026-10-28 | 租约续租只在 tick 里发生（`core/supervisor_leases.py:61-74`），而 tick 同步跑执行器（`core/worker/executor.py`，见 D-001），长运行期间不会续租 | 租约管理挂在 tick 节律上，没有独立续租线程 | TTL 默认 10 分钟，超过 10 分钟的运行租约会被自己回收，与 docs/09「每 60 秒续租、不依赖 worker 存活」冲突 | 与 D-001 同一张执行器异步化卡 | 未还 |
 | D-013 | 2026-10-30 | docs/11 的行数与参数上限被突破：`core/worker/executor.py` 690 行、`WorkerExecutor` 类约 576 行，`execute` 59 行、`_run_script` 60 行；`core/hostops/serve.py` 587 行；`Supervisor.__init__` 与 `WorkerExecutor.__init__` 各 8 个参数 | 停机收尾在执行器与 serve 上各加一个注入点，把既有超限推高；拆分是独立重构，不混入功能卡 | 执行器是改动热点，类与函数继续变长会让评审与单测难以覆盖；参数表变宽后调用点易错 | 下一张执行器拆分卡 | 未还 |
 | D-017 | 2026-11-02 | `.importlinter` 的 `watchdog-isolation` 契约 core 半边不生效：import-linter 对「source 在 forbidden 包内」的重叠对直接跳过（`as_packages` 默认 true），实际只拦住 storage | 契约用 `forbidden_modules = core` 覆盖看门狗自身所在的包，属配置语义错误，此前未被门禁暴露 | 看门狗误 import 核心重模块不会被门禁拦住，「只用标准库」只剩文档承诺 | 下一张内核卡 | 未还 |
