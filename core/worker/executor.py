@@ -38,7 +38,7 @@ from contracts import (
 from core.environments.service import EnvironmentCall, EnvironmentService
 from core.events.evidence import EvidenceService
 from core.events.verdicts import VerdictError, VerdictService
-from core.jobs.errors import RunNotFoundError
+from core.jobs.errors import IllegalRunTransitionError, RunNotFoundError
 from core.jobs.phases import PhaseTracker
 from core.jobs.run_service import SHUTDOWN_REASON, JobRunService
 from core.logging import NullLogger
@@ -146,6 +146,7 @@ class WorkerExecutor:
         Raises:
             RunNotFoundError: 运行不存在。
             PluginError: 模板声明的插件或能力没有注册。
+            IllegalRunTransitionError: 出队窗口内运行被并发迁出队列且不是叫停抢先。
         """
         run = self._runs.get(run_id)
         if run.state is RunState.RECOVERING:
@@ -166,8 +167,9 @@ class WorkerExecutor:
         if self._shutdown():
             return self._drain(scope.run)
         if scope.run.state is RunState.QUEUED:
-            self._leases.acquire(scope.run_id, (scope.call.environment_id,))
-            scope.run = self._runs.transition(scope.run.id, RunState.PREPARING)
+            claimed = self._claim_queued(scope)
+            if claimed is not None:
+                return claimed
         try:
             return self._advance(scope)
         except WorkerCancelledError:
@@ -280,6 +282,24 @@ class WorkerExecutor:
             verifier=verifier,
             context=context,
         )
+
+    def _claim_queued(self, scope: RunScope) -> JobRunRecord | None:
+        """排队运行占租约并迁到 preparing；叫停在出队窗口内抢先时执行器退让。
+
+        出队与叫停分属 tick 与请求线程：QUEUED 读出后运行仍可能被并发取消，迁移
+        抛 IllegalRunTransitionError 时只有叫停已落库（运行已 cancelled 且记过取消
+        请求）才退让收尾；其余迁出照原样抛出，抛前先释放刚占的租约，不留孤儿。
+        """
+        self._leases.acquire(scope.run_id, (scope.call.environment_id,))
+        try:
+            scope.run = self._runs.transition(scope.run.id, RunState.PREPARING)
+        except IllegalRunTransitionError:
+            current = self._runs.get(scope.run_id)
+            if current.state is RunState.CANCELLED and self._runs.cancel_requested(scope.run_id):
+                return self._cancel_run(scope, started=False)
+            self._safe_release(scope.run_id, reason="dequeue_conflict")
+            raise
+        return None
 
     def _prepare(self, scope: RunScope) -> JobRunRecord | None:
         """准备阶段：让插件把环境带到 ready，失败按恢复策略收尾。"""
