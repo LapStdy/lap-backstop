@@ -23,14 +23,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
-from core.hostops.watchdog_logtail import (
-    # 尾部字符上限的测试与文档口径是 watchdog._LOG_TAIL_MAX_CHARS，同名再导出。
-    _LOG_TAIL_MAX_CHARS as _LOG_TAIL_MAX_CHARS,
-)
-from core.hostops.watchdog_logtail import (
-    _latest_core_log,
-    _read_tail_lines,
-)
+from core.hostops import watchdog_logtail
+from core.hostops.watchdog_logtail import _latest_core_log, _read_tail_lines
 from core.hostops.watchdog_process import (
     _CREATION_TOLERANCE,
     _acquire_watchdog_mutex,
@@ -49,6 +43,12 @@ from core.hostops.watchdog_state import (
     take_gave_up_event_payload,
     write_state,
 )
+
+# 家族拆分后，测试与文档的可见口径仍是 watchdog 模块面：日志文法单源与解析
+# 函数（三消费方一致性测试钉住）、尾部字符上限在入口模块保持同名可见。
+CORE_LOG_NAME = watchdog_logtail.CORE_LOG_NAME
+_LOG_TAIL_MAX_CHARS = watchdog_logtail._LOG_TAIL_MAX_CHARS
+_parse_core_log_name = watchdog_logtail._parse_core_log_name
 
 WATCHDOG_MUTEX_NAME = "Global\\lap-backstop-watchdog"
 LOG_FILENAME = "watchdog.jsonl"
