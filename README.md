@@ -96,9 +96,9 @@
 | 选择 | 理由 |
 |---|---|
 | Python 3.12+ | 图像识别、Windows 窗口操作、MAA 生态都在 Python。 |
-| FastAPI | 本机 HTTP 服务与接口，异步，自带 OpenAPI。 |
+| HTTP 服务 | Python 标准库 `http.server`，按请求线程分发；不引入 Web 框架，接口契约以 [03](docs/03-数据模型与接口.md) 为准（[ADR 0013](docs/adr/0013-HTTP传输用标准库.md)）。 |
 | SQLite（WAL） | 单机单用户，免部署、可备份；事件与状态同库。 |
-| React + Vite + TypeScript + Tailwind + shadcn/ui | 界面；电脑端窗口与手机 App 加载同一份构建产物，由 FastAPI 托管。 |
+| React + Vite + TypeScript + Tailwind + shadcn/ui | 界面；电脑端窗口与手机 App 加载同一份构建产物，由内核静态托管。 |
 | SSE | 运行事件实时推送；断线重连拉快照。 |
 | Kotlin + WebView | 手机 App 是同一页面的安装壳；不作为一期可靠性关键路径。 |
 | Tailscale | 私有网络访问；认证交给网络层 + 单 token。 |
@@ -107,9 +107,10 @@
 ## 当前状态
 
 - v2 文档已完成：平台内核、插件契约、数据/API、调度语义、首批插件设计。
-- 代码已开工：`contracts/` 契约包；`core/` 的时钟、调度、作业、环境、租约、插件路由、worker 执行器与恢复策略；`storage/` 的 SQLite 迁移与仓储；`plugins/fake/` 七形态测试插件；六条门禁全绿。
-- 测试 585 条：契约、manifest、错误码、虚拟时钟、cron/补跑、迁移与外键、JobRun 状态机、事件与队列、30 天调度、环境与保温、租约、fake 插件、证据与结论、worker 生命周期、恢复退避与预算、worker 子进程 RPC 与故障注入、预热准点与崩溃重启。
-- 下一步按 [TASKS.md](TASKS.md) 的 P0 推进：API/SSE → 看门狗与备份恢复。
+- 代码：`contracts/` 契约包；`core/` 的时钟、调度、作业、环境、租约、插件路由、worker 执行器、恢复策略、事件与证据、HTTP 与 SSE 接口、宿主运维（看门狗、计划任务、保留清理、备份、升级回滚、Tailscale）；`storage/` 的 SQLite 迁移、仓储与快照；`plugins/fake/` 七形态测试插件；`plugins/maa/` 的日志解析与配置差异（环境动作、判定与恢复不连真机）。
+- 测试 1,418 个用例：契约、manifest、错误码、虚拟时钟、cron/补跑、迁移与外键、JobRun 状态机、事件与队列、30 天调度、环境与保温、租约、fake 插件、证据与结论、worker 生命周期、恢复退避与预算、worker 子进程 RPC 与故障注入、预热准点与崩溃重启、API 与 SSE、宿主运维。
+- 七条门禁全绿（2026-11-01，提交 43a081e）。
+- 任务清单见 [TASKS.md](TASKS.md)，技术债见 [DEBT.md](DEBT.md)。
 - 本机实测事实：MAA 6.20.x；MAA 启动到资源加载完成约 72 秒；开始唤醒 66 秒超时；29 天 60 次开跑、44 次完成、8 次掉线、3 轮任务错误；AutoAdminLogon=0。
 - 旧文档封存于 archive/docs-v1-2026-10-23/，只作历史材料，不作为规范依据。
 
