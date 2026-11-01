@@ -40,6 +40,7 @@ from storage import migrate, open_database
 from storage.repositories.environments import EnvironmentRepository
 from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 TOKEN = "secret-token"
@@ -98,7 +99,10 @@ def make_registry() -> PluginRegistry:
 
 
 class _CancellingScriptAdapter(FakeScriptAdapter):
-    """首次观察时请求叫停，模拟用户在执行中按下停止。"""
+    """首次观察时请求叫停，模拟用户在执行中按下停止。
+
+    走 ``stop``：叫停按请求线程口径自开连接，执行线程内不碰 tick 的连接（docs/11）。
+    """
 
     def __init__(self) -> None:
         super().__init__()
@@ -108,7 +112,7 @@ class _CancellingScriptAdapter(FakeScriptAdapter):
 
     def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
         assert self.supervisor is not None
-        self.supervisor.request_cancel(self.run_id, reason="user_stop")
+        self.supervisor.stop(self.run_id, reason="user_stop")
         return ScriptObservation(state=ScriptState.EXITED, since=ctx.clock.utc_now())
 
     def stop(self, handle: ScriptHandle, ctx: RunContext, mode: StopMode) -> StopResult:
@@ -238,7 +242,7 @@ def test_expired_lease_moves_run_to_recovering(
     runs.transition(run_id, RunState.PREPARING)
     supervisor = supervisor_for(connection, clock, data_root)
     clock.advance(timedelta(minutes=11))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     record = runs.get(run_id)
     assert record.state is RunState.RECOVERING
     assert record.error_code == "E_RESOURCE_LEASE_LOST"
@@ -263,7 +267,7 @@ def test_cleaning_run_holds_lease_across_renewal_ticks(
     supervisor = supervisor_for(connection, clock, data_root)
     for _ in range(11):
         clock.advance(timedelta(minutes=1))
-        supervisor.tick()
+        tick_and_settle(supervisor)
     assert runs.get(run_id).state is RunState.CLEANING
     assert len(leases.active_for_run(run_id)) == 1
 
@@ -277,7 +281,7 @@ def test_expired_warm_window_closes_environment(
     repository.ensure(ENV_ID, provider_id="fake", name=ENV_ID)
     repository.set_state(ENV_ID, EnvironmentState.READY, at=T0, detail={"action": "test"})
     repository.set_warm_until(ENV_ID, T0 - timedelta(minutes=1))
-    supervisor_for(connection, clock, data_root).tick()
+    tick_and_settle(supervisor_for(connection, clock, data_root))
     record = EnvironmentService(connection, clock).get(ENV_ID)
     assert record.state is EnvironmentState.OFF
     assert record.warm_until is None
@@ -291,7 +295,7 @@ def test_dispatch_passes_schedule_keep_warm_to_executor(
     insert_schedule(connection, keep_warm_minutes=30)
     run_id = prepare_run(connection, runs, schedule_id=SCHEDULE_ID)
     runs.enqueue(run_id)
-    supervisor_for(connection, clock, data_root).tick()
+    tick_and_settle(supervisor_for(connection, clock, data_root))
     assert runs.get(run_id).state is RunState.SUCCEEDED
     environment = EnvironmentService(connection, clock).get(ENV_ID)
     assert environment.state is EnvironmentState.READY
@@ -324,7 +328,7 @@ def test_tick_fails_overdue_run(
     runs.enqueue(run_id)
     supervisor = supervisor_for(connection, clock, data_root)
     clock.advance(timedelta(minutes=2))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     record = runs.get(run_id)
     assert record.state is RunState.FAILED
     assert record.error_code == "E_DEADLINE"
@@ -352,7 +356,7 @@ def test_cancel_during_execute_stops_script_gracefully(
         connection, clock, registry, data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
     )
     adapter.supervisor = supervisor
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(run_id).state is RunState.CANCELLED
     assert adapter.stop_modes == [StopMode.GRACEFUL]
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
@@ -378,7 +382,7 @@ def test_dispatch_uses_rpc_registry(
             data_root=data_root,
             disk_free=lambda: _STABLE_DISK_FREE,
         )
-        supervisor.tick()
+        tick_and_settle(supervisor)
         assert runs.get(run_id).state is RunState.SUCCEEDED
         assert host.channels["fake"].pid is not None
 
@@ -485,7 +489,7 @@ def test_stop_during_execute_reaches_script_and_lands_cancelled(
 
     requester = threading.Thread(target=request_stop, daemon=True)
     requester.start()
-    supervisor.tick()
+    tick_and_settle(supervisor)
     requester.join(timeout=10)
     assert not requester.is_alive(), "叫停线程没有结束"
     assert outcome == {"state": "executing"}
@@ -511,13 +515,13 @@ def test_stop_during_waiting_cancels_on_next_dispatch_without_launch(
     )
     runs.enqueue(run_id)
     supervisor = _supervisor_with_script(connection, clock, data_root, adapter)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(run_id).state is RunState.WAITING
     response = _stop_over_http(data_root / "state.db", clock, supervisor, run_id)
     assert response.status == 200
     assert body_of(response)["run"]["state"] == "waiting"
     clock.advance(timedelta(minutes=6))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     record = runs.get(run_id)
     assert record.state is RunState.CANCELLED
     assert "launch" not in adapter.calls

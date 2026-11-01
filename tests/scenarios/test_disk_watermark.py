@@ -21,6 +21,7 @@ from core.supervisor_disk import DISK_CRITICAL_EVENT, DISK_FULL_GUARD_EVENT, DIS
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
 GIB = 1024**3
@@ -128,16 +129,16 @@ def test_warn_emits_disk_low_once_until_recovery(
     connection, clock, data_root = env
     free = {"bytes": 4 * GIB}
     supervisor = supervisor_for(connection, clock, data_root, free)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert disk_events(connection, DISK_LOW_EVENT) == [
         {"free_bytes": 4 * GIB, "threshold_bytes": 5 * GIB}
     ]
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert len(disk_events(connection, DISK_LOW_EVENT)) == 1
     free["bytes"] = 6 * GIB
-    supervisor.tick()
+    tick_and_settle(supervisor)
     free["bytes"] = 4 * GIB
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert len(disk_events(connection, DISK_LOW_EVENT)) == 2
 
 
@@ -147,10 +148,10 @@ def test_warn_boundary_at_five_gib_exactly_is_quiet(
     connection, clock, data_root = env
     free = {"bytes": 5 * GIB}
     supervisor = supervisor_for(connection, clock, data_root, free)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert disk_events(connection, DISK_LOW_EVENT) == []
     free["bytes"] = 5 * GIB - 1
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert len(disk_events(connection, DISK_LOW_EVENT)) == 1
 
 
@@ -160,7 +161,7 @@ def test_guard_emits_disk_full_guard_once_with_error_code(
     connection, clock, data_root = env
     free = {"bytes": 1500 * MIB}
     supervisor = supervisor_for(connection, clock, data_root, free)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert disk_events(connection, DISK_FULL_GUARD_EVENT) == [
         {
             "free_bytes": 1500 * MIB,
@@ -168,16 +169,16 @@ def test_guard_emits_disk_full_guard_once_with_error_code(
             "error_code": "E_DISK",
         }
     ]
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert len(disk_events(connection, DISK_FULL_GUARD_EVENT)) == 1
     free["bytes"] = 2500 * MIB
-    supervisor.tick()
+    tick_and_settle(supervisor)
     # 回到 [2 GB, 5 GB) 区间属于「低于 5 GB」：首次进入告警档，warn 边沿补记一次
     assert disk_events(connection, DISK_LOW_EVENT) == [
         {"free_bytes": 2500 * MIB, "threshold_bytes": 5 * GIB}
     ]
     free["bytes"] = 1500 * MIB
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert len(disk_events(connection, DISK_FULL_GUARD_EVENT)) == 2
     assert len(disk_events(connection, DISK_LOW_EVENT)) == 1
 
@@ -188,7 +189,7 @@ def test_guard_boundary_at_two_gib_exactly_is_allowed(
     connection, clock, data_root = env
     free = {"bytes": 2 * GIB}
     supervisor = supervisor_for(connection, clock, data_root, free)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert disk_events(connection, DISK_FULL_GUARD_EVENT) == []
 
 
@@ -198,12 +199,12 @@ def test_critical_boundary_at_500_mib_is_guard_level(
     connection, clock, data_root = env
     free = {"bytes": 500 * MIB}
     supervisor = supervisor_for(connection, clock, data_root, free)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert not supervisor.is_disk_critical
     assert disk_events(connection, DISK_CRITICAL_EVENT) == []
     assert len(disk_events(connection, DISK_FULL_GUARD_EVENT)) == 1
     free["bytes"] = 500 * MIB - 1
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert supervisor.is_disk_critical
     assert disk_events(connection, DISK_CRITICAL_EVENT) == [
         {"free_bytes": 500 * MIB - 1, "threshold_bytes": 500 * MIB}
@@ -218,8 +219,8 @@ def test_critical_ticks_emit_once_and_skip_scheduling(
     insert_schedule(connection, next_run_at=T0.isoformat())
     free = {"bytes": 400 * MIB}
     supervisor = supervisor_for(connection, clock, data_root, free)
-    supervisor.tick()
-    supervisor.tick()
+    tick_and_settle(supervisor)
+    tick_and_settle(supervisor)
     assert run_count(connection) == 0
     assert len(disk_events(connection, DISK_CRITICAL_EVENT)) == 1
 
@@ -235,7 +236,7 @@ def test_unreadable_volume_is_ignored(
         data_root=data_root,
         disk_free=lambda: None,
     )
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert not supervisor.is_disk_critical
     assert disk_events(connection, DISK_LOW_EVENT) == []
     assert disk_events(connection, DISK_FULL_GUARD_EVENT) == []
@@ -249,13 +250,13 @@ def test_disk_guard_blocks_new_run_until_recovered(
     insert_schedule(connection, next_run_at=T0.isoformat())
     free = {"bytes": 1500 * MIB}
     supervisor = supervisor_for(connection, clock, data_root, free)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert run_count(connection) == 0
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert run_count(connection) == 0
     assert len(disk_events(connection, DISK_FULL_GUARD_EVENT)) == 1
     free["bytes"] = 100 * GIB
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert run_count(connection) == 1
 
 
@@ -278,8 +279,8 @@ def test_running_run_finishes_while_disk_guarded(
     )
     free = {"bytes": 1500 * MIB}
     supervisor = supervisor_for(connection, clock, data_root, free)
-    supervisor.tick()
-    supervisor.tick()
+    tick_and_settle(supervisor)
+    tick_and_settle(supervisor)
     assert runs.get(record.id).state is RunState.SUCCEEDED
     assert len(disk_events(connection, DISK_FULL_GUARD_EVENT)) == 1
 

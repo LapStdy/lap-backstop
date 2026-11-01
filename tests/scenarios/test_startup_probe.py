@@ -26,6 +26,7 @@ from core.supervisor import Supervisor
 from plugins.fake.plugin import FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 25, 8, 0, tzinfo=UTC)
 
@@ -264,7 +265,7 @@ def test_unknown_environment_waits_next_startup_not_ticks(
 
     clock.jump_to(T0 + timedelta(minutes=10))
     for _ in range(3):
-        supervisor.tick()
+        tick_and_settle(supervisor)
 
     assert provider.probe_calls[ENV_ID] == 1
     assert service.get(ENV_ID).state is EnvironmentState.UNKNOWN
@@ -293,7 +294,7 @@ def test_consecutive_unknown_recovers_on_later_probe(
     assert service.get(ENV_ID).state is EnvironmentState.BOOTING
     assert ("unknown", "booting") in env_transitions(connection, ENV_ID)
 
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(run_id).state is RunState.SUCCEEDED
     assert ("booting", "ready") in env_transitions(connection, ENV_ID)
 

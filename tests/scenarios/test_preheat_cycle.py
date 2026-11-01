@@ -19,6 +19,7 @@ from core.resources.service import LeaseService
 from core.supervisor import Supervisor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 
@@ -110,11 +111,11 @@ def test_preheat_creates_run_only_when_trigger_time_arrives(
         connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
     )
     clock.jump_to(SCHEDULED_AT - PREHEAT - timedelta(seconds=1))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.non_terminal() == ()
 
     clock.jump_to(SCHEDULED_AT - PREHEAT)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     created = runs.non_terminal()
     assert [run.scheduled_at for run in created] == [SCHEDULED_AT]
 
@@ -127,7 +128,7 @@ def test_environment_is_ready_before_scheduled_time_and_executes_on_time(
         connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
     )
     clock.jump_to(SCHEDULED_AT - PREHEAT)
-    supervisor.tick()
+    tick_and_settle(supervisor)
 
     (waiting,) = runs.non_terminal()
     assert waiting.state is RunState.WAITING
@@ -135,11 +136,11 @@ def test_environment_is_ready_before_scheduled_time_and_executes_on_time(
     assert LeaseService(connection, clock).active_for_run(waiting.id)
 
     clock.jump_to(SCHEDULED_AT - timedelta(seconds=1))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(waiting.id).state is RunState.WAITING
 
     clock.jump_to(SCHEDULED_AT)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     finished = runs.get(waiting.id)
     assert finished.state is RunState.SUCCEEDED
     assert finished.started_at == SCHEDULED_AT

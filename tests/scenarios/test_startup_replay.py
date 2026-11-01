@@ -19,6 +19,7 @@ from core.supervisor import Supervisor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
 
@@ -126,7 +127,7 @@ def test_replay_rebuilds_completed_run_from_stream(
     run_id = create_run(runs)
     supervisor = supervisor_for(connection, clock, data_root)
     supervisor.startup()
-    supervisor.tick()
+    tick_and_settle(supervisor)
 
     assert runs.get(run_id).state is RunState.SUCCEEDED
     snapshot = replay_run(runs.events(run_id))

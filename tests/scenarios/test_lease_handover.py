@@ -22,6 +22,7 @@ from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, Fake
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 
@@ -119,12 +120,12 @@ def test_second_run_waits_for_environment_until_first_releases_lease(
         connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
     )
 
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(first).state is RunState.SUCCEEDED
     assert runs.get(second).state is RunState.QUEUED
     assert "resource.leased" not in event_types(runs, second)
 
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(second).state is RunState.SUCCEEDED
     assert "resource.leased" in event_types(runs, second)
     assert LeaseService(connection, clock).active_for_run(second) == ()
@@ -145,7 +146,7 @@ def test_expired_lease_is_handed_to_queued_run_and_holder_retries(
         connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
     )
     clock.jump_to(T0 + LEASE_TTL + timedelta(minutes=1))
-    supervisor.tick()
+    tick_and_settle(supervisor)
 
     lost = runs.get(first)
     assert lost.state is RunState.RECOVERING
@@ -155,7 +156,7 @@ def test_expired_lease_is_handed_to_queued_run_and_holder_retries(
     assert runs.get(second).state is RunState.SUCCEEDED
 
     clock.jump_to(T0 + LEASE_TTL + timedelta(minutes=2))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     retried = runs.get(first)
     assert retried.state is RunState.SUCCEEDED
     assert retried.attempt == 1
@@ -176,7 +177,7 @@ def test_exhausted_lease_recovery_marks_run_failed(
         connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
     )
     clock.jump_to(T0 + LEASE_TTL + timedelta(seconds=1))
-    supervisor.tick()
+    tick_and_settle(supervisor)
 
     failed = runs.get(run_id)
     assert failed.state is RunState.FAILED
@@ -204,7 +205,7 @@ def test_recovery_retry_with_busy_lease_stays_queued_until_deadline(
         connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
     )
     clock.jump_to(T0 + LEASE_TTL + timedelta(minutes=1))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(first).state is RunState.RECOVERING
 
     blocker = prepare_run(
@@ -217,14 +218,14 @@ def test_recovery_retry_with_busy_lease_stays_queued_until_deadline(
     leases.acquire(blocker, (ENV_ID,))
 
     clock.jump_to(T0 + LEASE_TTL + timedelta(minutes=2))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     retried = runs.get(first)
     assert retried.state is RunState.QUEUED
     assert leases.active_for_run(first) == ()
     assert leases.active_for_run(blocker) != ()
 
     clock.jump_to(deadline)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     overdue = runs.get(first)
     assert overdue.state is RunState.FAILED
     assert overdue.error_code == "E_DEADLINE"

@@ -34,6 +34,7 @@ from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository
 from tests.integration.test_serve_api import TOKEN, configure, serve_options
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 30, 3, 0, tzinfo=UTC)
 TEMPLATE_ID = "template-1"
@@ -145,7 +146,7 @@ def test_shutdown_during_execution_writes_interrupted_and_keeps_lease(
             disk_free=lambda: _STABLE_DISK_FREE,
             shutdown=stop.is_set,
         )
-        supervisor.tick()
+        tick_and_settle(supervisor)
 
         record = runs.get(run_id)
         assert record.state is RunState.EXECUTING, f"停机后运行状态被改写：{record.state.value}"
@@ -248,7 +249,7 @@ def test_drain_endpoint_sets_stop_event_and_due_run_stays_queued(tmp_path: Path)
             disk_free=lambda: _STABLE_DISK_FREE,
             shutdown=stop.is_set,
         )
-        supervisor.tick()
+        tick_and_settle(supervisor)
 
         record = runs.get(run_id)
         assert record.state is RunState.SCHEDULED, f"排水后到点的运行仍被执行：{record.state.value}"
@@ -284,7 +285,7 @@ def test_shutdown_during_execution_finishes_phase_then_interrupts(tmp_path: Path
             disk_free=lambda: _STABLE_DISK_FREE,
             shutdown=stop.is_set,
         )
-        supervisor.tick()
+        tick_and_settle(supervisor)
 
         record = runs.get(run_id)
         assert record.state is RunState.EXECUTING, f"停机后运行状态被改写：{record.state.value}"
@@ -334,7 +335,7 @@ def test_shutdown_between_phases_starts_no_new_phase(tmp_path: Path) -> None:
             disk_free=lambda: _STABLE_DISK_FREE,
             shutdown=stop.is_set,
         )
-        supervisor.tick()
+        tick_and_settle(supervisor)
 
         record = runs.get(run_id)
         assert record.state is RunState.WAITING, f"停机后运行状态被改写：{record.state.value}"
