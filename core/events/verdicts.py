@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from dataclasses import replace
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -65,28 +66,19 @@ class VerdictService:
         effective = self._checked(run_id, verdict, template.verification_policy)
         verdict_id = uuid4().hex
         now = self._clock.utc_now()
+        self._persist(run_id, verdict_id, effective, now)
+        return verdict_id, effective
+
+    def _persist(
+        self,
+        run_id: str,
+        verdict_id: str,
+        effective: Verdict,
+        now: datetime,
+    ) -> None:
+        """结论行、运行回填与 run.verdict 事件在同一事务落库。"""
         with transaction(self._connection):
-            self._verdicts.insert(
-                VerdictRow(
-                    id=verdict_id,
-                    run_id=run_id,
-                    status=effective.status,
-                    confidence=effective.confidence,
-                    reason=effective.reason,
-                    policy_id=effective.policy_id,
-                    checks=tuple(
-                        {
-                            "name": check.name,
-                            "status": check.status.value,
-                            "detail": check.detail,
-                            "evidence_ids": list(check.evidence_ids),
-                        }
-                        for check in effective.checks
-                    ),
-                    evidence_ids=effective.evidence_ids,
-                    created_at=now,
-                )
-            )
+            self._verdicts.insert(_verdict_row(run_id, verdict_id, effective, now))
             self._runs.set_verdict(run_id, verdict_id)
             self._events.append_run(
                 run_id,
@@ -101,7 +93,6 @@ class VerdictService:
                 },
                 at=now,
             )
-        return verdict_id, effective
 
     def _checked(self, run_id: str, verdict: Verdict, policy: Mapping[str, Any]) -> Verdict:
         """核对证据引用与模板要求，返回回填策略 id 后的结论。"""
@@ -126,6 +117,34 @@ class VerdictService:
             policy_id=policy_id,
             reason=f"{verdict.reason}（缺少证据种类：{kinds}）",
         )
+
+
+def _verdict_row(
+    run_id: str,
+    verdict_id: str,
+    effective: Verdict,
+    now: datetime,
+) -> VerdictRow:
+    """把内核改写后的结论折成结论表一行；checks 逐项展开为可回放字段。"""
+    return VerdictRow(
+        id=verdict_id,
+        run_id=run_id,
+        status=effective.status,
+        confidence=effective.confidence,
+        reason=effective.reason,
+        policy_id=effective.policy_id,
+        checks=tuple(
+            {
+                "name": check.name,
+                "status": check.status.value,
+                "detail": check.detail,
+                "evidence_ids": list(check.evidence_ids),
+            }
+            for check in effective.checks
+        ),
+        evidence_ids=effective.evidence_ids,
+        created_at=now,
+    )
 
 
 def _verification_policy(policy: Mapping[str, Any]) -> tuple[str, tuple[EvidenceKind, ...]]:

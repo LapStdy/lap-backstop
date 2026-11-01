@@ -54,35 +54,50 @@ class LeaseService:
             raise RunNotFoundError(f"JobRun 不存在：{run_id}")
         now = self._clock.utc_now()
         lifetime = DEFAULT_TTL if ttl is None else ttl
-        leases: list[LeaseRow] = []
         with transaction(self._connection):
-            for resource_id in ordered:
-                resource = self._resources.get(resource_id)
-                if resource is None:
-                    raise ResourceNotFoundError(f"资源不存在：{resource_id}")
-                if len(self._leases.active_for(resource_id)) >= resource.capacity:
-                    raise ResourceBusyError(f"资源已被占用：{resource_id}")
-            for resource_id in ordered:
-                lease = self._leases.insert(
-                    NewLease(
-                        resource_id=resource_id,
-                        run_id=run_id,
-                        owner=OWNER,
-                        acquired_at=now,
-                        expires_at=now + lifetime,
-                    )
+            self._ensure_available(ordered)
+            leases = self._insert_leases(run_id, ordered, lifetime, now)
+        return leases
+
+    def _ensure_available(self, resource_ids: tuple[str, ...]) -> None:
+        """逐一核对资源已注册且未占满；任一不满足即抛错，整笔事务不留租约。"""
+        for resource_id in resource_ids:
+            resource = self._resources.get(resource_id)
+            if resource is None:
+                raise ResourceNotFoundError(f"资源不存在：{resource_id}")
+            if len(self._leases.active_for(resource_id)) >= resource.capacity:
+                raise ResourceBusyError(f"资源已被占用：{resource_id}")
+
+    def _insert_leases(
+        self,
+        run_id: str,
+        resource_ids: tuple[str, ...],
+        lifetime: timedelta,
+        now: datetime,
+    ) -> tuple[LeaseRow, ...]:
+        """按既定顺序插入租约并逐条写 resource.leased 事件，返回新租约。"""
+        leases: list[LeaseRow] = []
+        for resource_id in resource_ids:
+            lease = self._leases.insert(
+                NewLease(
+                    resource_id=resource_id,
+                    run_id=run_id,
+                    owner=OWNER,
+                    acquired_at=now,
+                    expires_at=now + lifetime,
                 )
-                self._events.append_run(
-                    run_id,
-                    EventType.RESOURCE_LEASED,
-                    {
-                        "resource_id": resource_id,
-                        "run_id": run_id,
-                        "expires_at": lease.expires_at.isoformat(),
-                    },
-                    at=now,
-                )
-                leases.append(lease)
+            )
+            self._events.append_run(
+                run_id,
+                EventType.RESOURCE_LEASED,
+                {
+                    "resource_id": resource_id,
+                    "run_id": run_id,
+                    "expires_at": lease.expires_at.isoformat(),
+                },
+                at=now,
+            )
+            leases.append(lease)
         return tuple(leases)
 
     def renew(self, run_id: str, *, ttl: timedelta | None = None) -> tuple[LeaseRow, ...]:
