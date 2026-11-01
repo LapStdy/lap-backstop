@@ -11,22 +11,24 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from contracts import RunContext, RunState, ScriptHandle, ScriptObservation, ScriptRef
+from core import supervisor_leases
 from core.clock import VirtualClock
 from core.jobs.phases import PhaseTracker
 from core.jobs.run_service import JobRunService
 from core.logging import JsonLineLogger
 from core.plugins.registry import PluginCapabilities, PluginRegistry
+from core.resources import service as resource_service
 from core.supervisor import Supervisor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
-from tests.supervisor_support import JOIN_TIMEOUT_SECONDS
+from tests.supervisor_support import JOIN_TIMEOUT_SECONDS, tick_and_settle
 
 T0 = datetime(2026, 10, 31, 8, 0, tzinfo=UTC)
 TEMPLATE_A = "template-a"
@@ -285,3 +287,116 @@ def test_run_executes_exactly_once_across_consecutive_ticks(
     ).fetchone()
     assert residual is not None and int(residual[0]) == 0, "执行线程兜底路径被触发"
 
+
+def test_lease_renewal_keeps_pace_with_tick_while_run_blocked(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, _SupervisorFactory],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """运行阻塞超过 TTL：租约仍 active，renewed_at 按 tick 节律推进；不 tick 不续租。"""
+    monkeypatch.setattr(resource_service, "DEFAULT_TTL", timedelta(seconds=10))
+    monkeypatch.setattr(supervisor_leases, "_RENEW_INTERVAL", timedelta(seconds=1))
+    connection, clock, runs, make = env
+    _insert_template(connection, TEMPLATE_A, ENV_A)
+    supervisor, adapter = make()
+    run_id = _create_run(runs, TEMPLATE_A, key="renew")
+    release = adapter.gate(ENV_A)
+
+    supervisor.tick()
+    assert adapter.entered[ENV_A].wait(_GATE_TIMEOUT), "运行没有进入执行"
+    assert runs.get(run_id).state is RunState.EXECUTING
+    row = _lease_row(connection, run_id)
+    assert row is not None and row["state"] == "leased"
+    assert _renewed_at(row) is None, "租约刚取得就被续过"
+
+    last_renewed: datetime | None = None
+    for step in range(1, 4):
+        # TTL 只有 10 秒而每步推 7 秒：阻塞累计 21 秒已超过 TTL，租约必须仍 active。
+        clock.advance(timedelta(seconds=7))
+        row = _lease_row(connection, run_id)
+        assert row is not None and row["state"] == "leased"
+        assert _renewed_at(row) == last_renewed, "没有 tick 也续了租"
+        supervisor.tick()
+        row = _lease_row(connection, run_id)
+        assert row is not None and row["state"] == "leased"
+        last_renewed = T0 + timedelta(seconds=7 * step)
+        assert _renewed_at(row) == last_renewed, f"续租没有随 tick 推进：{row['renewed_at']}"
+
+    release.set()
+    supervisor.join_executors(JOIN_TIMEOUT_SECONDS)
+    assert runs.get(run_id).state is RunState.SUCCEEDED
+
+
+def test_blocked_run_does_not_stall_deadline_and_schedule_queueing(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, _SupervisorFactory],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(resource_service, "DEFAULT_TTL", timedelta(hours=2))
+    connection, clock, runs, make = env
+    _insert_template(connection, TEMPLATE_A, ENV_A)
+    _insert_template(connection, TEMPLATE_B, ENV_B)
+    _insert_template(connection, TEMPLATE_C, ENV_C)
+    # interval 的发生点锚在 created_at 的 60 分钟网格上：next_run_at 取 T0+60m 才会被扫描到。
+    _insert_schedule(connection, next_run_at=T0 + timedelta(minutes=60))
+    supervisor, adapter = make()
+    overdue = _create_run(
+        runs,
+        TEMPLATE_B,
+        key="overdue",
+        scheduled_at=T0 + timedelta(minutes=30),
+        deadline_at=T0 + timedelta(minutes=45),
+    )
+    tick_and_settle(supervisor)
+    assert runs.get(overdue).state is RunState.WAITING
+
+    blocked = _create_run(runs, TEMPLATE_A, key="blocked")
+    release = adapter.gate(ENV_A)
+    supervisor.tick()
+    assert adapter.entered[ENV_A].wait(_GATE_TIMEOUT), "运行没有进入执行"
+
+    clock.advance(timedelta(minutes=70))
+    supervisor.tick()
+    failed = runs.get(overdue)
+    assert failed.state is RunState.FAILED
+    assert failed.error_code == "E_DEADLINE"
+    row = connection.execute(
+        "SELECT id FROM job_runs WHERE template_id = ?", (TEMPLATE_C,)
+    ).fetchone()
+    assert row is not None, "到点调度没有建运行"
+    fresh_id = str(row[0])
+    _wait_until(lambda: runs.get(fresh_id).state is RunState.SUCCEEDED)
+    assert "run.queued" in [event.type for event in runs.events(fresh_id)]
+    assert runs.get(blocked).state is RunState.EXECUTING, "阻塞的运行被挪动"
+
+    release.set()
+    supervisor.join_executors(JOIN_TIMEOUT_SECONDS)
+    assert runs.get(blocked).state is RunState.SUCCEEDED
+
+
+def test_unexpected_adapter_exception_fails_run_and_tick_continues(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, _SupervisorFactory],
+    tmp_path: Path,
+) -> None:
+    connection, _clock, runs, make = env
+    _insert_template(connection, TEMPLATE_A, ENV_A, recovery={"max_attempts": 1})
+    _insert_template(connection, TEMPLATE_B, ENV_B)
+    log_path = tmp_path / "logs" / "core.jsonl"
+    supervisor, _adapter = make(log=JsonLineLogger(log_path), crash_environment_id=ENV_A)
+    run_id = _create_run(runs, TEMPLATE_A, key="crash")
+
+    tick_and_settle(supervisor)
+    record = runs.get(run_id)
+    assert record.state is RunState.FAILED, f"崩溃运行没有落失败终态：{record.state}"
+    assert record.error_code == "E_RECOVERY_EXHAUSTED"
+    event_types = [event.type for event in runs.events(run_id)]
+    assert "recovery.started" in event_types
+    assert "recovery.finished" in event_types
+    logged = _log_entries(log_path)
+    assert any(entry.get("event") == "executor.error" for entry in logged), "异常没有记日志"
+    residual = connection.execute(
+        "SELECT COUNT(*) FROM events_global WHERE payload LIKE '%supervisor.executor_failed%'"
+    ).fetchone()
+    assert residual is not None and int(residual[0]) == 0, "兜底路径被误触发"
+
+    follower = _create_run(runs, TEMPLATE_B, key="follower")
+    tick_and_settle(supervisor)
+    assert runs.get(follower).state is RunState.SUCCEEDED, "后续运行没有照常推进"
