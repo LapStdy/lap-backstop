@@ -119,11 +119,39 @@ class _RunningScriptAdapter(FakeScriptAdapter):
         return ScriptObservation(state=ScriptState.RUNNING, since=ctx.clock.utc_now())
 
 
+class _CancellingScriptAdapter(FakeScriptAdapter):
+    """观察期间发出取消请求，模拟用户在执行阶段按下停止。"""
+
+    def __init__(self, on_observe: Callable[[str], None]) -> None:
+        super().__init__()
+        self._on_observe = on_observe
+
+    def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
+        self._on_observe(ctx.run_id)
+        return ScriptObservation(state=ScriptState.RUNNING, since=ctx.clock.utc_now())
+
+
 class _FailingCleanupProvider(FakeEnvironmentProvider):
     """清理必定抛异常，验证收尾异常只降级成 WARN、不打断恢复。"""
 
     def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
+        self.calls.append("cleanup")
         raise RuntimeError("清理失败")
+
+
+class _FailedResultCleanupProvider(FakeEnvironmentProvider):
+    """清理返回失败结果，验证失败口径沿用 provider 报告的错误码。"""
+
+    def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
+        self.calls.append("cleanup")
+        now = ctx.clock.utc_now()
+        return PhaseResult(
+            ok=False,
+            error_code="E_ENV_UNREACHABLE",
+            detail="fake 清理失败",
+            started_at=now,
+            ended_at=now,
+        )
 
 
 class _CancellingCleanupProvider(FakeEnvironmentProvider):
@@ -196,6 +224,14 @@ def executor_for(
         data_root=data_root,
         cancel=cancel,
         log=log,
+    )
+
+
+def set_recovery_policy(connection: sqlite3.Connection, policy: Mapping[str, Any]) -> None:
+    """改写模板的恢复策略；场景用它收缩恢复预算。"""
+    connection.execute(
+        "UPDATE job_templates SET recovery_policy = ? WHERE id = ?",
+        (json.dumps(policy), TEMPLATE_ID),
     )
 
 
@@ -308,7 +344,7 @@ def test_verify_with_missing_evidence_blames_evidence(
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
-    registry = _registry_with_verifier(_MissingEvidenceVerifier())
+    registry = _registry_with(verifier=_MissingEvidenceVerifier())
     result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert result.error_code == "E_VERIFY_NO_EVIDENCE"
@@ -503,6 +539,151 @@ def test_cleanup_failure_logs_warning_and_recovery_continues(
     )
 
 
+def test_run_succeeds_with_single_cleanup_call(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """docs/09：每次执行尝试的 provider cleanup 至多调用一次。"""
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    provider = FakeEnvironmentProvider()
+    result = WorkerExecutor(
+        connection, clock, _registry_with(environment=provider), data_root=data_root
+    ).execute(run_id)
+    assert result.state is RunState.SUCCEEDED
+    assert provider.calls.count("cleanup") == 1
+
+
+def test_cleanup_failure_fails_run_with_single_cleanup_call(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """清理失败按既有口径落 failed；同轮收尾不再对 provider 二次清理。"""
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    provider = _FailedResultCleanupProvider()
+    result = WorkerExecutor(
+        connection, clock, _registry_with(environment=provider), data_root=data_root
+    ).execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_ENV_UNREACHABLE"
+    assert provider.calls.count("cleanup") == 1
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()
+
+
+def test_cleanup_exception_ends_failed_with_single_cleanup_call(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """清理抛异常不触发第二轮收尾：计数为 1，恢复预算耗尽按停手落终态。"""
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    set_recovery_policy(connection, {"max_attempts": 1})
+    provider = _FailingCleanupProvider()
+    result = WorkerExecutor(
+        connection, clock, _registry_with(environment=provider), data_root=data_root
+    ).execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_RECOVERY_EXHAUSTED"
+    assert provider.calls.count("cleanup") == 1
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()
+
+
+def test_cancel_during_verify_cleans_once_and_ends_cancelled(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """未进入 cleaning 的取消收尾清理一次，随后记 cancelled。"""
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    provider = FakeEnvironmentProvider()
+    verifier = _RaisingVerifier(WorkerCancelledError("已叫停"))
+    result = WorkerExecutor(
+        connection,
+        clock,
+        _registry_with(environment=provider, verifier=verifier),
+        data_root=data_root,
+    ).execute(run_id)
+    assert result.state is RunState.CANCELLED
+    assert provider.calls.count("cleanup") == 1
+
+
+def test_cancel_during_execution_cleans_once_and_ends_cancelled(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """执行阶段取消先停脚本再清理一次，随后记 cancelled。"""
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    flag = CancelFlag()
+
+    def request_cancel(during_run: str) -> None:
+        runs.request_cancel(during_run, reason="user_stop")
+        flag.cancel()
+
+    provider = FakeEnvironmentProvider()
+    result = WorkerExecutor(
+        connection,
+        clock,
+        _registry_with(
+            environment=provider,
+            script=_CancellingScriptAdapter(request_cancel),
+        ),
+        data_root=data_root,
+        cancel=flag,
+    ).execute(run_id)
+    assert result.state is RunState.CANCELLED
+    assert provider.calls.count("cleanup") == 1
+
+
+def test_recovery_exhaustion_fails_run_with_single_cleanup_call(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """恢复耗尽停手清理一次，租约释放，运行落 failed。"""
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "fail")
+    set_recovery_policy(connection, {"max_attempts": 1})
+    provider = FakeEnvironmentProvider()
+    result = WorkerExecutor(
+        connection, clock, _registry_with(environment=provider), data_root=data_root
+    ).execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_RECOVERY_EXHAUSTED"
+    assert provider.calls.count("cleanup") == 1
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()
+
+
+def test_cleanup_exception_aborts_with_plugin_crash_when_budget_remains(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """清理异常且恢复预算未耗尽：cleaning 中不重试，按停手落 failed。"""
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    provider = _FailingCleanupProvider()
+    result = WorkerExecutor(
+        connection, clock, _registry_with(environment=provider), data_root=data_root
+    ).execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_PLUGIN_CRASH"
+    assert provider.calls.count("cleanup") == 1
+    assert LeaseService(connection, clock).active_for_run(run_id) == ()
+
+
+def test_recovery_retry_cleans_once_per_attempt(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """恢复重试是新执行尝试：两次尝试各清理一次，合计两次。"""
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "fail")
+    provider = FakeEnvironmentProvider()
+    executor = WorkerExecutor(
+        connection, clock, _registry_with(environment=provider), data_root=data_root
+    )
+    first = executor.execute(run_id)
+    assert first.state is RunState.RECOVERING
+    assert first.attempt == 1
+    clock.advance(timedelta(seconds=120))
+    second = executor.execute(run_id)
+    assert second.state is RunState.RECOVERING
+    assert second.attempt == 2
+    assert provider.calls.count("cleanup") == 2
+
+
 class _RaisingVerifier:
     """验证阶段抛出指定异常，用来覆盖跨进程错误到运行终态的映射。"""
 
@@ -524,14 +705,19 @@ class _MissingEvidenceVerifier(FakeVerifier):
         return replace(verdict, evidence_ids=("missing-1",))
 
 
-def _registry_with_verifier(verifier: Any) -> PluginRegistry:
+def _registry_with(
+    *,
+    environment: FakeEnvironmentProvider | None = None,
+    script: FakeScriptAdapter | None = None,
+    verifier: Any | None = None,
+) -> PluginRegistry:
     registry = PluginRegistry()
     registry.register(
         PluginCapabilities(
             plugin_id="fake",
-            environment=FakeEnvironmentProvider(),
-            script=FakeScriptAdapter(),
-            verifier=verifier,
+            environment=FakeEnvironmentProvider() if environment is None else environment,
+            script=FakeScriptAdapter() if script is None else script,
+            verifier=FakeVerifier() if verifier is None else verifier,
         )
     )
     return registry
@@ -542,7 +728,7 @@ def test_worker_timeout_ends_with_deadline(
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
-    registry = _registry_with_verifier(_RaisingVerifier(WorkerTimeoutError("调用超时")))
+    registry = _registry_with(verifier=_RaisingVerifier(WorkerTimeoutError("调用超时")))
     result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_DEADLINE"
@@ -554,7 +740,7 @@ def test_worker_cancel_ends_run_cancelled(
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
-    registry = _registry_with_verifier(_RaisingVerifier(WorkerCancelledError("已叫停")))
+    registry = _registry_with(verifier=_RaisingVerifier(WorkerCancelledError("已叫停")))
     result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
@@ -565,7 +751,7 @@ def test_worker_crash_keeps_plugin_crash_code(
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
-    registry = _registry_with_verifier(_RaisingVerifier(WorkerCrashError("进程退出")))
+    registry = _registry_with(verifier=_RaisingVerifier(WorkerCrashError("进程退出")))
     result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.RECOVERING
     assert result.error_code == "E_PLUGIN_CRASH"
@@ -576,7 +762,7 @@ def test_worker_call_error_keeps_plugin_code(
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
-    registry = _registry_with_verifier(_RaisingVerifier(WorkerCallError("插件方法抛异常")))
+    registry = _registry_with(verifier=_RaisingVerifier(WorkerCallError("插件方法抛异常")))
     result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_PLUGIN"
