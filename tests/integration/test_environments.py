@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -111,6 +111,32 @@ class StubProvider:
     def warm(self, env: EnvironmentRef, ctx: RunContext, minutes: int) -> PhaseResult:
         self.calls.append("warm")
         return PhaseResult(ok=self.warm_ok, detail=f"warm {minutes}")
+
+
+class HookedProvider(StubProvider):
+    """在插件回调里先执行注入动作再返回结果，模拟调用期间另一连接先提交。"""
+
+    def __init__(
+        self,
+        states: list[EnvironmentState] | None = None,
+        *,
+        on_probe: Callable[[], None] | None = None,
+        on_prepare: Callable[[], None] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(states, **kwargs)
+        self._on_probe = on_probe
+        self._on_prepare = on_prepare
+
+    def probe(self, env: EnvironmentRef, ctx: RunContext) -> EnvironmentProbe:
+        if self._on_probe is not None:
+            self._on_probe()
+        return super().probe(env, ctx)
+
+    def prepare(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
+        if self._on_prepare is not None:
+            self._on_prepare()
+        return super().prepare(env, ctx)
 
 
 @pytest.fixture
@@ -292,3 +318,129 @@ def test_missing_environment_raises(
     _connection, _clock, service = env
     with pytest.raises(EnvironmentNotFoundError):
         service.get("missing")
+
+
+@pytest.fixture
+def two_writers(
+    tmp_path: Path,
+) -> Iterator[tuple[sqlite3.Connection, sqlite3.Connection, VirtualClock, EnvironmentService]]:
+    """同一库上的两条真实连接：service 挂 A 连接，B 连接代表另一个写者线程。"""
+    database = tmp_path / "state.db"
+    connection_a = open_database(database)
+    migrate(connection_a)
+    connection_b = open_database(database)
+    clock = VirtualClock(T0)
+    service = EnvironmentService(connection_a, clock)
+    service.register(ENV_ID, provider_id="fake", name="模拟器")
+    try:
+        yield connection_a, connection_b, clock, service
+    finally:
+        connection_a.close()
+        connection_b.close()
+
+
+def conflict_events(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """events_global 里 event 名为 core.env_action_conflict 的载荷（内层 payload）。"""
+    rows = connection.execute(
+        "SELECT payload FROM events_global WHERE type = 'core.event' ORDER BY seq"
+    ).fetchall()
+    frames = (json.loads(str(row[0])) for row in rows)
+    return [item["payload"] for item in frames if item.get("event") == "core.env_action_conflict"]
+
+
+def test_probe_write_discarded_when_other_connection_committed_first(
+    two_writers: tuple[sqlite3.Connection, sqlite3.Connection, VirtualClock, EnvironmentService],
+) -> None:
+    """A 按 unknown 前置写入时 B 已提交 booting：A 丢弃，最终状态与事件归 B。"""
+    connection_a, connection_b, clock, service = two_writers
+    other = EnvironmentService(connection_b, clock)
+
+    def commit_booting() -> None:
+        other.probe(make_call(StubProvider([EnvironmentState.BOOTING]), clock))
+
+    provider = HookedProvider([EnvironmentState.OFF], on_probe=commit_booting)
+    service.probe(make_call(provider, clock))
+
+    assert service.get(ENV_ID).state is EnvironmentState.BOOTING
+    payloads = state_events(connection_a)
+    assert [(item["from_state"], item["to_state"]) for item in payloads] == [("unknown", "booting")]
+    assert conflict_events(connection_a) == [
+        {
+            "environment_id": ENV_ID,
+            "action": "probe",
+            "expected_state": "unknown",
+            "actual_state": "booting",
+        }
+    ]
+    assert not connection_a.in_transaction
+    assert not connection_b.in_transaction
+
+
+def test_prepare_discards_result_when_environment_off_during_plugin_call(
+    two_writers: tuple[sqlite3.Connection, sqlite3.Connection, VirtualClock, EnvironmentService],
+) -> None:
+    """prepare 调用期间环境被另一连接改回 off：结果不应用，抛状态冲突并留证据。"""
+    connection_a, connection_b, clock, service = two_writers
+
+    def rewrite_off() -> None:
+        connection_b.execute("UPDATE environments SET state = 'off' WHERE id = ?", (ENV_ID,))
+
+    provider = HookedProvider(on_prepare=rewrite_off)
+    with pytest.raises(EnvironmentStateError):
+        service.prepare(make_call(provider, clock))
+
+    assert service.get(ENV_ID).state is EnvironmentState.OFF
+    payloads = state_events(connection_a)
+    assert [(item["from_state"], item["to_state"]) for item in payloads] == [("unknown", "booting")]
+    assert conflict_events(connection_a) == [
+        {
+            "environment_id": ENV_ID,
+            "action": "prepare",
+            "expected_state": "booting",
+            "actual_state": "off",
+        }
+    ]
+    assert not connection_a.in_transaction
+    assert not connection_b.in_transaction
+
+
+def test_prepare_raises_conflict_when_environment_ready_during_plugin_call(
+    two_writers: tuple[sqlite3.Connection, sqlite3.Connection, VirtualClock, EnvironmentService],
+) -> None:
+    """prepare 调用期间环境已被改成 ready：不静默吞成成功，抛冲突并留证据。"""
+    connection_a, connection_b, clock, service = two_writers
+
+    def rewrite_ready() -> None:
+        connection_b.execute("UPDATE environments SET state = 'ready' WHERE id = ?", (ENV_ID,))
+
+    provider = HookedProvider(on_prepare=rewrite_ready)
+    with pytest.raises(EnvironmentStateError):
+        service.prepare(make_call(provider, clock))
+
+    assert service.get(ENV_ID).state is EnvironmentState.READY
+    payloads = state_events(connection_a)
+    assert [(item["from_state"], item["to_state"]) for item in payloads] == [("unknown", "booting")]
+    assert conflict_events(connection_a) == [
+        {
+            "environment_id": ENV_ID,
+            "action": "prepare",
+            "expected_state": "booting",
+            "actual_state": "ready",
+        }
+    ]
+    assert not connection_a.in_transaction
+    assert not connection_b.in_transaction
+
+
+def test_sequential_prepare_records_true_precondition_per_transition(
+    env: tuple[sqlite3.Connection, VirtualClock, EnvironmentService],
+) -> None:
+    """无并发时每次成功迁移恰一条事件，from_state 为写入前数据库里的真实状态。"""
+    connection, _clock, service = env
+    service.prepare(make_call(StubProvider(), clock=_clock))
+    assert service.get(ENV_ID).state is EnvironmentState.READY
+    payloads = state_events(connection)
+    assert [(item["from_state"], item["to_state"]) for item in payloads] == [
+        ("unknown", "booting"),
+        ("booting", "ready"),
+    ]

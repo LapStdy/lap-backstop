@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -10,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from contracts import EnvironmentState
+from contracts import EnvironmentRef, EnvironmentState, RunContext
 from core.api.app import ApiApp
 from core.api.store import TOKEN_KEY, put_settings
 from core.api.wire import ApiRequest, ApiResponse
@@ -274,3 +275,133 @@ def _actions(database: Path, *, with_provider: bool = True) -> EnvironmentAction
             PluginCapabilities(plugin_id="fake", environment=FakeEnvironmentProvider())
         )
     return EnvironmentActionService(database, VirtualClock(NOW), registry)
+
+
+class RacingPrepareProvider:
+    """包装 fake provider：准备回调里先用另一条连接改写环境状态。"""
+
+    def __init__(self, database: Path, state: EnvironmentState) -> None:
+        self._inner = FakeEnvironmentProvider()
+        self._database = database
+        self._state = state
+
+    def probe(self, env: EnvironmentRef, ctx: RunContext):
+        return self._inner.probe(env, ctx)
+
+    def prepare(self, env: EnvironmentRef, ctx: RunContext):
+        connection = open_database(self._database)
+        try:
+            connection.execute(
+                "UPDATE environments SET state = ? WHERE id = ?", (self._state.value, env.id)
+            )
+        finally:
+            connection.close()
+        return self._inner.prepare(env, ctx)
+
+    def reset(self, env: EnvironmentRef, ctx: RunContext):
+        return self._inner.reset(env, ctx)
+
+    def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool):
+        return self._inner.cleanup(env, ctx, keep_warm)
+
+    def warm(self, env: EnvironmentRef, ctx: RunContext, minutes: int):
+        return self._inner.warm(env, ctx, minutes)
+
+
+def _racing_actions(database: Path, state: EnvironmentState) -> EnvironmentActionService:
+    registry = PluginRegistry()
+    registry.register(
+        PluginCapabilities(plugin_id="fake", environment=RacingPrepareProvider(database, state))
+    )
+    return EnvironmentActionService(database, VirtualClock(NOW), registry)
+
+
+def state_events(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        "SELECT payload FROM events_global WHERE type = 'env.state.changed' ORDER BY seq"
+    ).fetchall()
+    return [json.loads(str(row[0])) for row in rows]
+
+
+def conflict_events(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """event 名为 core.env_action_conflict 的 core.event 载荷（内层 payload）。"""
+    rows = connection.execute(
+        "SELECT payload FROM events_global WHERE type = 'core.event' ORDER BY seq"
+    ).fetchall()
+    frames = (json.loads(str(row[0])) for row in rows)
+    return [item["payload"] for item in frames if item.get("event") == "core.env_action_conflict"]
+
+
+def test_prepare_conflict_when_environment_off_during_plugin_call(
+    seeded: tuple[Path, sqlite3.Connection],
+) -> None:
+    """准备期间环境被另一连接改回 off：409、恰一条冲突事件、状态不被 ready 覆盖。"""
+    database, connection = seeded
+    EnvironmentRepository(connection).set_state(
+        ENV_ID, EnvironmentState.OFF, at=NOW, detail={"action": "test"}
+    )
+    response = call(
+        _app(database, _racing_actions(database, EnvironmentState.OFF)),
+        "POST",
+        f"/api/v1/environments/{ENV_ID}/prepare",
+    )
+    assert response.status == 409
+    assert "off" in body_of(response)["error"]["message"]
+    assert conflict_events(connection) == [
+        {
+            "environment_id": ENV_ID,
+            "action": "prepare",
+            "expected_state": "booting",
+            "actual_state": "off",
+        }
+    ]
+    states = state_events(connection)
+    assert [(item["from_state"], item["to_state"]) for item in states] == [("off", "booting")]
+    row = EnvironmentRepository(connection).get(ENV_ID)
+    assert row is not None and row.state is EnvironmentState.OFF
+
+
+def test_prepare_conflict_when_environment_ready_during_plugin_call(
+    seeded: tuple[Path, sqlite3.Connection],
+) -> None:
+    """准备期间环境已被改成 ready：不得静默成功返回 200。"""
+    database, connection = seeded
+    response = call(
+        _app(database, _racing_actions(database, EnvironmentState.READY)),
+        "POST",
+        f"/api/v1/environments/{ENV_ID}/prepare",
+    )
+    assert response.status == 409
+    assert conflict_events(connection) == [
+        {
+            "environment_id": ENV_ID,
+            "action": "prepare",
+            "expected_state": "booting",
+            "actual_state": "ready",
+        }
+    ]
+    states = state_events(connection)
+    assert [(item["from_state"], item["to_state"]) for item in states] == [("unknown", "booting")]
+    row = EnvironmentRepository(connection).get(ENV_ID)
+    assert row is not None and row.state is EnvironmentState.READY
+
+
+def test_busy_prepare_leaves_state_and_events_untouched(
+    seeded: tuple[Path, sqlite3.Connection],
+) -> None:
+    """busy 时手动 prepare 仍 409，状态与事件保持不变。"""
+    database, connection = seeded
+    EnvironmentRepository(connection).set_state(
+        ENV_ID, EnvironmentState.BUSY, at=NOW, detail={"action": "test"}
+    )
+    response = call(
+        _app(database, _actions(database)),
+        "POST",
+        f"/api/v1/environments/{ENV_ID}/prepare",
+    )
+    assert response.status == 409
+    assert body_of(response)["error"]["message"] == "环境执行中，不能准备"
+    assert state_events(connection) == []
+    assert conflict_events(connection) == []
+    row = EnvironmentRepository(connection).get(ENV_ID)
+    assert row is not None and row.state is EnvironmentState.BUSY

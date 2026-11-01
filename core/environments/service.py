@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Final
 
 from contracts import (
     Clock,
@@ -21,6 +22,9 @@ from core.environments.state_machine import require_transition
 from storage.db.transaction import transaction
 from storage.repositories.environments import EnvironmentRepository, EnvironmentRow
 from storage.repositories.events import EventLog
+
+# 跨连接写环境状态的输家证据：先提交者赢，输家丢弃本次写入（docs/11 并发与超时）。
+ENV_ACTION_CONFLICT: Final[str] = "core.env_action_conflict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,7 +70,8 @@ class EnvironmentService:
 
         探针调用失败或结果无法从当前状态迁入时按状态不明处置：环境置 unknown，
         等下一次探测再判定，不向调用方抛错；已在 unknown 时只刷新观测时间（docs/02）。
-        探针本身失败时返回 None。
+        探针期间前置状态被其它连接改写时，探针结果丢弃、以库内状态为准（先提交者赢），
+        输家证据见 core.env_action_conflict。探针本身失败时返回 None。
         """
         row = self.get(call.environment_id)
         now = self._clock.utc_now()
@@ -79,26 +84,38 @@ class EnvironmentService:
         try:
             self._apply(row, probe.state, at=at, detail={"detail": probe.detail})
         except EnvironmentStateError:
-            self._apply(
-                row,
-                EnvironmentState.UNKNOWN,
-                at=at,
-                detail={"detail": f"探针报告 {probe.state.value}，不允许从 {row.state.value} 迁入"},
-            )
+            current = self.get(call.environment_id)
+            if current.state is row.state:
+                self.mark_unknown(
+                    call.environment_id,
+                    detail=f"探针报告 {probe.state.value}，不允许从 {row.state.value} 迁入",
+                )
         return probe
 
     def mark_unknown(self, environment_id: str, *, detail: str) -> EnvironmentRow:
-        """状态不明（探针不可用等）：置 unknown，等下一次探测再判定。"""
+        """状态不明（探针不可用等）：置 unknown，等下一次探测再判定。
+
+        前置状态被其它连接先改写时丢弃本次处置（先提交者赢），输家证据见
+        core.env_action_conflict，返回库内当前行。
+        """
         row = self.get(environment_id)
-        return self._apply(
-            row,
-            EnvironmentState.UNKNOWN,
-            at=self._clock.utc_now(),
-            detail={"detail": detail},
-        )
+        try:
+            return self._apply(
+                row,
+                EnvironmentState.UNKNOWN,
+                at=self._clock.utc_now(),
+                detail={"detail": detail},
+            )
+        except EnvironmentStateError:
+            return self.get(environment_id)
 
     def prepare(self, call: EnvironmentCall) -> PhaseResult:
-        """准备环境：unknown/off/failed 先进入 booting，成功后 ready。"""
+        """准备环境：unknown/off/failed 先进入 booting，成功后 ready。
+
+        Raises:
+            EnvironmentStateError: 环境 busy、状态机拒绝，或插件调用期间前置
+                状态被其它连接改写（先提交者赢，本次结果丢弃）。
+        """
         row = self.get(call.environment_id)
         if row.state is EnvironmentState.READY:
             now = self._clock.utc_now()
@@ -106,21 +123,26 @@ class EnvironmentService:
         if row.state is EnvironmentState.BUSY:
             raise EnvironmentStateError("环境执行中，不能准备")
         if row.state is not EnvironmentState.BOOTING:
-            self._apply(
+            row = self._apply(
                 row,
                 EnvironmentState.BOOTING,
                 at=self._clock.utc_now(),
                 detail={"action": "prepare"},
             )
         result = call.provider.prepare(call.ref, call.ctx)
-        self._finish_action(call, result, success=EnvironmentState.READY, action="prepare")
+        self._finish_action(row, result, success=EnvironmentState.READY, action="prepare")
         return result
 
     def reset(self, call: EnvironmentCall) -> PhaseResult:
-        """复位环境：任何状态先进入 booting；复位成功后仍等探针确认 ready。"""
+        """复位环境：任何状态先进入 booting；复位成功后仍等探针确认 ready。
+
+        Raises:
+            EnvironmentStateError: 状态机拒绝，或插件调用期间前置状态被其它
+                连接改写（先提交者赢，本次结果丢弃）。
+        """
         row = self.get(call.environment_id)
         if row.state is not EnvironmentState.BOOTING:
-            self._apply(
+            row = self._apply(
                 row,
                 EnvironmentState.BOOTING,
                 at=self._clock.utc_now(),
@@ -129,7 +151,7 @@ class EnvironmentService:
         result = call.provider.reset(call.ref, call.ctx)
         if not result.ok:
             self._apply(
-                self.get(call.environment_id),
+                row,
                 EnvironmentState.FAILED,
                 at=self._clock.utc_now(),
                 detail={"action": "reset", "error_code": result.error_code or ""},
@@ -207,18 +229,18 @@ class EnvironmentService:
 
     def _finish_action(
         self,
-        call: EnvironmentCall,
+        row: EnvironmentRow,
         result: PhaseResult,
         *,
         success: EnvironmentState,
         action: str,
     ) -> None:
+        """按发起插件调用前记录的前置 row 应用动作结果；前置失效由 _apply 仲裁丢弃。"""
         target = success if result.ok else EnvironmentState.FAILED
-        current = self.get(call.environment_id)
-        if current.state is target:
+        if row.state is target:
             return
         self._apply(
-            current,
+            row,
             target,
             at=self._clock.utc_now(),
             detail={"action": action, "error_code": result.error_code or ""},
@@ -232,21 +254,73 @@ class EnvironmentService:
         at: datetime,
         detail: dict[str, str],
     ) -> EnvironmentRow:
-        if target is row.state:
-            with transaction(self._connection):
-                self._environments.touch(row.id, at=at, detail=detail)
-            return self.get(row.id)
-        require_transition(row.state, target)
+        """以前置 row.state 为仲裁基准写入目标状态；前置失效时丢弃本次写。
+
+        读、判迁移、写状态与事件在同一 IMMEDIATE 事务内完成；事务内重读与前置
+        不符说明另一连接先提交（docs/11 并发与超时），按先提交者赢丢弃：写一条
+        core.env_action_conflict，不写状态与 env.state.changed，抛 EnvironmentStateError。
+        冲突证据与判定同事务落盘，异常在事务提交后抛出。
+        """
+        conflict: EnvironmentStateError | None = None
         with transaction(self._connection):
-            self._environments.set_state(row.id, target, at=at, detail=detail)
-            self._events.append_global(
-                EventType.ENV_STATE_CHANGED,
-                {
-                    "environment_id": row.id,
-                    "from_state": row.state.value,
-                    "to_state": target.value,
-                    "probe": dict(detail),
-                },
-                at=at,
-            )
+            current = self._environments.get(row.id)
+            if current is None:
+                raise EnvironmentNotFoundError(f"环境不存在：{row.id}")
+            if current.state is not row.state:
+                self._record_conflict(row, current, at=at, action=detail.get("action", "probe"))
+                conflict = EnvironmentStateError(
+                    f"环境状态已从 {row.state.value} 变为 {current.state.value}，本次操作未应用"
+                )
+            else:
+                self._write_state(current, target, at=at, detail=detail)
+        if conflict is not None:
+            raise conflict
         return self.get(row.id)
+
+    def _record_conflict(
+        self,
+        expected: EnvironmentRow,
+        actual: EnvironmentRow,
+        *,
+        at: datetime,
+        action: str,
+    ) -> None:
+        """输家证据：前置状态已变，本次写入被丢弃，只记 core.env_action_conflict。"""
+        self._events.append_global(
+            EventType.CORE_EVENT,
+            {
+                "event": ENV_ACTION_CONFLICT,
+                "payload": {
+                    "environment_id": expected.id,
+                    "action": action,
+                    "expected_state": expected.state.value,
+                    "actual_state": actual.state.value,
+                },
+            },
+            at=at,
+        )
+
+    def _write_state(
+        self,
+        current: EnvironmentRow,
+        target: EnvironmentState,
+        *,
+        at: datetime,
+        detail: dict[str, str],
+    ) -> None:
+        """前置成立时的落盘：目标同状态只刷新观测时间，迁移则写状态与事件。"""
+        if target is current.state:
+            self._environments.touch(current.id, at=at, detail=detail)
+            return
+        require_transition(current.state, target)
+        self._environments.set_state(current.id, target, at=at, detail=detail)
+        self._events.append_global(
+            EventType.ENV_STATE_CHANGED,
+            {
+                "environment_id": current.id,
+                "from_state": current.state.value,
+                "to_state": target.value,
+                "probe": dict(detail),
+            },
+            at=at,
+        )
