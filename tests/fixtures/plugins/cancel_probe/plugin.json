@@ -1,0 +1,9 @@
+{
+  "id": "cancel_probe",
+  "name": "cancel_probe · 取消探测测试插件",
+  "version": "1.0.0",
+  "api_version": 1,
+  "capabilities": ["environment"],
+  "config_schema": "config.schema.json",
+  "requires": {"contract": ">=1 <2", "platform": "windows"}
+}

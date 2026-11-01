@@ -28,9 +28,13 @@ class Capability(StrEnum):
 
 CAPABILITIES: Final[frozenset[Capability]] = frozenset(Capability)
 
+# 内核当前支持的契约版本（docs/05「内核维护支持集合」）；插件 requires.contract 必须覆盖它。
+KERNEL_CONTRACT_VERSION: Final[int] = 1
+
 _ID_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 _VERSION_RE: Final[re.Pattern[str]] = re.compile(r"^\d+\.\d+\.\d+$")
 _RANGE_TOKEN_RE: Final[re.Pattern[str]] = re.compile(r"^(>=|<=|==|>|<)?(\d+)$")
+_DRIVE_PATH_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z]:")
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,9 +107,9 @@ class Manifest:
             raise _bad("capabilities 不能为空")
         unknown = set(self.capabilities) - CAPABILITIES
         if unknown:
-            raise _bad(f"未知能力：{sorted(unknown)}")
+            raise _bad(f"capabilities 含未知能力：{sorted(unknown)}")
         schema_path = self.config_schema
-        if not schema_path or schema_path.startswith(("/", "\\")) or ".." in schema_path:
+        if not _is_relative_schema_path(schema_path):
             raise _bad(f"config_schema 必须是包内相对路径：{schema_path!r}")
         if not range_covers(self.requires.contract, self.api_version):
             raise _bad(
@@ -152,6 +156,17 @@ def _compare(op: str, version: int, bound: int) -> bool:
     if op == "<":
         return version < bound
     return version == bound
+
+
+def _is_relative_schema_path(schema_path: str) -> bool:
+    """config_schema 的形状：非空、非绝对（盘符或斜杠开头）、不含 ``..``。
+
+    逐条对应 manifest.schema.json 的 config_schema pattern；插件宿主固定是
+    Windows，路径形状按 Windows 语义判定，与运行检查的系统无关。
+    """
+    if not schema_path or schema_path.startswith(("/", "\\")) or ".." in schema_path:
+        return False
+    return _DRIVE_PATH_RE.match(schema_path) is None
 
 
 def _parse_requires(raw: object) -> Requires:
@@ -249,7 +264,7 @@ def _parse_capabilities(data: Mapping[str, Any]) -> tuple[Capability, ...]:
         try:
             capabilities.append(Capability(item))
         except ValueError as error:
-            raise _bad(f"未知能力：{item!r}") from error
+            raise _bad(f"capabilities 含未知能力：{item!r}") from error
     return tuple(capabilities)
 
 
