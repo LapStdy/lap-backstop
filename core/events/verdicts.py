@@ -19,21 +19,21 @@ from storage.repositories.verdicts import VerdictRepository, VerdictRow
 
 
 class VerdictError(ValueError):
-    """结论校验失败，携带错误码供运行收尾。"""
+    """结论校验失败，携带错误码与运行收尾原因（run.state.changed.reason）。"""
 
     code = "E_VERIFY_NO_EVIDENCE"
+    reason = "verify_no_evidence"
 
 
 class MissingEvidenceError(VerdictError):
     """结论引用了不存在的证据，对应错误码 E_VERIFY_NO_EVIDENCE。"""
-
-    code = "E_VERIFY_NO_EVIDENCE"
 
 
 class VerdictPolicyError(VerdictError):
     """模板的验证策略不完整，对应错误码 E_CONFIG。"""
 
     code = "E_CONFIG"
+    reason = "verify_no_policy"
 
 
 class VerdictService:
@@ -54,7 +54,7 @@ class VerdictService:
         Raises:
             RunNotFoundError: 运行不存在。
             MissingEvidenceError: 没有证据，或引用了不属于该运行的证据。
-            VerdictPolicyError: 模板缺少验证策略、策略 id 或 required_evidence。
+            VerdictPolicyError: 模板的验证策略缺少 id，或 required_evidence 不是合法证据种类数组。
         """
         run = self._runs.get(run_id)
         if run is None:
@@ -129,12 +129,15 @@ class VerdictService:
 
 
 def _verification_policy(policy: Mapping[str, Any]) -> tuple[str, tuple[EvidenceKind, ...]]:
+    """读出策略 id 与内核强制核对的证据种类；required_evidence 缺省或为空表示不强制。"""
     policy_id = policy.get("id")
     if not isinstance(policy_id, str) or not policy_id:
         raise VerdictPolicyError("验证策略缺少 id")
     raw = policy.get("required_evidence")
-    if not isinstance(raw, (list, tuple)) or not raw:
-        raise VerdictPolicyError("验证策略缺少 required_evidence")
+    if raw is None:
+        return policy_id, ()
+    if not isinstance(raw, (list, tuple)):
+        raise VerdictPolicyError(f"验证策略 required_evidence 不是数组：{raw!r}")
     kinds: list[EvidenceKind] = []
     for item in raw:
         try:

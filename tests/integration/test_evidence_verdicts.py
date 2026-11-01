@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -28,7 +28,7 @@ from storage.repositories.verdicts import VerdictRepository
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 TEMPLATE_ID = "template-1"
-POLICY: dict[str, Any] = {
+POLICY: Mapping[str, Any] = {
     "id": "policy-1",
     "verifier_plugin_id": "fake",
     "required_evidence": ["log"],
@@ -182,18 +182,38 @@ def test_verdict_missing_required_kind_forced_unknown(
     assert effective.status is VerdictStatus.UNKNOWN
 
 
-def test_verdict_policy_without_required_evidence_is_rejected(
+def test_verdict_policy_without_required_evidence_keeps_verdict(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, runs, _evidence_root = env
+    """缺省策略不强制证据种类：结论按验证器返回落库，只回填策略 id。"""
+    connection, clock, runs, evidence_root = env
     connection.execute(
         "UPDATE job_templates SET verification_policy = ? WHERE id = ?",
         (json.dumps({"id": "policy-1", "verifier_plugin_id": "fake"}), TEMPLATE_ID),
     )
     run_id = runs.non_terminal()[0].id
+    evidence = EvidenceService(connection, evidence_root, clock)
+    known = _record_log(evidence, evidence_root, run_id)
+    verdicts = VerdictService(connection, clock)
+    _verdict_id, effective = verdicts.record(run_id, _verdict((known,)))
+    assert effective.status is VerdictStatus.COMPLETED
+    assert effective.policy_id == "policy-1"
+
+
+def test_verdict_policy_without_id_is_rejected(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, evidence_root = env
+    connection.execute(
+        "UPDATE job_templates SET verification_policy = ? WHERE id = ?",
+        (json.dumps({"verifier_plugin_id": "fake", "required_evidence": ["log"]}), TEMPLATE_ID),
+    )
+    run_id = runs.non_terminal()[0].id
+    evidence = EvidenceService(connection, evidence_root, clock)
+    known = _record_log(evidence, evidence_root, run_id)
     verdicts = VerdictService(connection, clock)
     with pytest.raises(VerdictPolicyError):
-        verdicts.record(run_id, _verdict(("any",)))
+        verdicts.record(run_id, _verdict((known,)))
 
 
 def _verdict(

@@ -92,7 +92,7 @@ class RunScope:
     context: RunContext
     handle: ScriptHandle | None = None
     verdict: Verdict | None = None
-    verify_error: str | None = None
+    verify_failure: VerdictError | None = None
 
     @property
     def run_id(self) -> str:
@@ -369,13 +369,14 @@ class WorkerExecutor:
         try:
             _, effective = self._verdicts.record(scope.run.id, verdict)
         except VerdictError as error:
-            scope.verify_error = error.code
+            scope.verify_failure = error
         else:
             scope.verdict = effective
+        failure = scope.verify_failure
         self._phases.finish(
             phase,
-            state=PhaseState.FAILED if scope.verify_error is not None else PhaseState.OK,
-            detail=scope.verify_error or "",
+            state=PhaseState.FAILED if failure is not None else PhaseState.OK,
+            detail=failure.code if failure is not None else "",
         )
         return None
 
@@ -405,12 +406,13 @@ class WorkerExecutor:
             )
         if not cleaned.ok:
             return self._fail(scope, cleaned.error_code or "E_ENV_UNREACHABLE", "cleanup")
-        if scope.verify_error is not None:
+        failure = scope.verify_failure
+        if failure is not None:
             return self._runs.transition(
                 scope.run.id,
                 RunState.UNKNOWN,
-                reason="verify_no_evidence",
-                error_code=scope.verify_error,
+                reason=failure.reason,
+                error_code=failure.code,
             )
         target = (
             RunState.UNKNOWN

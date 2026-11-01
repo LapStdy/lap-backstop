@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,7 @@ import pytest
 from contracts import (
     EnvironmentRef,
     EnvironmentState,
+    EventType,
     Logger,
     PhaseResult,
     PhaseState,
@@ -39,6 +41,7 @@ from core.resources.service import LeaseService
 from core.worker.executor import CancelFlag, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
+from storage.repositories.events import EventLog
 from storage.repositories.job_runs import NewRun
 from storage.repositories.run_phases import RunPhaseRepository
 from storage.repositories.verdicts import VerdictRepository
@@ -48,7 +51,20 @@ TEMPLATE_ID = "template-1"
 ENV_ID = "env-1"
 
 
-def insert_template(connection: sqlite3.Connection, scenario: str) -> None:
+DEFAULT_POLICY: Mapping[str, Any] = {
+    "id": "fake-policy",
+    "verifier_plugin_id": "fake",
+    "required_evidence": ["log"],
+    "params": {},
+}
+
+
+def insert_template(
+    connection: sqlite3.Connection,
+    scenario: str,
+    *,
+    policy: Mapping[str, Any] | None = None,
+) -> None:
     connection.execute(
         "INSERT INTO job_templates (id, name, plugin_id, environment_id, config, "
         "config_schema_version, verification_policy, recovery_policy, enabled, "
@@ -57,14 +73,7 @@ def insert_template(connection: sqlite3.Connection, scenario: str) -> None:
             TEMPLATE_ID,
             ENV_ID,
             json.dumps({"scenario": scenario}),
-            json.dumps(
-                {
-                    "id": "fake-policy",
-                    "verifier_plugin_id": "fake",
-                    "required_evidence": ["log"],
-                    "params": {},
-                }
-            ),
+            json.dumps(DEFAULT_POLICY if policy is None else policy),
             T0.isoformat(),
             T0.isoformat(),
         ),
@@ -154,8 +163,9 @@ def prepare_run(
     scheduled_at: datetime = T0,
     deadline_at: datetime | None = None,
     key: str = "schedule-1:2026-10-23T12:00:00+00:00",
+    policy: Mapping[str, Any] | None = None,
 ) -> str:
-    insert_template(connection, scenario)
+    insert_template(connection, scenario, policy=policy)
     record, _ = runs.create_scheduled(
         NewRun(
             template_id=TEMPLATE_ID,
@@ -267,6 +277,42 @@ def test_hang_scenario_stops_script_and_ends_unknown(
     result = executor_for(connection, clock, data_root).execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert phases(connection, run_id)["execute"] is PhaseState.TIMED_OUT
+
+
+def unknown_reason(connection: sqlite3.Connection, run_id: str) -> str | None:
+    """UNKNOWN 收尾那次状态迁移的 reason；没有返回 None。"""
+    for event in EventLog(connection).events_for_run(run_id):
+        if event.type != EventType.RUN_STATE_CHANGED.value:
+            continue
+        if event.payload.get("to_state") != RunState.UNKNOWN.value:
+            continue
+        return str(event.payload["reason"])
+    return None
+
+
+def test_verify_without_policy_id_blames_template(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """历史模板策略缺 id：unknown 收尾，原因指向模板缺策略而不是缺证据。"""
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant", policy={})
+    result = executor_for(connection, clock, data_root).execute(run_id)
+    assert result.state is RunState.UNKNOWN
+    assert result.error_code == "E_CONFIG"
+    assert phases(connection, run_id)["verify"] is PhaseState.FAILED
+    assert unknown_reason(connection, run_id) == "verify_no_policy"
+
+
+def test_verify_with_missing_evidence_blames_evidence(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    connection, clock, runs, data_root = env
+    run_id = prepare_run(connection, runs, "instant")
+    registry = _registry_with_verifier(_MissingEvidenceVerifier())
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    assert result.state is RunState.UNKNOWN
+    assert result.error_code == "E_VERIFY_NO_EVIDENCE"
+    assert unknown_reason(connection, run_id) == "verify_no_evidence"
 
 
 def test_crash_scenario_enters_recovery_with_plugin_crash(
@@ -468,6 +514,14 @@ class _RaisingVerifier:
 
     def verify(self, ctx: RunContext) -> Verdict:
         raise self._error
+
+
+class _MissingEvidenceVerifier(FakeVerifier):
+    """结论引用不存在的证据，用来核对缺证据与缺策略的收尾原因区分。"""
+
+    def verify(self, ctx: RunContext) -> Verdict:
+        verdict = super().verify(ctx)
+        return replace(verdict, evidence_ids=("missing-1",))
 
 
 def _registry_with_verifier(verifier: Any) -> PluginRegistry:
