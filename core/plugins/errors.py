@@ -2,11 +2,25 @@
 
 from __future__ import annotations
 
+from contracts.errors import ErrorCode
+
 
 class PluginError(ValueError):
     """插件领域的可预期错误。"""
 
     code: str = "E_PLUGIN"
+
+
+class PluginContractError(PluginError):
+    """插件加载的契约校验失败：结构缺失用 E_PLUGIN_MANIFEST，版本不覆盖用 E_PLUGIN_VERSION。
+
+    错误码随消息走（``E_PLUGIN_*: 原因``）；worker 以 FAULT 上报后，内核日志与
+    plugin.rejected 事件能按码区分两类失败。
+    """
+
+    def __init__(self, code: ErrorCode, message: str) -> None:
+        super().__init__(f"{code.value}: {message}")
+        self.code = code.value
 
 
 class PluginNotFoundError(PluginError):

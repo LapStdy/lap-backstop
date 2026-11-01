@@ -229,6 +229,21 @@ def test_plugin_stdout_stays_out_of_protocol(tmp_path: Path) -> None:
         "PLUGIN = Plugin()\n",
         encoding="utf-8",
     )
+    (package / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "printy",
+                "name": "printy · 打印测试插件",
+                "version": "1.0.0",
+                "api_version": 1,
+                "capabilities": ["environment"],
+                "config_schema": "config.schema.json",
+                "requires": {"contract": ">=1 <2", "platform": "windows"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
     session = WorkerProcess(tmp_path, "printy", plugins_root=plugin_root)
     try:
         reply = session.call(

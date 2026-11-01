@@ -35,6 +35,7 @@ from contracts.events import (
 )
 from contracts.manifest import (
     CAPABILITIES,
+    KERNEL_CONTRACT_VERSION,
     Capability,
     ConfigMigration,
     ErrorMapEntry,
@@ -89,6 +90,7 @@ __all__ = [
     "CAPABILITIES",
     "DEFAULT_RECOVERY",
     "GLOBAL_EVENTS",
+    "KERNEL_CONTRACT_VERSION",
     "PLUGIN_EVENTS",
     "RUN_SCOPED_EVENTS",
     "SCENARIO_CODES",

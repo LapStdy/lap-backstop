@@ -46,7 +46,7 @@
     "config_schema": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?!/)(?!.*\\.\\.).+$",
+      "pattern": "^(?![A-Za-z]:)(?![\\\\/])(?!.*\\.\\.).+$",
       "title": "配置 schema 的包内相对路径"
     },
     "description": {
