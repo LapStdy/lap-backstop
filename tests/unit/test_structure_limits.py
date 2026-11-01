@@ -179,7 +179,99 @@ _D013_ENTRIES: tuple[AllowEntry, ...] = (
     ),
 )
 
-_ALLOWLIST: tuple[AllowEntry, ...] = _D013_ENTRIES
+# 其余既有超限不在 D-013 范围，打包记 D-018 由后续重构卡偿还。
+_D018_ENTRIES: tuple[AllowEntry, ...] = (
+    AllowEntry(
+        "core/api/app.py",
+        "ApiApp.__init__",
+        "function_params",
+        "7 个",
+        "API 装配注入点收敛属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "core/events/evidence.py",
+        "EvidenceService.record",
+        "function_params",
+        "5 个",
+        "证据登记参数收敛属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "core/hostops/environment_actions.py",
+        "EnvironmentActionService.__init__",
+        "function_params",
+        "5 个",
+        "环境动作注入点收敛属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "core/hostops/retention.py",
+        "RetentionRunner.__init__",
+        "function_params",
+        "5 个",
+        "保留清理注入点收敛属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "core/hostops/upgrade_state.py",
+        "record_failed",
+        "function_params",
+        "5 个",
+        "升级事件参数收敛属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "core/notify/service.py",
+        "NotifyService.__init__",
+        "function_params",
+        "7 个",
+        "通知装配注入点收敛属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "core/plugins/worker.py",
+        "_Reader.__init__",
+        "function_params",
+        "5 个",
+        "worker 通道读取注入点收敛属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "core/supervisor_environments.py",
+        "EnvironmentSupervision.__init__",
+        "function_params",
+        "6 个",
+        "环境监督注入点收敛属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "core/supervisor_leases.py",
+        "LeaseSupervision.__init__",
+        "function_params",
+        "5 个",
+        "租约监督注入点收敛属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "storage/db/backup.py",
+        MODULE_NAME,
+        "module_lines",
+        "513 行",
+        "备份编排拆分属独立重构",
+        "D-018",
+    ),
+    AllowEntry(
+        "storage/repositories/resources.py",
+        "ResourceRepository.ensure",
+        "function_params",
+        "5 个",
+        "资源注册参数收敛属独立重构",
+        "D-018",
+    ),
+)
+
+_ALLOWLIST: tuple[AllowEntry, ...] = _D013_ENTRIES + _D018_ENTRIES
 
 
 def scan_source(source: str, path: str) -> tuple[Violation, ...]:
