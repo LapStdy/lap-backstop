@@ -61,6 +61,9 @@ from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
 
 TICK_INTERVAL_SECONDS = 1.0
+# 停机与循环退出时等待执行线程的上限：等待有界，超时按下次启动回收（docs/08）；
+# 不做成配置键，把收尾时限留在代码里。
+_EXECUTOR_JOIN_SECONDS = 60.0
 AUTOLOGON_CHECKED_EVENT = "host.autologon_checked"
 # 事件名的属主是 tasks 模块；这里保留同名导出，供既有引用方使用。
 TASKS_REGISTERED_EVENT = tasks.TASKS_REGISTERED_EVENT
@@ -171,7 +174,11 @@ class ServeLoop:
         self._last_heartbeat_at: float | None = None
 
     def run(self) -> int:
-        """循环到停机信号、tick 上限或磁盘 critical；正常路径返回 0，磁盘水位返回 5。"""
+        """循环到停机信号、tick 上限或磁盘 critical；正常路径返回 0，磁盘水位返回 5。
+
+        退出前按模块上限等待执行线程收尾：超时的线程不再等待，运行状态与租约留给
+        下次启动回收（docs/08 停机与阶段边界）。
+        """
         ticks = 0
         while not self._options.stop.is_set() and (
             self._options.max_ticks is None or ticks < self._options.max_ticks
@@ -181,11 +188,17 @@ class ServeLoop:
             self._prune_global_events()
             self._prune_retention()
             if self._supervisor.is_disk_critical:
+                self._join_executors()
                 return EXIT_DISK_LOW
             ticks += 1
             self._write_heartbeat_if_due()
             self._options.stop.wait(self._options.tick_interval_seconds)
+        self._join_executors()
         return EXIT_OK
+
+    def _join_executors(self) -> None:
+        """等待执行线程收尾；上限取模块常量，超时记账在 supervisor。"""
+        self._supervisor.join_executors(_EXECUTOR_JOIN_SECONDS)
 
     def _poll_notify(self) -> None:
         """通知轮询：任何失败只记日志，通知故障不拖垮核心循环。"""
