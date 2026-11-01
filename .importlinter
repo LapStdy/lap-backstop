@@ -25,13 +25,16 @@ layers =
     storage
     contracts
 
+# 看门狗 → core 的禁止不在此声明：source 本身就在 core 里，重叠对会被
+# import-linter 按 as_packages 直接跳过，声明形同虚设。core 其余子包与
+# 允许集之外的项目内依赖由 tests/contract/test_watchdog_imports.py 拦截，
+# 允许集在该测试文件唯一定义；本契约只保 storage 半边。
 [importlinter:contract:watchdog-isolation]
-name = 看门狗只用标准库，不依赖内核其余代码路径与存储
+name = 看门狗不依赖存储
 type = forbidden
 source_modules =
     core.hostops.watchdog
 forbidden_modules =
-    core
     storage
 
 [importlinter:contract:plugins-isolation]
