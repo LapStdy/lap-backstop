@@ -93,6 +93,7 @@ class RunScope:
     handle: ScriptHandle | None = None
     verdict: Verdict | None = None
     verify_failure: VerdictError | None = None
+    has_called_cleanup: bool = False  # 本尝试是否已调用 provider 清理（docs/09）
 
     @property
     def run_id(self) -> str:
@@ -385,6 +386,9 @@ class WorkerExecutor:
         scope.run = self._runs.transition(scope.run.id, RunState.CLEANING)
         phase = self._phases.start(scope.run.id, PhaseName.CLEANUP, attempt=scope.run.attempt)
         self._stop_script(scope)
+        # provider 清理不是纯操作：同一尝试只调用一次，置位放在调用前，清理抛异常
+        # 后收尾路径也不再重复调用（docs/09）。
+        scope.has_called_cleanup = True
         cleaned = self._environments.cleanup(
             scope.call,
             keep_warm=self._keep_warm_minutes > 0,
@@ -396,8 +400,8 @@ class WorkerExecutor:
             detail=cleaned.detail,
         )
         self._leases.release(scope.run.id, reason="cleanup")
-        # docs/09：cleaning 中取消在 cleanup 完成并释放租约后生效；_cancel_run 会再次
-        # 停脚本与清环境，这里直接落终态，避免同一轮收尾执行两次。
+        # docs/09：cleaning 中取消在 cleanup 完成并释放租约后生效；这里直接落终态，
+        # 跳过收尾路径的停脚本与租约释放，事件序列与单次收尾保持一致。
         if self._cancel.is_cancelled():
             return self._runs.transition(
                 scope.run.id,
@@ -510,7 +514,7 @@ class WorkerExecutor:
             return self._abort_recovery(scope, error_code, exhausted=False)
         self._stop_script(scope)
         if decision.action is not RecoveryAction.RESET_ENVIRONMENT:
-            self._safe_cleanup(scope.call, run_id=scope.run_id, reason="recovering")
+            self._safe_cleanup(scope, reason="recovering")
         self._safe_release(scope.run_id, reason="recovering")
         retry_at = now + timedelta(seconds=decision.delay_seconds)
         return self._runs.mark_recovering(
@@ -527,9 +531,9 @@ class WorkerExecutor:
             self._runs.transition(run_id, RunState.CLEANING, reason=reason)
 
     def _abort_recovery(self, scope: RunScope, error_code: str, *, exhausted: bool) -> JobRunRecord:
-        """停手：停脚本、清理、释放租约，把运行记成 failed。"""
+        """停手：停脚本、按需清理、释放租约，把运行记成 failed。"""
         self._stop_script(scope)
-        self._safe_cleanup(scope.call, run_id=scope.run_id, reason="recovery")
+        self._safe_cleanup(scope, reason="recovery")
         self._safe_release(scope.run_id, reason="recovery")
         self._hop_to_cleaning(scope.run_id, reason="recovery")
         result = "exhausted" if exhausted else "aborted"
@@ -566,18 +570,18 @@ class WorkerExecutor:
             return False
 
     def _cancel_run(self, scope: RunScope, *, started: bool) -> JobRunRecord:
-        """取消运行；已开始的先停脚本与清环境，再记 cancelled。"""
+        """取消运行；已开始的先停脚本、按需清理，再记 cancelled。"""
         if started:
             self._stop_script(scope)
-            self._safe_cleanup(scope.call, run_id=scope.run_id, reason="cancelled")
+            self._safe_cleanup(scope, reason="cancelled")
         self._safe_release(scope.run_id, reason="cancelled")
         self._hop_to_cleaning(scope.run_id, reason="cancelled")
         return self._runs.transition(scope.run_id, RunState.CANCELLED, reason="cancelled")
 
     def _fail(self, scope: RunScope, error_code: str, reason: str) -> JobRunRecord:
-        """收尾失败：停脚本、清理、释放租约，把运行记成 failed。"""
+        """收尾失败：停脚本、按需清理、释放租约，把运行记成 failed。"""
         self._stop_script(scope)
-        self._safe_cleanup(scope.call, run_id=scope.run_id, reason=reason)
+        self._safe_cleanup(scope, reason=reason)
         self._safe_release(scope.run_id, reason=reason)
         self._hop_to_cleaning(scope.run_id, reason=reason)
         return self._runs.transition(
@@ -622,22 +626,32 @@ class WorkerExecutor:
         )
         return False
 
-    def _safe_cleanup(self, call: EnvironmentCall, *, run_id: str, reason: str) -> None:
-        """清理环境；失败只记 WARN，让已经确定的结局继续写入。"""
+    def _safe_cleanup(self, scope: RunScope, *, reason: str) -> None:
+        """清理环境；本尝试已调用过 provider 清理就跳过，失败只记 WARN。
+
+        provider 清理不是纯操作，重复执行可能影响复用的环境（docs/09）；跳过与
+        失败都不改变已经确定的结局。
+        """
+        if scope.has_called_cleanup:
+            return
         try:
-            self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
+            self._environments.cleanup(scope.call, keep_warm=False, warm_minutes=0)
         except Exception as error:
             self._log.warn(
                 {
                     "event": "executor.cleanup_failed",
-                    "run_id": run_id,
+                    "run_id": scope.run_id,
                     "reason": reason,
                     "error": str(error),
                 }
             )
 
     def _safe_release(self, run_id: str, *, reason: str) -> None:
-        """释放租约；失败只记 WARN，过期租约由回收扫描兜底。"""
+        """释放租约；失败只记 WARN，过期租约由回收扫描兜底。
+
+        重复调用安全：release 只处理仍活跃的租约，二次调用查不到活跃租约、
+        不写事件（docs/09）。
+        """
         try:
             self._leases.release(run_id, reason=reason)
         except Exception as error:
