@@ -21,6 +21,7 @@ from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, Fake
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 
@@ -153,7 +154,7 @@ def test_startup_enqueues_scheduled_run_and_executes(
     assert runs.get(run_id).state is RunState.QUEUED
     assert "run.queued" in event_types(runs, run_id)
 
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(run_id).state is RunState.SUCCEEDED
 
 
@@ -166,7 +167,7 @@ def test_startup_keeps_queued_run_in_queue(
     supervisor.startup()
     assert runs.get(run_id).state is RunState.QUEUED
 
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(run_id).state is RunState.SUCCEEDED
 
 
@@ -186,11 +187,11 @@ def test_startup_keeps_waiting_run_and_its_lease(
 
     for minute in range(5, 30, 5):
         clock.jump_to(T0 + timedelta(minutes=minute))
-        supervisor.tick()
+        tick_and_settle(supervisor)
     assert runs.get(run_id).state is RunState.WAITING
 
     clock.jump_to(SCHEDULED_AT)
-    supervisor.tick()
+    tick_and_settle(supervisor)
     finished = runs.get(run_id)
     assert finished.state is RunState.SUCCEEDED
     assert finished.started_at == SCHEDULED_AT
@@ -213,7 +214,7 @@ def test_startup_requeues_due_recovering_run(
     assert runs.get(run_id).state is RunState.QUEUED
     assert queued_event_count(runs, run_id) == 2
 
-    supervisor.tick()
+    tick_and_settle(supervisor)
     recovered = runs.get(run_id)
     assert recovered.state is RunState.SUCCEEDED
     assert recovered.attempt == 1
@@ -237,11 +238,11 @@ def test_startup_holds_recovering_run_until_retry_time(
     assert queued_event_count(runs, run_id) == 1
 
     clock.jump_to(T0 + timedelta(seconds=30))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(run_id).state is RunState.RECOVERING
 
     clock.jump_to(T0 + timedelta(seconds=60))
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(run_id).state is RunState.SUCCEEDED
 
 

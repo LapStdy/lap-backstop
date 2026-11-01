@@ -200,6 +200,9 @@ class _StubSupervisor:
     def tick(self) -> None:
         self.ticks += 1
 
+    def join_executors(self, timeout_seconds: float) -> None:
+        return None
+
     @property
     def is_disk_critical(self) -> bool:
         return False

@@ -18,6 +18,7 @@ from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.supervisor import Supervisor
 from plugins.fake.plugin import FakeEnvironmentProvider
 from storage import migrate, open_database
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 ENV_ID = "env-1"
@@ -77,10 +78,10 @@ def env_state(connection: sqlite3.Connection) -> str:
 
 def tick_with_jump(supervisor: Supervisor, clock: DivergentClock, wall_seconds: float) -> None:
     """一轮正常 tick（定基线）加一轮带跳变的 tick；墙钟前跳、单调只走一秒。"""
-    supervisor.tick()
+    tick_and_settle(supervisor)
     clock.advance_mono(TICK_MONO_SECONDS)
     clock.jump_wall(timedelta(seconds=wall_seconds))
-    supervisor.tick()
+    tick_and_settle(supervisor)
 
 
 def test_wall_jump_under_threshold_changes_nothing(tmp_path: Path) -> None:

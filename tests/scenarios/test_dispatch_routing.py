@@ -19,6 +19,7 @@ from core.supervisor_routing import ALL_DEGRADED_CODE, ROUTE_ALL_DEGRADED_EVENT,
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
+from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 11, 1, 12, 0, tzinfo=UTC)
 STABLE_DISK_FREE = 100 * 1024**3
@@ -129,7 +130,7 @@ def test_dispatch_routes_to_available_plugin_and_records_skip(
     run_b = _enqueue_run(runs, suffix="b")
     reasons["fake-a"] = REASON_A
 
-    _supervisor(connection, clock, reasons).tick()
+    tick_and_settle(_supervisor(connection, clock, reasons))
 
     assert runs.get(run_b).state is RunState.SUCCEEDED
     assert runs.get(run_a).state is RunState.QUEUED
@@ -157,7 +158,7 @@ def test_dispatch_without_any_available_plugin_records_all_degraded(
     run_b = _enqueue_run(runs, suffix="b")
     reasons.update({"fake-a": REASON_A, "fake-b": REASON_B})
 
-    _supervisor(connection, clock, reasons).tick()
+    tick_and_settle(_supervisor(connection, clock, reasons))
 
     assert runs.get(run_a).state is RunState.QUEUED
     assert runs.get(run_b).state is RunState.QUEUED
@@ -188,11 +189,11 @@ def test_recovered_plugin_rejoins_candidates_on_next_request(
     supervisor = _supervisor(connection, clock, reasons)
     reasons["fake-a"] = REASON_A
 
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(run_a).state is RunState.QUEUED
 
     reasons.pop("fake-a")
-    supervisor.tick()
+    tick_and_settle(supervisor)
     assert runs.get(run_a).state is RunState.SUCCEEDED
     assert runs.get(run_b).state is RunState.SUCCEEDED
 
@@ -205,7 +206,7 @@ def test_single_available_plugin_dispatches_without_route_events(
     _insert_template(connection, suffix="a", plugin_id="fake-a")
     run_a = _enqueue_run(runs, suffix="a")
 
-    _supervisor(connection, clock, reasons).tick()
+    tick_and_settle(_supervisor(connection, clock, reasons))
 
     assert runs.get(run_a).state is RunState.SUCCEEDED
     assert _global_events(connection) == []
