@@ -171,7 +171,7 @@ class WorkerExecutor:
             if claimed is not None:
                 return claimed
         try:
-            return self._advance(scope)
+            return self._advance_or_drain(scope)
         except WorkerCancelledError:
             self._log.info({"event": "executor.worker_cancelled", "run_id": scope.run_id})
             return self._cancel_run(scope, started=True)
@@ -216,6 +216,21 @@ class WorkerExecutor:
             if self._shutdown():
                 return self._drain(scope.run)
         return self._runs.get(scope.run_id)
+
+    def _advance_or_drain(self, scope: RunScope) -> JobRunRecord:
+        """推进一次运行；推进中失败而停机已请求时按停机收尾，不走恢复。
+
+        停机宽限到点被强制终止的调用以失败返回：失败发生在收尾路径上，再走恢复会
+        改状态、动租约，还会为收尾重新拉起 worker（docs/08 停机与阶段边界）；停机
+        收尾只写 run.interrupted，状态与租约留给下次启动扫描。取消优先于停机：取消
+        已置位时异常照旧交回调用方按既有口径收尾。
+        """
+        try:
+            return self._advance(scope)
+        except Exception:
+            if self._drain_requested():
+                return self._drain(scope.run)
+            raise
 
     def _drain(self, run: JobRunRecord) -> JobRunRecord:
         """停机收尾：写一条 run.interrupted，不改状态、不动租约。

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -42,6 +42,7 @@ from core.supervisor_routing import (
     RouteCandidate,
     route_dispatch,
 )
+from core.supervisor_shutdown import ShutdownAbort
 from core.worker.executor import CancelFlag, WorkerExecutor
 from storage import open_database
 from storage.defaults import default
@@ -68,6 +69,7 @@ class Supervisor:
         log: Logger | None = None,
         disk_free: Callable[[], int | None] | None = None,
         shutdown: Callable[[], bool] | None = None,
+        abort_workers: Callable[[Sequence[str]], None] | None = None,
     ) -> None:
         self._connection = connection
         self._database = _database_path(connection)
@@ -76,6 +78,14 @@ class Supervisor:
         self._data_root = data_root
         self._log: Logger = NullLogger() if log is None else log
         self._shutdown: Callable[[], bool] = (lambda: False) if shutdown is None else shutdown
+        # 宽限到点的强制终止件：serve 装配时传宿主的 abort_workers 作终止入口；
+        # 未注入或非停机退场时，宽限到点只继续等待，不碰 worker 进程。
+        self._shutdown_abort = ShutdownAbort(
+            log=self._log,
+            resolve_plugin=self._plugin_of,
+            abort=abort_workers,
+            emit=self._emit_global,
+        )
         self._disk_free: Callable[[], int | None] = (
             (lambda: disk_free_bytes(data_root)) if disk_free is None else disk_free
         )
@@ -175,28 +185,65 @@ class Supervisor:
         """最近一次 tick 是否观测到磁盘低于 500 MB；serve 循环据此退出。"""
         return self._disk_watermark.is_critical
 
-    def join_executors(self, timeout_seconds: float) -> None:
-        """等待全部执行线程收尾；超时的线程不再等待，留给下次启动回收（docs/08）。
+    def join_executors(self, timeout_seconds: float, *, abort_grace_seconds: float = 0.0) -> None:
+        """等待全部执行线程收尾；宽限到点仍未收尾的，先强制终止其 worker（docs/08）。
 
-        serve 循环退出前的收口点：线程各自持有连接与租约收尾口径，这里只等，
-        不动数据库；超时记一条日志与全局事件后返回，进程照常退出。
+        serve 循环退出前的收口点：线程各自持有连接与租约收尾口径，这里只等与终止
+        worker 进程，不动数据库里的运行状态。宽限期内自己收尾的线程不碰 worker；
+        强制终止只在停机收尾路径发生（磁盘退场与未注入终止入口时不动作），终止有账：
+        一条日志与一条全局事件。随后继续等满剩余收尾时间，仍卡死的线程不再等待，
+        运行状态与租约留给下次启动回收。
 
         Args:
             timeout_seconds: 全部线程共享的等待上限秒数。
+            abort_grace_seconds: 收尾宽限秒数，超过才强制终止；0 表示不终止。
         """
         deadline = self._clock.monotonic() + timeout_seconds
         with self._executors_lock:
             threads = tuple(self._executor_threads.values())
-        for thread in threads:
-            thread.join(max(0.0, deadline - self._clock.monotonic()))
-        with self._executors_lock:
-            stuck = sorted(
-                run_id for run_id, thread in self._executor_threads.items() if thread.is_alive()
-            )
+        self._join_until(threads, min(deadline, self._clock.monotonic() + abort_grace_seconds))
+        if abort_grace_seconds > 0:
+            self._force_abort(self._alive_run_ids())
+        self._join_until(threads, deadline)
+        stuck = self._alive_run_ids()
         if not stuck:
             return
         self._log.error({"event": "supervisor.executor_join_timeout", "run_ids": stuck})
         self._emit_global("supervisor.executor_join_timeout", {"run_ids": stuck})
+
+    def _join_until(self, threads: tuple[threading.Thread, ...], deadline: float) -> None:
+        """按绝对单调时刻等线程收尾；时刻已过立即返回。"""
+        for thread in threads:
+            thread.join(max(0.0, deadline - self._clock.monotonic()))
+
+    def _alive_run_ids(self) -> list[str]:
+        """仍在推进的运行 id，按 id 排序；登记在派发时建立、线程收尾时注销。"""
+        with self._executors_lock:
+            return sorted(
+                run_id for run_id, thread in self._executor_threads.items() if thread.is_alive()
+            )
+
+    def _force_abort(self, stuck_run_ids: Sequence[str]) -> None:
+        """强制终止承载在途调用的 worker，让卡死的调用立即失败返回。
+
+        只在停机收尾路径发生：非停机的退场不终止 worker（docs/08）；解析、终止与
+        记账在 supervisor_shutdown。运行状态、租约与收尾事件都归执行线程，这里不碰。
+        """
+        if not stuck_run_ids or not self._shutdown():
+            return
+        self._shutdown_abort.abort(stuck_run_ids)
+
+    def _plugin_of(self, run_id: str) -> str | None:
+        """卡死运行对应的插件 id；库故障或模板缺失按解不出处置，终止尽力而为。"""
+        try:
+            run = self._runs.get(run_id)
+        except (RunNotFoundError, sqlite3.Error):
+            return None
+        try:
+            template = self._templates.get(run.template_id)
+        except sqlite3.Error:
+            return None
+        return None if template is None else template.plugin_id
 
     def request_cancel(self, run_id: str, reason: str = "user_cancel") -> JobRunRecord:
         """记录叫停：未开始的立即 cancelled；执行中的置位标记，由 worker 在阶段边界收尾。"""
