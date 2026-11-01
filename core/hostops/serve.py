@@ -1,6 +1,6 @@
 """serve 外壳：单实例启动序、Supervisor tick 循环、心跳与停机收尾。
 
-启动序固定为互斥量→锁文件→数据库与迁移→启动扫描（docs/08 单实例一节）。
+启动序固定为互斥量→锁文件→数据库与迁移→通知清扫→启动扫描（docs/08 单实例一节）。
 Windows 的 TerminateProcess 没有处理器可走，优雅停机靠可捕获的控制台信号
 （SIGINT、SIGBREAK）；SIGTERM 一并注册，同一份代码在 POSIX 上也成立。
 硬杀留下的锁文件不清理，由互斥量兜底、下次启动覆盖。
@@ -52,6 +52,7 @@ from core.hostops.retention import RetentionRunner
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
 from core.notify.service import NotifyService
+from core.notify.sweep import sweep_pending_notifications
 from core.plugins.rpc_host import RpcPluginHost, installed_plugin_ids
 from core.supervisor import Supervisor
 from storage import BackupError, MigrationError, migrate, open_database
@@ -365,7 +366,7 @@ def run_serve(data_root: Path, options: ServeOptions | None = None) -> int:
     """serve 主流程，返回进程退出码。
 
     启动序：互斥量（被占写事件退 3）→ 锁文件（写不了退 1）→ 数据库与迁移 →
-    启动扫描 → tick 循环。收尾永远删锁文件并释放互斥量。
+    通知清扫 → 启动扫描 → tick 循环。收尾永远删锁文件并释放互斥量。
     """
     active = ServeOptions() if options is None else options
     started_at = active.clock.utc_now()
@@ -414,7 +415,7 @@ def _write_lock(lock_path: Path, started_at: datetime, log: Logger) -> bool:
 
 
 def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> int:
-    """库、迁移、启动扫描、API 挂载与 tick 循环；打开失败与运行期错误都记日志退 1。"""
+    """库、迁移、通知清扫、启动扫描、API 挂载与 tick 循环；打开失败与运行期错误都记日志退 1。"""
     connection: sqlite3.Connection | None = None
     plugin_host: RpcPluginHost | None = None
     api_server: ApiServer | None = None
@@ -423,6 +424,8 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
         database = data_root / DATABASE_FILENAME
         connection = open_database(database)
         migrate(connection, backups_dir=data_root / "backups", clock=options.clock)
+        # 上次进程硬杀遗留的 pending 通知先落终态：账目中间态不跨进程，也不流进本次投递历史。
+        sweep_pending_notifications(connection, options.clock, log=options.log)
         # 通知游标在启动扫描与启动事件落库之前定桩：崩溃收尾（运行置 unknown）与
         # 看门狗停手补报都要进通知，重启不能漏报。
         notify = NotifyService(connection, options.clock, data_root=data_root, log=options.log)

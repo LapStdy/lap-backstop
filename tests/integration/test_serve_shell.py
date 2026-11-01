@@ -25,6 +25,9 @@ from core.hostops.serve import (
     run_serve,
 )
 from core.logging import JsonLineLogger
+from core.notify.sweep import SWEEP_ERROR
+from storage import migrate, open_database
+from storage.repositories.notifications import NotificationRepository
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WAIT_SECONDS = 30.0
@@ -204,6 +207,60 @@ def test_run_serve_bounded_ticks_write_heartbeat_and_cleanup(tmp_path: Path) -> 
     # 注册走 schtasks 覆盖式导入，清单以 tasks.REGISTERED_TASKS 为准
     assert [call[3] for call in task_calls] == ["/tn"] * len(tasks.REGISTERED_TASKS)
     assert {call[4] for call in task_calls} == set(tasks.REGISTERED_TASKS)
+
+
+def test_run_serve_sweeps_pending_notifications_from_previous_process(tmp_path: Path) -> None:
+    """上次进程遗留的 pending 通知在启动序里清扫：行落 failed，事件逐条可追。"""
+    database = tmp_path / "backstop.sqlite"
+    connection = open_database(database)
+    migrate(connection)
+    repository = NotificationRepository(connection)
+    repository.insert_pending("n-left-1", None, "serverchan")
+    repository.insert_pending("n-left-2", None, "serverchan")
+    connection.execute("UPDATE notifications SET attempts = 2 WHERE id = 'n-left-2'")
+    repository.insert_pending("n-sent", None, "serverchan")
+    repository.mark_sent("n-sent", attempts=1, at=datetime(2026, 10, 25, 8, 0, tzinfo=UTC))
+    connection.close()
+    options = ServeOptions(
+        clock=VirtualClock(datetime(2026, 10, 25, 8, 0, tzinfo=UTC)),
+        max_ticks=1,
+        tick_interval_seconds=0.0,
+        registry_get=lambda _key, name: autologon_registry("1", "backstop")[name],
+        register_tasks=False,
+        run_timesync=False,
+    )
+    assert run_serve(tmp_path, options) == 0
+    reader = sqlite3.connect(database)
+    reader.row_factory = sqlite3.Row
+    try:
+        rows = {
+            str(row["id"]): row for row in reader.execute("SELECT * FROM notifications").fetchall()
+        }
+    finally:
+        reader.close()
+    assert rows["n-left-1"]["status"] == "failed"
+    assert rows["n-left-1"]["error"] == SWEEP_ERROR
+    assert rows["n-left-1"]["sent_at"] is None
+    assert rows["n-left-2"]["attempts"] == 2
+    assert rows["n-sent"]["status"] == "sent"
+    assert rows["n-sent"]["error"] is None
+    swept = [
+        payload
+        for payload in global_event_payloads(database)
+        if payload.get("event") == "notify.pending_swept"
+    ]
+    assert {payload["payload"]["notification_id"] for payload in swept} == {
+        "n-left-1",
+        "n-left-2",
+    }
+    # 第二次启动：无遗留 pending，不清扫也不追加事件
+    assert run_serve(tmp_path, options) == 0
+    swept_after_restart = [
+        payload
+        for payload in global_event_payloads(database)
+        if payload.get("event") == "notify.pending_swept"
+    ]
+    assert swept_after_restart == swept
 
 
 @pytest.mark.parametrize("mode", ["nonzero_exit", "timeout"])
