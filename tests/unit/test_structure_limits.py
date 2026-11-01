@@ -280,7 +280,7 @@ def scan_source(source: str, path: str) -> tuple[Violation, ...]:
     total = len(source.splitlines())
     if total > MODULE_MAX_LINES:
         violations.append(Violation(path, 1, MODULE_NAME, "module_lines", total, MODULE_MAX_LINES))
-    _scan_node(ast.parse(source), path, "", False, violations)
+    _LimitScanner(path, violations).scan(ast.parse(source))
     return tuple(violations)
 
 
@@ -298,49 +298,56 @@ def _py_files(root: Path) -> tuple[Path, ...]:
     return tuple(path for subdir in _SCAN_ROOTS for path in sorted((root / subdir).rglob("*.py")))
 
 
-def _scan_node(
-    node: ast.AST,
-    path: str,
-    prefix: str,
-    in_class: bool,
-    out: list[Violation],
-) -> None:
-    """递归收集函数与类的超限项；prefix 拼出 ``Class.method`` 限定名。"""
-    for child in ast.iter_child_nodes(node):
-        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            name = prefix + child.name
-            _check_function(child, name, in_class, path, out)
-            _scan_node(child, path, f"{name}.", False, out)
-        elif isinstance(child, ast.ClassDef):
-            name = prefix + child.name
-            assert child.end_lineno is not None
-            lines = child.end_lineno - child.lineno + 1
-            if lines > CLASS_MAX_LINES:
-                out.append(
-                    Violation(path, child.lineno, name, "class_lines", lines, CLASS_MAX_LINES)
+class _LimitScanner:
+    """遍历 AST 收集超限项；报告路径与输出列表挂实例，递归只传作用域。"""
+
+    def __init__(self, path: str, out: list[Violation]) -> None:
+        self._path = path
+        self._out = out
+
+    def scan(self, node: ast.AST, prefix: str = "", in_class: bool = False) -> None:
+        """递归收集函数与类的超限项；prefix 拼出 ``Class.method`` 限定名。"""
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = prefix + child.name
+                self._check_function(child, name, in_class)
+                self.scan(child, f"{name}.", False)
+            elif isinstance(child, ast.ClassDef):
+                name = prefix + child.name
+                assert child.end_lineno is not None
+                lines = child.end_lineno - child.lineno + 1
+                if lines > CLASS_MAX_LINES:
+                    self._out.append(
+                        Violation(
+                            self._path, child.lineno, name, "class_lines", lines, CLASS_MAX_LINES
+                        )
+                    )
+                self.scan(child, f"{name}.", True)
+            else:
+                self.scan(child, prefix, in_class)
+
+    def _check_function(
+        self,
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        name: str,
+        in_class: bool,
+    ) -> None:
+        """对一个函数定义核对行数与参数个数两条上限。"""
+        assert node.end_lineno is not None
+        lines = node.end_lineno - node.lineno + 1
+        if lines > FUNCTION_MAX_LINES:
+            self._out.append(
+                Violation(
+                    self._path, node.lineno, name, "function_lines", lines, FUNCTION_MAX_LINES
                 )
-            _scan_node(child, path, f"{name}.", True, out)
-        else:
-            _scan_node(child, path, prefix, in_class, out)
-
-
-def _check_function(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-    name: str,
-    in_class: bool,
-    path: str,
-    out: list[Violation],
-) -> None:
-    """对一个函数定义核对行数与参数个数两条上限。"""
-    assert node.end_lineno is not None
-    lines = node.end_lineno - node.lineno + 1
-    if lines > FUNCTION_MAX_LINES:
-        out.append(Violation(path, node.lineno, name, "function_lines", lines, FUNCTION_MAX_LINES))
-    params = _param_count(node.args, in_class)
-    if params > FUNCTION_MAX_PARAMS:
-        out.append(
-            Violation(path, node.lineno, name, "function_params", params, FUNCTION_MAX_PARAMS)
-        )
+            )
+        params = _param_count(node.args, in_class)
+        if params > FUNCTION_MAX_PARAMS:
+            self._out.append(
+                Violation(
+                    self._path, node.lineno, name, "function_params", params, FUNCTION_MAX_PARAMS
+                )
+            )
 
 
 def _param_count(arguments: ast.arguments, in_class: bool) -> int:
