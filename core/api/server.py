@@ -152,9 +152,17 @@ def start_api_server(
         OSError: 主监听地址绑定失败。
     """
     active = ApiOptions() if options is None else options
+    app = _build_api_app(connection, active)
+    counter = _RequestCounter()
+    servers, failures = _bind_listeners(app, counter, active)
+    return ApiServer(servers, tuple(failures), active)
+
+
+def _build_api_app(connection: sqlite3.Connection, active: ApiOptions) -> ApiApp:
+    """从既有连接引导 ApiApp：确认文件库、写 server_id 并装配路由依赖。"""
     database = _database_path(connection)
     ensure_server_id(connection, at=active.clock.utc_now())
-    app = ApiApp(
+    return ApiApp(
         database,
         clock=active.clock,
         log=active.log,
@@ -163,7 +171,14 @@ def start_api_server(
         run_stopper=active.run_stopper,
         drain_requester=active.drain_requester,
     )
-    counter = _RequestCounter()
+
+
+def _bind_listeners(
+    app: ApiApp,
+    counter: _RequestCounter,
+    active: ApiOptions,
+) -> tuple[list[tuple[ThreadingHTTPServer, threading.Thread]], list[tuple[str, str]]]:
+    """逐地址绑定并起服务线程；主地址失败上抛，追加地址失败记日志跳过。"""
     servers: list[tuple[ThreadingHTTPServer, threading.Thread]] = []
     failures: list[tuple[str, str]] = []
     for index, host in enumerate((active.host, *active.extra_hosts)):
@@ -193,7 +208,7 @@ def start_api_server(
         )
         thread.start()
         servers.append((http, thread))
-    return ApiServer(servers, tuple(failures), active)
+    return servers, failures
 
 
 def _serve(http: ThreadingHTTPServer, counter: _RequestCounter, options: ApiOptions) -> None:

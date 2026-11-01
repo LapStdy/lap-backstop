@@ -311,6 +311,16 @@ def _build_parser() -> argparse.ArgumentParser:
         description="lap-backstop 宿主操作：常驻核心与排障入口",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    _add_serve_and_watchdog_parsers(subparsers)
+    _add_maintenance_parsers(subparsers)
+    _add_upgrade_parsers(subparsers)
+    return parser
+
+
+def _add_serve_and_watchdog_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """注册 serve 常驻与 watchdog 看门狗子命令。"""
     serve_parser = subparsers.add_parser("serve", help="常驻核心：调度循环与心跳")
     serve_parser.add_argument(
         "--data-root",
@@ -331,6 +341,12 @@ def _build_parser() -> argparse.ArgumentParser:
     watchdog_sub = watchdog_parser.add_subparsers(dest="watchdog_command", required=True)
     check_parser = watchdog_sub.add_parser("check", help="单次检查，由计划任务每 5 分钟唤醒")
     check_parser.add_argument("--data-root", default=str(resolve_data_root()))
+
+
+def _add_maintenance_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """注册 doctor、backup、evidence-mirror、db 与 tasks 维护子命令。"""
     doctor_parser = subparsers.add_parser("doctor", help="宿主环境自检")
     doctor_parser.add_argument("--data-root", default=str(resolve_data_root()))
     backup_parser = subparsers.add_parser("backup", help="每日备份：快照、配置导出与修剪")
@@ -347,6 +363,12 @@ def _build_parser() -> argparse.ArgumentParser:
     tasks_sub = tasks_parser.add_subparsers(dest="tasks_command", required=True)
     register_parser = tasks_sub.add_parser("register", help="注册或修复 P0 计划任务")
     register_parser.add_argument("--data-root", default=str(resolve_data_root()))
+
+
+def _add_upgrade_parsers(
+    subparsers: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """注册 upgrade 与 rollback 升级回滚子命令。"""
     upgrade_parser = subparsers.add_parser(
         "upgrade", help="升级到 app\\releases 下的新版本：drain、快照、切换与健康检查"
     )
@@ -356,7 +378,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "rollback", help="按升级标记手动回滚到前一版本；无标记即空操作"
     )
     rollback_parser.add_argument("--data-root", default=str(resolve_data_root()))
-    return parser
 
 
 if __name__ == "__main__":

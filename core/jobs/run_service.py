@@ -140,44 +140,43 @@ class JobRunService:
             raise IllegalRunTransitionError(
                 f"JobRun 不允许从 {record.state.value} 迁到 {target.value}"
             )
-        updated = False
-        with transaction(self._connection):
-            updated = self._runs.transition(
-                StateChange(
-                    run_id=run_id,
-                    source=record.state,
-                    target=target,
-                    at=now,
-                    error_code=error_code,
-                )
-            )
-            if updated:
-                self._events.append_run(
-                    run_id,
-                    EventType.RUN_STATE_CHANGED,
-                    {
-                        "run_id": run_id,
-                        "from_state": record.state.value,
-                        "to_state": target.value,
-                        "reason": reason,
-                    },
-                    at=now,
-                )
-                if target in TERMINAL_RUN_STATES:
-                    self._events.append_run(
-                        run_id,
-                        EventType.RUN_FINISHED,
-                        {
-                            "run_id": run_id,
-                            "status": target.value,
-                            "duration_ms": _duration_ms(record, now),
-                        },
-                        at=now,
-                    )
-        if not updated:
+        change = StateChange(
+            run_id=run_id,
+            source=record.state,
+            target=target,
+            at=now,
+            error_code=error_code,
+        )
+        if not self._apply_transition(record, change, reason):
             self._reject(record, target, reason, now)
             raise IllegalRunTransitionError("运行状态已被并发修改，迁移未生效")
         return self.get(run_id)
+
+    def _apply_transition(
+        self,
+        record: JobRunRecord,
+        change: StateChange,
+        reason: str,
+    ) -> bool:
+        """单事务内迁移并写事件；返回迁移是否生效，未生效交回调用方仲裁。"""
+        updated = False
+        with transaction(self._connection):
+            updated = self._runs.transition(change)
+            if updated:
+                self._events.append_run(
+                    change.run_id,
+                    EventType.RUN_STATE_CHANGED,
+                    _state_changed_payload(change.run_id, change.source, change.target, reason),
+                    at=change.at,
+                )
+                if change.target in TERMINAL_RUN_STATES:
+                    self._events.append_run(
+                        change.run_id,
+                        EventType.RUN_FINISHED,
+                        _finished_payload(change.run_id, change.target, record, change.at),
+                        at=change.at,
+                    )
+        return updated
 
     def fail_overdue(self, now: datetime | None = None) -> tuple[JobRunRecord, ...]:
         """把超过截止时间仍未进入 executing 的运行记为 failed / E_DEADLINE。"""
@@ -259,12 +258,7 @@ class JobRunService:
         self._events.append_run(
             record.id,
             EventType.RUN_STATE_CHANGED,
-            {
-                "run_id": record.id,
-                "from_state": record.state.value,
-                "to_state": target.value,
-                "reason": reason or "illegal_transition",
-            },
+            _state_changed_payload(record.id, record.state, target, reason or "illegal_transition"),
             at=at,
         )
 
@@ -287,6 +281,33 @@ def _created_payload(
         "schedule_id": record.schedule_id,
         "scheduled_at": "" if record.scheduled_at is None else record.scheduled_at.isoformat(),
         "merged_scheduled_ats": [moment.isoformat() for moment in merged_scheduled_ats],
+    }
+
+
+def _state_changed_payload(
+    run_id: str,
+    source: RunState,
+    target: RunState,
+    reason: str,
+) -> dict[str, object]:
+    return {
+        "run_id": run_id,
+        "from_state": source.value,
+        "to_state": target.value,
+        "reason": reason,
+    }
+
+
+def _finished_payload(
+    run_id: str,
+    target: RunState,
+    record: JobRunRecord,
+    at: datetime,
+) -> dict[str, object]:
+    return {
+        "run_id": run_id,
+        "status": target.value,
+        "duration_ms": _duration_ms(record, at),
     }
 
 
