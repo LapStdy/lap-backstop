@@ -13,17 +13,22 @@ r"""独立看门狗：判死、豁免误报、经计划任务拉起、跨次验�
 
 from __future__ import annotations
 
-import ctypes
 import json
 import os
 import subprocess
 from collections.abc import Callable
-from ctypes import wintypes
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from core.hostops.watchdog_process import (
+    _CREATION_TOLERANCE,
+    _acquire_watchdog_mutex,
+    _kernel32,
+    _process_creation_time,
+    is_pid_alive,
+)
 from core.hostops.watchdog_state import (
     STATE_FILENAME,
     GaveUpReport,
@@ -56,32 +61,8 @@ _LOG_TAIL_LINES = 50
 _LOG_TAIL_WINDOW_BYTES = 262_144
 # 尾部随事件 payload 进 SSE 帧：只裁行数时一行可以很长，按总字符再封顶一次。
 _LOG_TAIL_MAX_CHARS = 8_192
-ERROR_ALREADY_EXISTS = 183
-STILL_ACTIVE = 259
-PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-_EPOCH_1601 = datetime(1601, 1, 1, tzinfo=UTC)
-# started_at 来自进程内时钟、创建时间来自内核 FILETIME，允许秒级偏差。
-_CREATION_TOLERANCE = timedelta(seconds=5)
 
 Runner = Callable[..., subprocess.CompletedProcess[bytes]]
-
-_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-_kernel32.CreateMutexW.restype = wintypes.HANDLE
-_kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR)
-_kernel32.CloseHandle.restype = wintypes.BOOL
-_kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
-_kernel32.OpenProcess.restype = wintypes.HANDLE
-_kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-_kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-_kernel32.GetExitCodeProcess.argtypes = (wintypes.HANDLE, wintypes.LPDWORD)
-_kernel32.GetProcessTimes.restype = wintypes.BOOL
-_kernel32.GetProcessTimes.argtypes = (
-    wintypes.HANDLE,
-    wintypes.LPFILETIME,
-    wintypes.LPFILETIME,
-    wintypes.LPFILETIME,
-    wintypes.LPFILETIME,
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,21 +106,6 @@ def run_check(data_root: Path, *, inputs: CheckInputs) -> int:
     try:
         _execute_check(data_root, inputs)
         return 0
-    finally:
-        _kernel32.CloseHandle(handle)
-
-
-def is_pid_alive(pid: int) -> bool:
-    """pid 对应进程是否仍在运行；打不开或已退出都算死。"""
-    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not handle:
-        return False
-    try:
-        exit_code = wintypes.DWORD()
-        if not _kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-            return False
-        # STILL_ACTIVE 表示未退出；真退出码恰好是 259 的进程会被误判为活，接受该歧义。
-        return exit_code.value == STILL_ACTIVE
     finally:
         _kernel32.CloseHandle(handle)
 
@@ -422,40 +388,6 @@ def _append_log(path: Path, line: CheckLogLine) -> None:
             stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except OSError:
         return
-
-
-def _acquire_watchdog_mutex(name: str) -> int | None:
-    """取看门狗互斥量；被占返回 None（重复触发按 docs/08 单实例一节退 0）。"""
-    handle = _kernel32.CreateMutexW(None, False, name)
-    if not handle:
-        raise ctypes.WinError(ctypes.get_last_error())
-    if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
-        _kernel32.CloseHandle(handle)
-        return None
-    return handle
-
-
-def _process_creation_time(pid: int) -> datetime | None:
-    handle = _kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-    if not handle:
-        return None
-    try:
-        creation = wintypes.FILETIME()
-        exit_time = wintypes.FILETIME()
-        kernel = wintypes.FILETIME()
-        user = wintypes.FILETIME()
-        if not _kernel32.GetProcessTimes(
-            handle,
-            ctypes.byref(creation),
-            ctypes.byref(exit_time),
-            ctypes.byref(kernel),
-            ctypes.byref(user),
-        ):
-            return None
-        stamp = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
-        return _EPOCH_1601 + timedelta(microseconds=stamp / 10)
-    finally:
-        _kernel32.CloseHandle(handle)
 
 
 __all__ = [
