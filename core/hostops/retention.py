@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from collections.abc import Iterable
 from contextlib import suppress
@@ -20,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 from contracts import TERMINAL_RUN_STATES, Clock, EventType, Logger
 from core.api.store import put_settings
+from core.log_names import CORE_LOG_ARCHIVED_NAME, CORE_LOG_NAME
 from core.logging import NullLogger
 from storage.db.transaction import transaction
 from storage.defaults import default
@@ -31,11 +31,6 @@ RETENTION_PRUNED_EVENT = "core.retention_pruned"
 EVIDENCE_DIRNAME = "evidence"
 LOGS_DIRNAME = "logs"
 _GIB = 1024**3
-# 文件名形态由 core/logging.py 的轮转器决定；这里只解析日期，不复制写入逻辑。
-_RAW_LOG_NAME = re.compile(r"^core-(?P<day>\d{4}-\d{2}-\d{2})(?:\.(?P<index>\d+))?\.jsonl$")
-_ARCHIVED_LOG_NAME = re.compile(
-    r"^core-(?P<day>\d{4}-\d{2}-\d{2})(?:\.(?P<index>\d+))?\.jsonl\.gz$"
-)
 _TERMINAL_STATES = tuple(state.value for state in TERMINAL_RUN_STATES)
 _TERMINAL_MARKS = ",".join("?" for _ in _TERMINAL_STATES)
 
@@ -326,7 +321,7 @@ def _log_file(path: Path) -> tuple[date, bool] | None:
     """解析 core-日界日志文件名；返回日期与是否压缩件，不匹配返回 None。"""
     if not path.is_file():
         return None
-    for pattern, archived in ((_ARCHIVED_LOG_NAME, True), (_RAW_LOG_NAME, False)):
+    for pattern, archived in ((CORE_LOG_ARCHIVED_NAME, True), (CORE_LOG_NAME, False)):
         match = pattern.fullmatch(path.name)
         if match is None:
             continue

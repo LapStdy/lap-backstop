@@ -5,7 +5,6 @@ from __future__ import annotations
 import gzip
 import json
 import os
-import re
 import shutil
 import tempfile
 import threading
@@ -16,11 +15,10 @@ from typing import Any
 
 from contracts import Clock
 from core.clock import SystemClock
+from core.log_names import CORE_LOG_NAME
 
 MAX_FILE_BYTES = 200 * 1024 * 1024
 COMPRESS_AFTER_DAYS = 14
-
-_DAILY_NAME = re.compile(r"^core-(?P<day>\d{4}-\d{2}-\d{2})(?:\.(?P<index>\d+))?\.jsonl$")
 
 
 class NullLogger:
@@ -189,7 +187,7 @@ def _format_line(now: datetime, level: str, fields: Mapping[str, Any]) -> str:
 
 
 def _parse_daily_name(name: str) -> tuple[date, int] | None:
-    match = _DAILY_NAME.fullmatch(name)
+    match = CORE_LOG_NAME.fullmatch(name)
     if match is None:
         return None
     try:

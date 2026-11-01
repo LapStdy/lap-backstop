@@ -214,13 +214,13 @@ def test_acceptance_failures_accumulate_then_give_up(tmp_path: Path) -> None:
     assert state["gave_up_pending_report"] is True
     assert len(state["failures"]) == 3
     assert last_log_entry(tmp_path)["action"] == watchdog.ACTION_GAVE_UP
-    payload = watchdog.claim_gave_up_report(run_dir / watchdog.STATE_FILENAME)
+    payload = watchdog.take_gave_up_event_payload(run_dir / watchdog.STATE_FILENAME)
     assert payload is not None
     detail = payload["detail"]
     assert isinstance(detail, str)
     assert "3 次验收失败" in detail
     # 补报是取走式：第二次没有可报的
-    assert watchdog.claim_gave_up_report(run_dir / watchdog.STATE_FILENAME) is None
+    assert watchdog.take_gave_up_event_payload(run_dir / watchdog.STATE_FILENAME) is None
 
 
 def test_give_up_report_captures_heartbeat_and_log_tail(tmp_path: Path) -> None:
@@ -274,7 +274,7 @@ def test_claim_with_legacy_marker_returns_fallback_payload(tmp_path: Path) -> No
             "gave_up_pending_report": True,
         },
     )
-    payload = watchdog.claim_gave_up_report(state_path)
+    payload = watchdog.take_gave_up_event_payload(state_path)
     assert payload is not None
     detail = payload["detail"]
     assert isinstance(detail, str)
@@ -287,7 +287,7 @@ def test_claim_with_legacy_marker_returns_fallback_payload(tmp_path: Path) -> No
     assert state["gave_up_pending_report"] is False
     assert state["gave_up_report"] is None
     # 取走即清：二次调用返回 None
-    assert watchdog.claim_gave_up_report(state_path) is None
+    assert watchdog.take_gave_up_event_payload(state_path) is None
 
 
 def test_claim_preserves_deadman_marker(tmp_path: Path) -> None:
@@ -296,7 +296,7 @@ def test_claim_preserves_deadman_marker(tmp_path: Path) -> None:
     watchdog.write_state(
         state_path, {"gave_up_pending_report": True, "deadman_fail_notified": True}
     )
-    watchdog.claim_gave_up_report(state_path)
+    watchdog.take_gave_up_event_payload(state_path)
     state = watchdog.read_state(state_path)
     assert state["gave_up_pending_report"] is False
     assert state["deadman_fail_notified"] is True
@@ -318,7 +318,7 @@ def test_claim_takes_stored_report_and_clears_marker(tmp_path: Path) -> None:
             },
         },
     )
-    payload = watchdog.claim_gave_up_report(state_path)
+    payload = watchdog.take_gave_up_event_payload(state_path)
     assert payload == {
         "detail": "看门狗已停止拉起：窗口内 3 次验收失败，最近一次 2026-10-25T07:59:00+00:00",
         "failed_count": 3,
@@ -326,7 +326,7 @@ def test_claim_takes_stored_report_and_clears_marker(tmp_path: Path) -> None:
         "heartbeat": {"pid": 101},
         "log_tail": ["a"],
     }
-    assert watchdog.claim_gave_up_report(state_path) is None
+    assert watchdog.take_gave_up_event_payload(state_path) is None
 
 
 def test_log_tail_picks_latest_core_log_by_day_and_rotation(tmp_path: Path) -> None:
@@ -403,6 +403,31 @@ def test_log_line_has_documented_fields(tmp_path: Path) -> None:
     assert entry["at"] == BASE.isoformat()
 
 
+def test_append_log_writes_documented_fields_byte_for_byte(tmp_path: Path) -> None:
+    """age 与 pid 有无共四种固定输入：写盘行与字段顺序逐字节符合 docs/08 记录一节。"""
+    path = tmp_path / "logs" / watchdog.LOG_FILENAME
+    cases = [
+        (10.0, 101, watchdog.ACTION_NONE),
+        (10.0, None, watchdog.ACTION_START_REQUESTED),
+        (None, 101, watchdog.ACTION_GAVE_UP),
+        (None, None, watchdog.ACTION_NONE),
+    ]
+    for age, pid, action in cases:
+        watchdog._append_log(
+            path, watchdog.CheckLogLine(at=BASE, heartbeat_age_s=age, core_pid=pid, action=action)
+        )
+    assert path.read_text(encoding="utf-8").splitlines() == [
+        '{"at": "2026-10-25T08:00:00+00:00", "heartbeat_age_s": 10.0,'
+        ' "core_pid": 101, "action": "none"}',
+        '{"at": "2026-10-25T08:00:00+00:00", "heartbeat_age_s": 10.0,'
+        ' "core_pid": null, "action": "start_requested"}',
+        '{"at": "2026-10-25T08:00:00+00:00", "heartbeat_age_s": null,'
+        ' "core_pid": 101, "action": "gave_up"}',
+        '{"at": "2026-10-25T08:00:00+00:00", "heartbeat_age_s": null,'
+        ' "core_pid": null, "action": "none"}',
+    ]
+
+
 def test_pid_alive_helper_uses_real_processes() -> None:
     assert watchdog.is_pid_alive(os.getpid()) is True
     assert watchdog.is_pid_alive(4_000_000) is False
@@ -417,6 +442,12 @@ def test_watchdog_mutex_second_acquire_returns_none() -> None:
         watchdog._kernel32.CloseHandle(handle)
 
 
+def test_gave_up_payload_entry_point_is_take_gave_up_event_payload() -> None:
+    """模块属性与公开面都只认 take_gave_up_event_payload。"""
+    assert not hasattr(watchdog, "claim_gave_up_report")
+    assert "take_gave_up_event_payload" in watchdog.__all__
+
+
 def test_claim_falls_back_when_report_field_type_is_wrong(tmp_path: Path) -> None:
     """报告里 failed_count 类型不符 → 按不可解析处理，claim 走兜底载荷。"""
     state_path = tmp_path / "run" / watchdog.STATE_FILENAME
@@ -429,7 +460,7 @@ def test_claim_falls_back_when_report_field_type_is_wrong(tmp_path: Path) -> Non
             "gave_up_report": cast(watchdog.GaveUpReport, {"failed_count": "3", "log_tail": []}),
         },
     )
-    payload = watchdog.claim_gave_up_report(state_path)
+    payload = watchdog.take_gave_up_event_payload(state_path)
     assert payload is not None
     assert payload["failed_count"] == 1
     assert payload["last_failure_at"] == "2026-10-25T07:50:00+00:00"

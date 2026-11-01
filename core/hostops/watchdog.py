@@ -1,8 +1,9 @@
 r"""独立看门狗：判死、豁免误报、经计划任务拉起、跨次验收与停手。
 
-看门狗是短命进程：由计划任务每 5 分钟唤醒，3 秒内结束。它不依赖核心的任何
-代码路径（docs/08 独立看门狗一节）——核心包损坏也要照常醒来，因此本模块只
-用标准库，锁文件解析与进程核对在此独立实现，不与 core.hostops 其余模块共享。
+看门狗是短命进程：由计划任务每 5 分钟唤醒，3 秒内结束。它不依赖核心的
+数据库与运行时服务（docs/08 独立看门狗一节）——核心死了也要照常醒来，
+因此本模块只用标准库：日志文件名文法取自仅依赖标准库的 core.log_names，
+锁文件解析与进程核对在此独立实现，不与 core.hostops 其余模块共享。
 
 跨次状态存 ``data\run\watchdog.state.json``：拉起后记 pending_start，下次检查
 核对是否出现过新心跳；30 分钟滑动窗口内 3 次验收失败即停手，停手证据（窗口
@@ -15,7 +16,6 @@ from __future__ import annotations
 import ctypes
 import json
 import os
-import re
 import subprocess
 from collections.abc import Callable
 from ctypes import wintypes
@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple, TypedDict
+
+from core.log_names import CORE_LOG_NAME
 
 WATCHDOG_MUTEX_NAME = "Global\\lap-backstop-watchdog"
 STATE_FILENAME = "watchdog.state.json"
@@ -39,8 +41,6 @@ WATCHDOG_GAVE_UP_EVENT = "host.watchdog_gave_up"
 
 # 单次检查 3 秒内必须结束（docs/08 自约束）：给 schtasks 留的窗口比它更小。
 _SCHEDULING_TIMEOUT_SECONDS = 2.0
-# 核心日志文件名（docs/08 磁盘与日志：core-YYYY-MM-DD[.N].jsonl，按日与续号取最新）。
-_CORE_LOG_NAME = re.compile(r"^core-(?P<day>\d{4}-\d{2}-\d{2})(?:\.(?P<index>\d+))?\.jsonl$")
 _LOG_TAIL_LINES = 50
 # 核心日志单文件最大 200 MB：全量读会撞上 3 秒自约束，只从文件尾取一个字节窗口再裁行数。
 _LOG_TAIL_WINDOW_BYTES = 262_144
@@ -176,14 +176,14 @@ def write_state(path: Path, state: WatchdogState) -> None:
     os.replace(temporary, path)
 
 
-def claim_gave_up_report(state_path: Path) -> dict[str, object] | None:
-    """取走停手待上报载荷；有则清标记并返回事件 payload，无则 None。
+def take_gave_up_event_payload(state_path: Path) -> dict[str, object] | None:
+    """取走停手待上报载荷：有报告则清标记并返回事件 payload，无则 None。
 
-    payload 是人读 detail（通知路径依赖它）加 failed_count、last_failure_at、
-    heartbeat、log_tail 四个证据字段。报告里 failed_count 或 log_tail 缺失、
-    类型不符即按不可解析处理，claim 走兜底：失败次数与最近失败时刻从已存
-    failures 推，last_failure_at 与 heartbeat 缺失按 None 补，日志尾部为空。
-    供核心 serve 启动时调用：看门狗零数据库访问，事件由核心补写。
+    报告不可解析走兜底：报告里 failed_count 或 log_tail 缺失、类型不符按
+    不可解析处理，失败次数与最近失败时刻从已存 failures 推，last_failure_at
+    与 heartbeat 缺失按 None 补，日志尾部为空。payload 是人读 detail（通知
+    路径依赖它）加这四个证据字段。供核心 serve 启动时调用：看门狗零数据库
+    访问，事件由核心补写。
 
     Raises:
         OSError: 清标记后写回状态文件失败；磁盘上的标记未变，下次启动
@@ -241,7 +241,10 @@ def _execute_check(data_root: Path, inputs: CheckInputs) -> None:
         passed = True
     write_state(state_path, state)
     log_path = data_root / "logs" / LOG_FILENAME
-    _append_log(log_path, now=inputs.now, age=age, core_pid=core_pid, action=action)
+    _append_log(
+        log_path,
+        CheckLogLine(at=inputs.now, heartbeat_age_s=age, core_pid=core_pid, action=action),
+    )
     if inputs.deadman is not None:
         inputs.deadman(
             CheckReport(passed=passed, action=action, heartbeat_age_s=age, core_pid=core_pid)
@@ -506,7 +509,7 @@ def _latest_core_log(logs_dir: Path) -> Path | None:
 
 def _parse_core_log_name(name: str) -> tuple[str, int] | None:
     """解析核心日志文件名；返回日期串与续号（无续号按 1）。"""
-    match = _CORE_LOG_NAME.fullmatch(name)
+    match = CORE_LOG_NAME.fullmatch(name)
     if match is None:
         return None
     index = match.group("index")
@@ -556,28 +559,31 @@ def _mtime_age_seconds(path: Path, *, now: datetime) -> float | None:
         return None
 
 
-def _append_log(
-    path: Path,
-    *,
-    now: datetime,
-    age: float | None,
-    core_pid: int | None,
-    action: str,
-) -> None:
-    """追加一行检查记录（docs/08 记录一节的四个字段）。"""
+@dataclass(frozen=True, slots=True)
+class CheckLogLine:
+    """一行检查记录的字段：字段名即写盘键，取值口径见 docs/08 记录一节。"""
+
+    at: datetime
+    heartbeat_age_s: float | None
+    core_pid: int | None
+    action: str
+
+
+def _append_log(path: Path, line: CheckLogLine) -> None:
+    """追加一行检查记录（docs/08 记录一节的四个字段）。
+
+    写盘失败只吞 OSError：缺一行记录不拦住检查本身（docs/08 自约束）。
+    """
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        line = json.dumps(
-            {
-                "at": now.isoformat(),
-                "heartbeat_age_s": age,
-                "core_pid": core_pid,
-                "action": action,
-            },
-            ensure_ascii=False,
-        )
+        payload = {
+            "at": line.at.isoformat(),
+            "heartbeat_age_s": line.heartbeat_age_s,
+            "core_pid": line.core_pid,
+            "action": line.action,
+        }
         with path.open("a", encoding="utf-8") as stream:
-            stream.write(line + "\n")
+            stream.write(json.dumps(payload, ensure_ascii=False) + "\n")
     except OSError:
         return
 
@@ -632,9 +638,9 @@ __all__ = [
     "CheckReport",
     "GaveUpReport",
     "WatchdogState",
-    "claim_gave_up_report",
     "is_pid_alive",
     "read_state",
     "run_check",
+    "take_gave_up_event_payload",
     "write_state",
 ]
