@@ -1,16 +1,26 @@
 """通知账目仓储：notifications 表的投递记账写入。
 
-行由内核通知服务在投递编排线程写入（入账 pending、落终态 sent/failed）；
-查询侧见 core/api/notifications_store.py。
+行由内核通知服务在投递编排线程写入（入账 pending、落终态 sent/failed），
+启动清扫在启动线程把遗留 pending 落终态；查询侧见 core/api/notifications_store.py。
 """
 
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import dataclass
 from datetime import datetime
 
 from contracts import NotificationStatus
 from storage.repositories.iso_time import format_at
+
+
+@dataclass(frozen=True, slots=True)
+class PendingNotification:
+    """一行待清扫的账目：落终态与记证据事件所需的字段。"""
+
+    notification_id: str
+    channel: str
+    attempts: int
 
 
 class NotificationRepository:
@@ -18,6 +28,21 @@ class NotificationRepository:
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
+
+    def pending_rows(self) -> tuple[PendingNotification, ...]:
+        """按入账顺序读出全部 pending 行；启动清扫按这个顺序落终态与证据事件。"""
+        rows = self._connection.execute(
+            "SELECT id, channel, attempts FROM notifications WHERE status = ? ORDER BY rowid",
+            (NotificationStatus.PENDING.value,),
+        ).fetchall()
+        return tuple(
+            PendingNotification(
+                notification_id=str(row["id"]),
+                channel=str(row["channel"]),
+                attempts=int(row["attempts"]),
+            )
+            for row in rows
+        )
 
     def insert_pending(self, notification_id: str, run_id: str | None, channel: str) -> None:
         """入账一条待投递通知；尝试次数从 0 起算，终态时刻与错误留空。
@@ -86,4 +111,4 @@ class NotificationRepository:
         )
 
 
-__all__ = ["NotificationRepository"]
+__all__ = ["NotificationRepository", "PendingNotification"]
