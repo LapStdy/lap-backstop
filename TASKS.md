@@ -5,6 +5,7 @@
 ## 宿主运维自动化（docs/08 已按现状收敛，下列为待实现的能力）
 
 - [ ] SIGTERM 收尾的强制时限：停机收尾对执行线程已有 60 秒等待上限，超时按下次启动回收；卡死的插件调用无法强制打断，硬打断上限仍属待办。
+- [ ] 卡62 停机强制终止：分支 `feat/card62-shutdown-force-abort`（head `556b8ac`，worktree `D:\lap-backstop-card62`）已开发但未合并——新用例 `tests/integration/test_serve_shutdown_force_abort.py::test_force_abort_kills_worker_tree_and_drains_run` 会把 pytest 进程本身打掉（`KeyboardInterrupt`），全量门禁在该用例处终止；先修该用例再并分支。
 
 ## P1：MAA 插件与方舟环境
 
