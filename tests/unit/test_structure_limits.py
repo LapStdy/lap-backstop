@@ -163,6 +163,14 @@ _D013_ENTRIES: tuple[AllowEntry, ...] = (
     ),
     AllowEntry(
         "core/supervisor.py",
+        "Supervisor",
+        "class_lines",
+        "376 行",
+        "组合根类拆分随执行器重构卡偿还",
+        "D-013",
+    ),
+    AllowEntry(
+        "core/supervisor.py",
         "Supervisor.__init__",
         "function_lines",
         "53 行",
