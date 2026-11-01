@@ -295,7 +295,7 @@ def _host_setup_events(
     供通知分支判断是否需要告警。
     """
     events: list[tuple[str, Mapping[str, object]]] = []
-    gave_up = watchdog.claim_gave_up_report(data_root / "run" / watchdog.STATE_FILENAME)
+    gave_up = watchdog.take_gave_up_event_payload(data_root / "run" / watchdog.STATE_FILENAME)
     if gave_up is not None:
         events.append((WATCHDOG_GAVE_UP_EVENT, gave_up))
     logon = options.registry_get(WINLOGON_KEY, "AutoAdminLogon")
