@@ -159,3 +159,8 @@
 | MAA 安装 | H:/MAA |
 | MuMu 模拟器 | H:/MuMuPlayer（VM0 方舟，adb 127.0.0.1:16384） |
 | 技能与规范仓库 | https://github.com/LapStdy/lap-skills-rules |
+
+## 许可证
+
+[MIT](LICENSE)。
+
