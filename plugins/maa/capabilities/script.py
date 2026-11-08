@@ -45,6 +45,7 @@ from plugins.maa.logparse import (
     read_new_lines,
 )
 from plugins.maa.process_host import ProcessHost, WindowsProcessHost
+from plugins.maa.session import SessionMarker, write_marker
 
 # 默认值真源是 config.schema.json（内核保存/加载时按 schema 补齐）；此常量
 # 供句柄 meta 缺失时兜底，契约测试锁定它与 schema 默认值一致。
@@ -103,7 +104,14 @@ class MaaScript:
         if existing:
             raise RuntimeError(f"MAA 已在运行（PID {existing[0]}），同一环境只允许一个驱动者")
         log_dir = maa_dir / LOG_DIR_NAME
+        gui_log_offset = file_size(log_dir / GUI_LOG_NAME)
+        asst_log_offset = file_size(log_dir / ASST_LOG_NAME)
         pid = host.start(maa_dir / MAA_EXE_NAME, maa_dir)
+        # 起点先于进程写入落盘：本次运行的验证只认这一段，上一轮的行不算进来。
+        write_marker(
+            ctx.work_dir,
+            SessionMarker(gui_offset=gui_log_offset, asst_offset=asst_log_offset),
+        )
         return ScriptHandle(
             id=f"maa-{ctx.run_id}",
             pid=pid,
@@ -111,8 +119,8 @@ class MaaScript:
                 "launched": True,
                 "pid": pid,
                 "log_dir": str(log_dir),
-                "gui_log_offset": file_size(log_dir / GUI_LOG_NAME),
-                "asst_log_offset": file_size(log_dir / ASST_LOG_NAME),
+                "gui_log_offset": gui_log_offset,
+                "asst_log_offset": asst_log_offset,
                 "launched_at": ctx.clock.utc_now().isoformat(),
             },
         )
