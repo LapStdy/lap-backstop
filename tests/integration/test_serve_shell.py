@@ -15,7 +15,7 @@ from typing import Any, cast
 
 import pytest
 
-from contracts import RunContext, RunState, ScriptHandle, ScriptObservation
+from contracts import PhaseName, RunContext, RunState, ScriptHandle, ScriptObservation
 from core.clock import VirtualClock
 from core.hostops import instance, serve, tasks, timesync, watchdog
 from core.hostops.heartbeat import HEARTBEAT_FILENAME, read_heartbeat
@@ -889,6 +889,10 @@ def test_shutdown_writes_single_interrupt_at_phase_boundary(tmp_path: Path) -> N
         future = reader.execute(
             "SELECT state FROM job_runs WHERE id = ?", (seeded["future_id"],)
         ).fetchone()
+        future_phases = reader.execute(
+            "SELECT phase FROM run_phases WHERE run_id = ? ORDER BY rowid",
+            (seeded["future_id"],),
+        ).fetchall()
     finally:
         reader.close()
     assert len(interrupted) == 1, f"run.interrupted 条数不对：{len(interrupted)}"
@@ -896,7 +900,17 @@ def test_shutdown_writes_single_interrupt_at_phase_boundary(tmp_path: Path) -> N
     assert _run_state(database, run_id) == RunState.EXECUTING.value
     assert lease is not None and str(lease[0]) == "leased"
     assert [str(row[0]) for row in phases] == ["prepare", "execute"]
-    assert future is not None and str(future[0]) == RunState.QUEUED.value
+    future_state = None if future is None else str(future[0])
+    future_phase_names = [str(row[0]) for row in future_phases]
+    # 停机置位前 tick 可能已把未来运行派发出去：它最多走完 prepare 停在 waiting
+    # 等到点，不会进入执行；停机本身不推进它。
+    assert future_state in {RunState.QUEUED.value, RunState.WAITING.value}, (
+        f"未来运行被推进到 {future_state}；"
+        f"阶段行 {len(future_phase_names)} 条：{future_phase_names}"
+    )
+    assert set(future_phase_names) <= {PhaseName.PREPARE.value}, (
+        f"未来运行出现准备之后的阶段行：{future_phase_names}（状态 {future_state}）"
+    )
 
 
 def _interrupt_count(database: Path, run_id: str) -> int:
