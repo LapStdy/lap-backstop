@@ -265,14 +265,33 @@ def test_environment_actions_are_repeatable_and_fail_closed() -> None:
             assert result.ended_at == NOW
 
 
+class _StubProcessHost:
+    """假进程表：拉起返回固定 pid，探活按已退出处理，不发真实命令。"""
+
+    def start(self, executable: Path, working_dir: Path) -> int:
+        return 4321
+
+    def is_running(self, pid: int) -> bool:
+        return False
+
+    def running_pids(self, image_name: str) -> tuple[int, ...]:
+        return ()
+
+    def request_stop(self, pid: int) -> bool:
+        return False
+
+    def terminate(self, pid: int) -> None:
+        return None
+
+
 def test_launch_returns_handle_and_observe_is_repeatable(tmp_path: Path) -> None:
     """docs/05 契约测试表 script 行：launch 返回句柄；observe 只读且可重复。"""
-    adapter = MaaScript()
+    adapter = MaaScript(host=_StubProcessHost())
     ctx = make_context(config={"maa_dir": str(tmp_path)})
     handle = adapter.launch(script_ref(), ctx)
     assert isinstance(handle, ScriptHandle)
-    assert handle.pid is None
-    assert handle.meta["launched"] is False
+    assert handle.pid == 4321
+    assert handle.meta["launched"] is True
     assert handle.meta["log_dir"] == str(tmp_path / "debug")
     first = adapter.observe(handle, ctx)
     second = adapter.observe(handle, ctx)
@@ -283,7 +302,7 @@ def test_launch_returns_handle_and_observe_is_repeatable(tmp_path: Path) -> None
 
 def test_stop_is_idempotent_and_recover_fails_closed(tmp_path: Path) -> None:
     """docs/05 契约测试表 script 行：stop 可重复；recover 对四种内核动作都不执行。"""
-    adapter = MaaScript()
+    adapter = MaaScript(host=_StubProcessHost())
     ctx = make_context(config={"maa_dir": str(tmp_path)})
     handle = adapter.launch(script_ref(), ctx)
     assert adapter.stop(handle, ctx, StopMode.GRACEFUL).ok
