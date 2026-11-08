@@ -82,13 +82,37 @@ def kinds(signals: tuple[Signal, ...]) -> list[str]:
     return [signal.kind for signal in signals]
 
 
-def test_launch_records_log_dir_and_start_offsets(tmp_path: Path) -> None:
-    """launch 不启动进程：meta 记录日志目录与两份日志的当前字节数。"""
+class _QuietProcessHost:
+    """假进程表：拉起返回固定 pid，探活按已退出处理，不发任何真实命令。"""
+
+    def start(self, executable: Path, working_dir: Path) -> int:
+        return 4321
+
+    def is_running(self, pid: int) -> bool:
+        return False
+
+    def running_pids(self, image_name: str) -> tuple[int, ...]:
+        return ()
+
+    def request_stop(self, pid: int) -> bool:
+        return False
+
+    def terminate(self, pid: int) -> None:
+        return None
+
+
+def make_script() -> MaaScript:
+    """装配观测用脚本能力：进程端口全假，不启动 MAA。"""
+    return MaaScript(host=_QuietProcessHost())
+
+
+def test_launch_starts_process_and_records_log_dir_and_start_offsets(tmp_path: Path) -> None:
+    """launch 启动 MAA 并把 pid、日志目录与两份日志的当前字节数写进句柄。"""
     append_log(tmp_path, "gui.log", "旧的一行\n")
     append_log(tmp_path, "asst.log", "旧的一条\n")
-    handle = MaaScript().launch(ScriptRef(id="script-1", plugin_id="maa"), make_context(tmp_path))
-    assert handle.pid is None
-    assert handle.meta["launched"] is False
+    handle = make_script().launch(ScriptRef(id="script-1", plugin_id="maa"), make_context(tmp_path))
+    assert handle.pid == 4321
+    assert handle.meta["launched"] is True
     assert handle.meta["log_dir"] == str(tmp_path / "debug")
     assert handle.meta["gui_log_offset"] == len("旧的一行\n".encode())
     assert handle.meta["asst_log_offset"] == len("旧的一条\n".encode())
@@ -97,7 +121,7 @@ def test_launch_records_log_dir_and_start_offsets(tmp_path: Path) -> None:
 
 def test_observe_reports_running_while_queue_in_progress(tmp_path: Path) -> None:
     """任务开始而未见终态行：状态 RUNNING，信号逐条给出。"""
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(tmp_path, "gui.log", "2026-10-20 03:07:20.000 INF 开始任务: 开始唤醒\n")
@@ -111,7 +135,7 @@ def test_observe_reports_running_while_queue_in_progress(tmp_path: Path) -> None
 
 def test_observe_exits_when_queue_completes(tmp_path: Path) -> None:
     """出现「任务已全部完成！」：状态转 EXITED，完成信号在列。"""
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(
@@ -129,7 +153,7 @@ def test_observe_exits_when_queue_completes(tmp_path: Path) -> None:
 
 def test_observe_keeps_running_on_single_error_until_summary(tmp_path: Path) -> None:
     """单任务出错不终轮：状态保持 RUNNING，错误汇总行才转 EXITED。"""
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(
@@ -152,7 +176,7 @@ def test_observe_keeps_running_on_single_error_until_summary(tmp_path: Path) -> 
 
 def test_observe_exits_on_game_disconnect(tmp_path: Path) -> None:
     """「游戏掉线，停止任务」终轮：状态 EXITED，掉线信号在列。"""
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(tmp_path, "gui.log", "2026-10-20 03:09:00.000 ERR 游戏掉线，停止任务\n")
@@ -163,7 +187,7 @@ def test_observe_exits_on_game_disconnect(tmp_path: Path) -> None:
 
 def test_observe_collects_sanity_sample_from_asst_log(tmp_path: Path) -> None:
     """asst.log 的 SanityBeforeStage 采样进入信号，不影响运行状态。"""
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     line = (
@@ -184,7 +208,7 @@ def test_observe_collects_sanity_sample_from_asst_log(tmp_path: Path) -> None:
 
 def test_observe_merges_signals_across_logs_by_time(tmp_path: Path) -> None:
     """两份日志的新增信号按时间归并输出。"""
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(tmp_path, "gui.log", "2026-10-20 03:08:00.000 INF 完成任务: 开始唤醒\n")
@@ -201,7 +225,7 @@ def test_observe_merges_signals_across_logs_by_time(tmp_path: Path) -> None:
 
 def test_observe_returns_only_new_signals_and_is_repeatable(tmp_path: Path) -> None:
     """重复 observe 幂等：无新增时信号为空，状态与最近信号保持。"""
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(tmp_path, "gui.log", "2026-10-20 03:07:20.000 INF 开始任务: 开始唤醒\n")
@@ -215,7 +239,7 @@ def test_observe_returns_only_new_signals_and_is_repeatable(tmp_path: Path) -> N
 
 def test_stop_is_idempotent_and_finalizes_observation(tmp_path: Path) -> None:
     """stop 可重复且成功；停止后 observe 报 EXITED。"""
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(tmp_path, "gui.log", "2026-10-20 03:07:20.000 INF 开始任务: 开始唤醒\n")
@@ -230,7 +254,7 @@ def test_stop_is_idempotent_and_finalizes_observation(tmp_path: Path) -> None:
 def test_observe_counts_unknown_lines_and_logs_total(tmp_path: Path) -> None:
     """未知行忽略但计数：非空未知行累计并写一条日志，空行不计。"""
     logger = _RecordingLogger()
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path, logger)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(
@@ -251,7 +275,7 @@ def test_observe_counts_unknown_lines_and_logs_total(tmp_path: Path) -> None:
 def test_observe_rereads_log_after_rollover(tmp_path: Path) -> None:
     """日志滚动（文件变短）后从头重读新文件，并记录一次 rolled 事件。"""
     logger = _RecordingLogger()
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path, logger)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(
@@ -272,7 +296,7 @@ def test_observe_rereads_log_after_rollover(tmp_path: Path) -> None:
 
 def test_observe_keeps_terminal_state_on_late_signals(tmp_path: Path) -> None:
     """终态后到达的信号照常给出，但不再翻转状态。"""
-    adapter = MaaScript()
+    adapter = make_script()
     ctx = make_context(tmp_path)
     handle = adapter.launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
     append_log(tmp_path, "gui.log", "2026-10-20 03:10:09.000 INF 任务已全部完成！\n")
