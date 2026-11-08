@@ -109,6 +109,15 @@ class _FakeActions:
     def launch_package(self, package: str) -> None:
         self.calls.append(f"launch:{package}")
 
+    def stop_package(self, package: str) -> None:
+        self.calls.append(f"stop:{package}")
+
+    def disconnect_adb(self) -> None:
+        self.calls.append("disconnect")
+
+    def shutdown_instance(self, instance_index: int) -> None:
+        self.calls.append(f"shutdown:{instance_index}")
+
 
 def make_context(config: Mapping[str, Any] | None = None) -> RunContext:
     return RunContext(
