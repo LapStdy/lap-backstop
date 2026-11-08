@@ -45,6 +45,24 @@
       "pattern": "^[0-9]+x[0-9]+$",
       "default": "1280x720"
     },
+    "mumu_instance_index": {
+      "type": "integer",
+      "title": "模拟器实例序号",
+      "minimum": 0,
+      "default": 0
+    },
+    "mumu_boot_timeout_s": {
+      "type": "integer",
+      "title": "模拟器启动到 adb 可连的上限（秒）",
+      "minimum": 1,
+      "default": 180
+    },
+    "game_launch_timeout_s": {
+      "type": "integer",
+      "title": "游戏启动到前台的时限（秒）",
+      "minimum": 1,
+      "default": 60
+    },
     "profile": {
       "type": "string",
       "title": "MAA 配置名",

@@ -90,7 +90,7 @@ def test_manifest_contract_range_covers_api_version() -> None:
 
 
 def test_config_schema_locks_documented_top_level_fields() -> None:
-    """docs/plugins/maa.md 参数 schema 表：16 个配置字段、Draft 2020-12、根封闭。"""
+    """docs/plugins/maa.md 参数 schema 表：19 个配置字段、Draft 2020-12、根封闭。"""
     schema = load_schema()
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["x-schema-version"] == 1
@@ -104,6 +104,9 @@ def test_config_schema_locks_documented_top_level_fields() -> None:
         "emulator_window_title",
         "game_package",
         "screen_size",
+        "mumu_instance_index",
+        "mumu_boot_timeout_s",
+        "game_launch_timeout_s",
         "profile",
         "tasks",
         "launch_timeout_s",
@@ -126,6 +129,9 @@ def test_config_schema_defaults_match_plugin_doc() -> None:
     assert props["emulator_window_title"]["default"] == "MuMu"
     assert props["game_package"]["default"] == "com.hypergryph.arknights"
     assert props["screen_size"]["default"] == "1280x720"
+    assert props["mumu_instance_index"]["default"] == 0
+    assert props["mumu_boot_timeout_s"]["default"] == 180
+    assert props["game_launch_timeout_s"]["default"] == 60
     assert props["launch_timeout_s"]["default"] == 180
     assert props["wake_timeout_s"]["default"] == 90
     assert props["startup_timeout_s"]["default"] == 300
@@ -247,14 +253,33 @@ def test_probe_returns_legal_state_with_clock_timestamp() -> None:
     assert first == second
 
 
+class _StubActions:
+    """假模拟器动作端口：记录调用，什么都不做。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def start_instance(self, instance_index: int) -> None:
+        self.calls.append(f"start:{instance_index}")
+
+    def connect_adb(self) -> None:
+        self.calls.append("connect")
+
+    def is_package_running(self, package: str) -> bool:
+        return True
+
+    def launch_package(self, package: str) -> None:
+        self.calls.append(f"launch:{package}")
+
+
 def test_environment_actions_are_repeatable_and_fail_closed() -> None:
-    """docs/05 契约测试表 environment 行：动作可重复；失败关闭且无副作用。"""
-    provider = MaaEnvironment()
+    """docs/05 契约测试表 environment 行：prepare 可重复；未实现动作失败关闭。"""
+    provider = MaaEnvironment(host=_StubHost(), actions=_StubActions())
     ctx = make_context()
     ref = env_ref()
     for _ in range(2):
+        assert provider.prepare(ref, ctx).ok is True
         for result in (
-            provider.prepare(ref, ctx),
             provider.reset(ref, ctx),
             provider.cleanup(ref, ctx, keep_warm=False),
             provider.warm(ref, ctx, minutes=30),

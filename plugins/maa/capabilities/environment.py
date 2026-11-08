@@ -1,13 +1,16 @@
 """MAA 环境能力（docs/plugins/maa.md 环境节，EnvironmentProvider 协议见 docs/05）。
 
 ``probe`` 经只读端口核对四件事：模拟器窗口、adb 设备状态、游戏是否在前台、截图分辨率，
-按环境状态机给出 off / booting / degraded / failed / ready。四个环境动作仍返回
-``E_PLUGIN`` 失败且不触碰真机：启动模拟器、拉起游戏与清理属于后续卡片。
+按环境状态机给出 off / booting / degraded / failed / ready。``prepare`` 执行准备的前三步：
+复用或拉起 MuMu、确认 adb 与截图、把游戏拉到前台，失败按错误码返回。``reset`` /
+``cleanup`` / ``warm`` 仍返回 ``E_PLUGIN`` 失败且不触碰真机。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +21,7 @@ from contracts import (
     PhaseResult,
     RunContext,
 )
+from plugins.maa.emulator_host import EmulatorHost, WindowsEmulatorHost
 from plugins.maa.windows_host import MachineHost, ScreenSize, WindowsMachineHost
 
 _ACTION_UNAVAILABLE = "环境动作不可用：未执行真机操作"
@@ -26,20 +30,31 @@ _DEFAULT_ADB_ADDRESS = "127.0.0.1:16384"
 _DEFAULT_WINDOW_TITLE = "MuMu"
 _DEFAULT_GAME_PACKAGE = "com.hypergryph.arknights"
 _DEFAULT_SCREEN_SIZE = "1280x720"
+_DEFAULT_MUMU_BOOT_SECONDS = 180.0
+_DEFAULT_GAME_LAUNCH_SECONDS = 60.0
+_DEFAULT_INSTANCE_INDEX = 0
+_POLL_SECONDS = 1.0
 _ADB_DEVICE = "device"
 _ADB_ABSENT = "absent"
 
 
 class MaaEnvironment:
-    """environment 能力：探测走只读端口，动作一律失败关闭。"""
+    """environment 能力：探测只读，准备做前三步，其余动作失败关闭。"""
 
-    def __init__(self, host: MachineHost | None = None) -> None:
+    def __init__(
+        self,
+        host: MachineHost | None = None,
+        actions: EmulatorHost | None = None,
+        wait: Callable[[float], None] = time.sleep,
+    ) -> None:
         self._host = host
+        self._actions = actions
+        self._wait = wait
 
     def probe(self, env: EnvironmentRef, ctx: RunContext) -> EnvironmentProbe:
         """按窗口、adb、前台与分辨率四项给出环境状态；只读且可重复。"""
         config = ctx.config
-        host = self._host if self._host is not None else _build_host(config)
+        host = self._host_for(config)
         title = _find_window(host.window_titles(), _text(config, "emulator_window_title"))
         if title is None:
             needle = _text(config, "emulator_window_title")
@@ -78,8 +93,32 @@ class MaaEnvironment:
         )
 
     def prepare(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
-        """返回准备失败；不启动模拟器与游戏。"""
-        return _unavailable(ctx)
+        """复用或拉起模拟器、确认 adb 与截图、把游戏拉到前台。"""
+        config = ctx.config
+        started_at = ctx.clock.utc_now()
+        host = self._host_for(config)
+        actions = self._actions if self._actions is not None else _build_actions(config)
+        address = _text(config, "adb_address")
+        game = _text(config, "game_package")
+        try:
+            if _find_window(host.window_titles(), _text(config, "emulator_window_title")) is None:
+                actions.start_instance(_instance_index(config))
+            if not self._wait_adb(host, actions, config, ctx):
+                return _failure(ctx, started_at, "E_ENV_UNREACHABLE", "adb 未在限期内连上模拟器")
+            if host.screencap_size() is None:
+                return _failure(ctx, started_at, "E_ENV_UNREACHABLE", "adb 在线但截图失败")
+            if not actions.is_package_running(game):
+                actions.launch_package(game)
+            if not self._wait_foreground(host, game, config, ctx):
+                return _failure(ctx, started_at, "E_ENV_NOT_READY", f"游戏未在限期内到前台：{game}")
+        except OSError as error:
+            return _failure(ctx, started_at, "E_ENV_UNREACHABLE", f"环境动作失败：{error}")
+        return PhaseResult(
+            ok=True,
+            detail=f"环境就绪：{address} 在线，{game} 在前台",
+            started_at=started_at,
+            ended_at=ctx.clock.utc_now(),
+        )
 
     def reset(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
         """返回复位失败；不断开也不重连 adb。"""
@@ -93,10 +132,61 @@ class MaaEnvironment:
         """返回保温失败；不维持任何环境状态。"""
         return _unavailable(ctx)
 
+    def _host_for(self, config: Mapping[str, Any]) -> MachineHost:
+        """真机只读端口按需构造：测试注入假件，生产用 Windows 实现。"""
+        return self._host if self._host is not None else _build_host(config)
+
+    def _wait_adb(
+        self,
+        host: MachineHost,
+        actions: EmulatorHost,
+        config: Mapping[str, Any],
+        ctx: RunContext,
+    ) -> bool:
+        """等 adb 设备上线；未上线时先重连一次，再按配置上限轮询。"""
+        if host.adb_device_state() != _ADB_DEVICE:
+            actions.connect_adb()
+        deadline = ctx.clock.monotonic() + _seconds(
+            config, "mumu_boot_timeout_s", _DEFAULT_MUMU_BOOT_SECONDS
+        )
+        while ctx.clock.monotonic() < deadline:
+            if host.adb_device_state() == _ADB_DEVICE:
+                return True
+            self._wait(_POLL_SECONDS)
+        return host.adb_device_state() == _ADB_DEVICE
+
+    def _wait_foreground(
+        self,
+        host: MachineHost,
+        game: str,
+        config: Mapping[str, Any],
+        ctx: RunContext,
+    ) -> bool:
+        """等游戏到前台；按配置上限轮询，不猜画面内容。"""
+        deadline = ctx.clock.monotonic() + _seconds(
+            config, "game_launch_timeout_s", _DEFAULT_GAME_LAUNCH_SECONDS
+        )
+        while ctx.clock.monotonic() < deadline:
+            if host.foreground_package() == game:
+                return True
+            self._wait(_POLL_SECONDS)
+        return host.foreground_package() == game
+
 
 def _probe(ctx: RunContext, state: EnvironmentState, detail: str) -> EnvironmentProbe:
     """构造带注入时钟时间戳的探测结果。"""
     return EnvironmentProbe(state=state, detail=detail, observed_at=ctx.clock.utc_now())
+
+
+def _failure(ctx: RunContext, started_at: datetime, code: str, detail: str) -> PhaseResult:
+    """构造带错误码与起止时刻的准备失败结果。"""
+    return PhaseResult(
+        ok=False,
+        error_code=code,
+        detail=detail,
+        started_at=started_at,
+        ended_at=ctx.clock.utc_now(),
+    )
 
 
 def _find_window(titles: Sequence[str], needle: str) -> str | None:
@@ -115,6 +205,22 @@ def _text(config: Mapping[str, Any], key: str) -> str:
         "game_package": _DEFAULT_GAME_PACKAGE,
     }
     return str(config.get(key, defaults[key]))
+
+
+def _seconds(config: Mapping[str, Any], key: str, default: float) -> float:
+    """取配置里的秒数上限；非正数或非整数按默认值处理，避免死等或立刻超时。"""
+    value = config.get(key)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    return float(value) if value > 0 else default
+
+
+def _instance_index(config: Mapping[str, Any]) -> int:
+    """取模拟器实例序号；非法值回落到 0。"""
+    value = config.get("mumu_instance_index", _DEFAULT_INSTANCE_INDEX)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return _DEFAULT_INSTANCE_INDEX
+    return value
 
 
 def _expected_size(config: Mapping[str, Any]) -> ScreenSize:
@@ -138,12 +244,18 @@ def _default_size() -> ScreenSize:
 
 
 def _build_host(config: Mapping[str, Any]) -> MachineHost:
-    """按配置拼出真机端口；adb 与 MuMu 装在同一目录树下。"""
+    """按配置拼出真机只读端口；adb 与 MuMu 装在同一目录树下。"""
     mumu_dir = Path(str(config.get("mumu_dir", _DEFAULT_MUMU_DIR)))
     return WindowsMachineHost(
         adb_path=mumu_dir / "nx_main" / "adb.exe",
         address=_text(config, "adb_address"),
     )
+
+
+def _build_actions(config: Mapping[str, Any]) -> EmulatorHost:
+    """按配置拼出模拟器动作端口。"""
+    mumu_dir = Path(str(config.get("mumu_dir", _DEFAULT_MUMU_DIR)))
+    return WindowsEmulatorHost(mumu_dir=mumu_dir, adb_address=_text(config, "adb_address"))
 
 
 def _unavailable(ctx: RunContext) -> PhaseResult:

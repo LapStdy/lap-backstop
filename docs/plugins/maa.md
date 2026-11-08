@@ -48,13 +48,16 @@ adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed
 
 | 顺序 | 步骤 | 判据 | 超时 |
 |---|---|---|---|
-| 1 | 复用或启动 MuMu | 窗口存在且 `adb connect` 成功 | 180 秒 |
-| 2 | 校验分辨率与缩放 | 1280×720 且缩放 100% | 10 秒 |
-| 3 | 拉起游戏 | 游戏进程存在 | 60 秒 |
+| 1 | 复用或启动 MuMu | 窗口存在；adb 设备在线（先 `kill-server` 再 `connect`） | 180 秒 |
+| 2 | 确认可截图 | 截到一帧 | 单次截图 |
+| 3 | 拉起游戏 | 游戏包在前台 | 60 秒 |
 | 4 | 等登录界面 | 登录界面或主界面模板命中 | 300 秒 |
 | 5 | 点登录按钮 | 固定安全坐标点击后画面变化 | 30 秒 |
 | 6 | 等主界面 | 任一主题模板命中 | 300 秒 |
 | 7 | 启动 MAA 并加载资源（`binding`） | `load` 与 `connect` 成功 | 180 秒 |
+
+- 步骤 1–3 由环境 provider 的 `prepare` 执行；步骤 4–6 属就绪状态机，步骤 7 属脚本能力。
+- 分辨率在 `probe` 里核对：仅当游戏在前台时比较截图的宽高与 `screen_size`。
 
 - 步骤 4 命中主界面时跳过步骤 5。
 - 步骤 7 在预热窗口内执行；没有预热窗口时，等待计入准备阶段上限。
@@ -145,6 +148,9 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | `emulator_window_title` | string | `MuMu` | 模拟器窗口标题子串，判定窗口是否存在 |
 | `game_package` | string | `com.hypergryph.arknights` | 游戏包名，判定游戏是否在前台 |
 | `screen_size` | string | `1280x720` | 游戏横屏时的截图分辨率，写法「宽x高」 |
+| `mumu_instance_index` | integer | 0 | 模拟器实例序号 |
+| `mumu_boot_timeout_s` | integer | 180 | 模拟器启动到 adb 可连的上限 |
+| `game_launch_timeout_s` | integer | 60 | 游戏启动到前台的时限 |
 | `profile` | string | `Current` 指向的配置名 | 使用的 MAA 配置 |
 | `tasks` | array | 日常队列 | 每项含 `type`、`name`、`enabled`、`params` |
 | `launch_timeout_s` | integer | 180 | 启动到资源加载完成的上限 |
