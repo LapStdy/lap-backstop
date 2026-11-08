@@ -33,6 +33,13 @@ from plugins.maa.capabilities.script import DEFAULT_MAA_DIR, MaaScript
 from plugins.maa.capabilities.verifier import DEFAULT_POLICY_ID, MaaVerifier
 from plugins.maa.plugin import PLUGIN, load_manifest
 from plugins.maa.windows_host import ScreenSize
+from tests.config_store_support import (
+    FakeConfigStore,
+    config_path,
+    encode,
+    platform_config,
+    sample_config,
+)
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "maa"
 
@@ -382,10 +389,18 @@ def test_config_projection_diff_is_symmetric() -> None:
     assert [(d.path, d.kind) for d in projection.diff(ctx, desired, desired)] == []
 
 
-def test_config_projection_apply_and_rollback_refuse_writes() -> None:
-    """docs/05 契约测试表 config_projection 行：写入动作失败关闭且可重复。"""
-    projection = MaaConfigProjection()
-    ctx = make_context()
-    for _ in range(2):
-        assert projection.apply(ctx, {}).error_code == "E_CONFIG"
-        assert projection.rollback(ctx, "20261025-120000").error_code == "E_CONFIG"
+def test_config_projection_apply_then_diff_is_empty(tmp_path: Path) -> None:
+    """docs/05 契约测试表 config_projection 行：apply 后 diff 为空，rollback 恢复原值。"""
+    path = config_path(tmp_path)
+    store = FakeConfigStore({path: encode(sample_config())})
+    projection = MaaConfigProjection(store=store)
+    ctx = make_context(config={"maa_dir": str(tmp_path)})
+    desired = platform_config()
+    desired["Configurations"]["Default"]["TaskQueue"] = []
+    applied = projection.apply(ctx, desired)
+    assert applied.ok is True
+    actual = json.loads(store.files[path].decode("utf-8"))
+    assert projection.diff(ctx, desired, actual) == []
+    rolled = projection.rollback(ctx, str(applied.meta["revision"]))
+    assert rolled.ok is True
+    assert json.loads(store.files[path].decode("utf-8")) == sample_config()

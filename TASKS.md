@@ -11,6 +11,7 @@
 - [ ] 就绪状态机：进程/窗口/adb/模板/稳定帧；未知画面记录。
 - [ ] 预热与保温：preheat_minutes、keep_warm_minutes、空闲关闭。
 - [ ] 门控：环境 ready 才放行 MAA；开始唤醒失败急停。
+- [ ] 配置投影接线：开跑前按插件配置构造整份期望并调用 `apply`，成功写 `config.applied`，回滚写 `config.rolled_back`。
 - [ ] 脚本 adapter：Python 绑定（日志信号采集与 GUI 模式启停已完成）。
 - [ ] verifier：期望任务集、完成集、理智数值、结束画面异常。
 - [ ] recovery：重连、重启游戏、重启模拟器、停手通知。

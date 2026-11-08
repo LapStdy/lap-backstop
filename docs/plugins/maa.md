@@ -129,13 +129,14 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 
 写入规则：
 
-- MAA 运行时会用内存配置覆盖文件，写入前必须先退出 MAA；检测到 MAA 在跑时拒绝写入并返回 `E_CONFIG_LOCKED`（`detail=maa.config_locked`）。
-- 每次写入前备份为 `gui.new.json.<时间>.bak`，保留最近 `backup_keep` 份。
-- 写入后读回校验；不一致则回滚到备份。
-- `Gui.PostActions` 由平台接管，固定写 `ExitSelf`；发现外部写成 `ExitArknights` 或 `ExitEmulator` 时按程序值重写并记冲突。
+- MAA 运行时会用内存配置覆盖文件，写入前必须先退出 MAA；检测到 MAA 在跑时拒绝写入并返回 `E_CONFIG_LOCKED`（原因码 `maa.config_locked`）。
+- `apply` 的期望配置是整份目标；两处平台接管值在写入前写死：`Gui.PostActions` 固定 `ExitSelf`，`Gui.ExternalNotification.Delivery.Enable` 置 false。
+- 每次写入前把现行文件备份为 `gui.new.json.<YYYYmmdd-HHMMSS>.bak`（同一秒内追加序号），保留最近 `backup_keep` 份。
+- 写入走同目录临时文件原子替换，保持 UTF-8 无 BOM、缩进 2、LF 换行；写完读回校验，不一致则把备份写回并按 `E_CONFIG_INVALID` 失败。
+- 现行文件的 `Gui.PostActions` 含 `ExitArknights` 或 `ExitEmulator` 时按平台值重写，`meta.conflicts` 记 `E_CONFIG_CONFLICT`（原因码 `maa.post_actions_conflict`），不阻断本次写入。
 - 普通字段的差异默认以脚本侧为主，导入平台；配置项 `config_projection.strategy` 可取 `script_first` 或 `platform_first`。
 
-`diff` 返回逐字段差异，`apply` 返回备份路径与写入后的配置哈希，`rollback` 按修订号取回备份。日常副本与测试副本不能同时运行，它们连同一个模拟器与同一个账号。
+`diff` 返回逐字段差异；`apply` 返回修订号、备份路径与写入后的配置哈希（`meta.revision`、`meta.backup`、`meta.sha256`、`meta.conflicts`），现行文件已与期望一致时不写盘（`meta.changed=false`）；`rollback` 按修订号取回备份并读回校验。日常副本与测试副本不能同时运行，它们连同一个模拟器与同一个账号。
 
 ## 参数 schema
 
@@ -173,8 +174,8 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | MAA 启动到资源加载超时 | `E_SCRIPT_RESOURCE_TIMEOUT` / `maa.resource_timeout` | 停手并通知，不重复冷启动 |
 | MAA 进程退出且无完成行 | `E_SCRIPT_EXITED` / `maa.exited` | 重新启动并重跑一次 |
 | `adb connect` 失败 | `E_ENV_DISCONNECTED` / `maa.adb_unreachable` | 复位 adb 后重试 |
-| 写入配置时 MAA 在运行 | `E_CONFIG_LOCKED` / `maa.config_locked` | 等待 30 秒，仍在运行则停止 MAA 后重试 |
-| PostActions 被外部改成退出游戏或退出模拟器 | `E_CONFIG_CONFLICT` / `maa.post_actions_conflict` | 重写为 `ExitSelf`，记冲突，继续运行 |
+| 写入配置时 MAA 在运行 | `E_CONFIG_LOCKED`，原因码 `maa.config_locked` | 等待 30 秒，仍在运行则停止 MAA 后重试 |
+| PostActions 被外部改成退出游戏或退出模拟器 | 重写为 `ExitSelf`；`meta.conflicts` 记 `E_CONFIG_CONFLICT`（原因码 `maa.post_actions_conflict`） | 记冲突，继续运行 |
 | 结束画面无法归类 | `E_VERIFY_UNKNOWN_SCREEN` / `maa.unknown_screen` | 先请 Advisor 分诊；不可用时复位后重试一次 |
 | 截图或日志证据缺失 | `E_VERIFY_NO_EVIDENCE` / `maa.no_evidence` | 记 `unknown`，不重试 |
 | 分辨率或显示缩放不符 | `E_ENV_RESOLUTION` / `maa.resolution_mismatch` | 停手并通知，不自动改系统设置 |
