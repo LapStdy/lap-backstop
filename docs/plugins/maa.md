@@ -73,7 +73,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | `gui` | 运行 `MAA.exe`，`RunDirectly=true` 时自动开跑 | `gui.log` 的 `任务已全部完成！` | 与现有配置、日志、PostActions 行为一致 |
 | `binding` | 官方 Python 绑定：`load` / `connect` / `append_task` / `start` / `stop` / `running` / `get_image` | 绑定回调的 JSON 与 `running` 状态 | 需要更细的节点信号与主动截图 |
 
-`launch` 只触发任务队列：`binding` 模式复用常驻 asst 实例并执行 `append_task` 与 `start`；`gui` 模式每次启动新的 MAA 进程，`RunDirectly=true` 时资源加载完成后自动开跑。需要把冷启动移出关键路径时用 `binding` 模式。
+`launch` 在 `gui` 模式下启动新的 `MAA.exe` 进程（工作目录为 MAA 目录、剔除代理变量），记录 pid 与两份日志的起始偏移；`RunDirectly=true` 时 MAA 在资源加载完成后自动开跑。`binding` 模式复用常驻 asst 实例并执行 `append_task` 与 `start`，把冷启动移出关键路径。
 
 `observe` 只读，不改变脚本状态。每次观察返回进程状态、日志游标与最近信号：
 
@@ -90,7 +90,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 
 运行期间每 `sample_interval_s` 秒抽一帧，作为卡住判定与画面证据；默认 30 秒。
 
-`stop` 先请求停止，10 秒内确认进程退出；超时由内核终止进程。`recover` 接收内核动作 `restart_script`、`reset_environment`、`abort`；`restart_script` 之下再分重新附着常驻实例、重启脚本、重启游戏三档，`abort` 之下停止脚本并通知。
+`stop` 先向 MAA 的窗口发 `WM_CLOSE` 请它自己收尾，10 秒宽限期内没退出才结束整棵进程树；没有窗口时直接结束进程树。`recover` 接收内核动作 `restart_script`、`reset_environment`、`abort`；`restart_script` 之下再分重新附着常驻实例、重启脚本、重启游戏三档，`abort` 之下停止脚本并通知。
 
 ## 验证
 

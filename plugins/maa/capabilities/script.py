@@ -1,15 +1,17 @@
 """MAA 脚本能力（docs/plugins/maa.md 脚本节，ScriptAdapter 协议见 docs/05）。
 
-GUI 模式的观测层：``launch`` 不启动进程，只记录日志目录与两份日志的起始
-字节偏移；``observe`` 按偏移增量读取 ``gui.log`` 与 ``asst.log`` 的新增
-行，解析信号并推导运行状态。契约的 ScriptState 没有「失败」一值：整轮
-结束（完成、错误汇总、掉线、停止）都映射为 ``EXITED``，失败事实由
-``task.error`` 与 ``run.failed`` 信号携带，交验证器判定。单任务出错不改
-状态——MAA 会继续执行后续任务，整轮以错误汇总行收尾。
+GUI 模式：``launch`` 启动 ``MAA.exe``（工作目录＝MAA 目录、剔除代理环境变量），记录
+pid 与两份日志的起始字节偏移；``stop`` 先发 ``WM_CLOSE``，宽限期内不退出才结束整棵
+进程树。``observe`` 按偏移增量读取 ``gui.log`` 与 ``asst.log`` 的新增行，解析信号并
+推导运行状态。契约的 ScriptState 没有「失败」一值：整轮结束（完成、错误汇总、掉线、
+停止）都映射为 ``EXITED``，失败事实由 ``task.error`` 与 ``run.failed`` 信号携带，交
+验证器判定。单任务出错不改状态——MAA 会继续执行后续任务，整轮以错误汇总行收尾。
+``binding`` 模式的驱动与 ``recover`` 的动作分解不在本能力内。
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,11 +44,16 @@ from plugins.maa.logparse import (
     parse_gui_line,
     read_new_lines,
 )
+from plugins.maa.process_host import ProcessHost, WindowsProcessHost
 
 # 默认值真源是 config.schema.json（内核保存/加载时按 schema 补齐）；此常量
 # 供句柄 meta 缺失时兜底，契约测试锁定它与 schema 默认值一致。
 DEFAULT_MAA_DIR = "H:/MAA"
 DEFAULT_LOG_DIR = Path(DEFAULT_MAA_DIR) / LOG_DIR_NAME
+MAA_EXE_NAME = "MAA.exe"
+_GRACEFUL_STOP_SECONDS = 10.0
+_FORCED_STOP_SECONDS = 5.0
+_STOP_POLL_SECONDS = 0.2
 _RECOVERY_UNAVAILABLE = "恢复动作不可用：未执行真机操作"
 _EPOCH = datetime.min.replace(tzinfo=UTC)
 
@@ -77,18 +84,32 @@ _STATUS_BY_SIGNAL = {
 
 
 class MaaScript:
-    """script 能力：以日志偏移驱动观测，不启动 MAA 进程。"""
+    """script 能力：启动与停止 MAA 进程，以日志偏移驱动观测。"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        host: ProcessHost | None = None,
+        wait: Callable[[float], None] = time.sleep,
+    ) -> None:
+        self._host = host
+        self._wait = wait
         self._runs: dict[str, _RunState] = {}
 
     def launch(self, script: ScriptRef, ctx: RunContext) -> ScriptHandle:
-        """记录日志目录与起始偏移；启动前的既有内容不计入本次运行。"""
-        log_dir = _log_dir(ctx.config)
+        """启动 MAA 进程并记录起始偏移；已有同类进程时不接管，直接失败。"""
+        maa_dir = _maa_dir(ctx.config)
+        host = self._host_for()
+        existing = host.running_pids(MAA_EXE_NAME)
+        if existing:
+            raise RuntimeError(f"MAA 已在运行（PID {existing[0]}），同一环境只允许一个驱动者")
+        log_dir = maa_dir / LOG_DIR_NAME
+        pid = host.start(maa_dir / MAA_EXE_NAME, maa_dir)
         return ScriptHandle(
             id=f"maa-{ctx.run_id}",
+            pid=pid,
             meta={
-                "launched": False,
+                "launched": True,
+                "pid": pid,
                 "log_dir": str(log_dir),
                 "gui_log_offset": file_size(log_dir / GUI_LOG_NAME),
                 "asst_log_offset": file_size(log_dir / ASST_LOG_NAME),
@@ -119,12 +140,44 @@ class MaaScript:
         )
 
     def stop(self, handle: ScriptHandle, ctx: RunContext, mode: StopMode) -> StopResult:
-        """无进程可停，返回成功；已终态的运行不重复改状态。"""
-        run = self._runs.get(handle.id)
-        if run is not None and run.status not in _TERMINAL_STATUSES:
+        """按模式停止脚本：graceful 先请 MAA 自己退出，force 直接结束进程树。"""
+        run = self._runs.setdefault(handle.id, _RunState.from_handle(handle))
+        if run.status not in _TERMINAL_STATUSES:
             run.status = _RunStatus.STOPPED
             run.since = ctx.clock.utc_now()
-        return StopResult(ok=True, detail="无进程可停止")
+        pid = handle.pid if handle.pid is not None else _meta_pid(handle)
+        if pid is None:
+            return StopResult(ok=True, detail="句柄没有进程，视作已停止")
+        host = self._host_for()
+        if not host.is_running(pid):
+            return StopResult(ok=True, detail=f"MAA 进程已退出（PID {pid}）")
+        if (
+            mode is StopMode.GRACEFUL
+            and host.request_stop(pid)
+            and self._wait_exit(host, pid, _GRACEFUL_STOP_SECONDS, ctx)
+        ):
+            return StopResult(ok=True, detail=f"MAA 已自行退出（PID {pid}）")
+        host.terminate(pid)
+        if not self._wait_exit(host, pid, _FORCED_STOP_SECONDS, ctx):
+            return StopResult(
+                ok=False,
+                error_code="E_SCRIPT",
+                detail=f"结束 MAA 进程树后仍存活（PID {pid}）",
+            )
+        return StopResult(ok=True, detail=f"MAA 进程树已结束（PID {pid}）")
+
+    def _host_for(self) -> ProcessHost:
+        """真机端口按需构造：测试注入假件，生产用 Windows 实现。"""
+        return self._host if self._host is not None else WindowsProcessHost()
+
+    def _wait_exit(self, host: ProcessHost, pid: int, seconds: float, ctx: RunContext) -> bool:
+        """按注入时钟轮询存活；等待走注入的 wait，测试不真等。"""
+        deadline = ctx.clock.monotonic() + seconds
+        while ctx.clock.monotonic() < deadline:
+            if not host.is_running(pid):
+                return True
+            self._wait(_STOP_POLL_SECONDS)
+        return not host.is_running(pid)
 
     def recover(
         self,
@@ -227,10 +280,15 @@ def _aware_or_none(value: object) -> datetime | None:
     return parsed if parsed.tzinfo else parsed.astimezone()
 
 
-def _log_dir(config: Mapping[str, Any]) -> Path:
-    """插件配置的 maa_dir 指向 MAA 根目录，日志在 debug/ 子目录。"""
-    maa_dir = config.get("maa_dir", DEFAULT_MAA_DIR)
-    return Path(str(maa_dir)) / LOG_DIR_NAME
+def _maa_dir(config: Mapping[str, Any]) -> Path:
+    """插件配置的 maa_dir 指向 MAA 根目录。"""
+    return Path(str(config.get("maa_dir", DEFAULT_MAA_DIR)))
+
+
+def _meta_pid(handle: ScriptHandle) -> int | None:
+    """句柄顶层没有 pid 时回落到 meta.pid；非法值按没有进程处理。"""
+    value = handle.meta.get("pid")
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _offset(value: object) -> int:
