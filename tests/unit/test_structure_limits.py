@@ -114,14 +114,6 @@ _D013_ENTRIES: tuple[AllowEntry, ...] = (
         "D-013",
     ),
     AllowEntry(
-        "core/worker/executor.py",
-        "WorkerExecutor._run_script",
-        "function_lines",
-        "62 行",
-        "脚本执行拆分随执行器重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
         "core/hostops/serve.py",
         MODULE_NAME,
         "module_lines",
