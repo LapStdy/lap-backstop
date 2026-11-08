@@ -7,16 +7,18 @@ from __future__ import annotations
 
 from storage.db.backup import (
     BackupError,
-    ExportResult,
-    PruneResult,
     SnapshotKind,
     SnapshotResult,
     create_pre_migrate_snapshot,
     create_pre_upgrade_snapshot,
     create_snapshot,
+    verify_snapshot,
+)
+from storage.db.backup_retention import (
+    ExportResult,
+    PruneResult,
     export_configs,
     prune_backups,
-    verify_snapshot,
 )
 from storage.db.connection import BUSY_TIMEOUT_MS, open_database
 from storage.db.integrity import verify_integrity

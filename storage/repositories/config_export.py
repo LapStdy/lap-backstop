@@ -1,6 +1,6 @@
 """配置导出的数据收集：settings 全量键值（不含密钥键）与 plugins 概要。
 
-JSON 文件导出（storage.db.backup）与 HTTP zip 导出（core.api.export_api）
+JSON 文件导出（storage.db.backup_retention）与 HTTP zip 导出（core.api.export_api）
 共用这一份收集器，两条路径的内容口径不会漂移；密钥键不出库门
 （docs/03：备份不包含 token 与密钥）。
 """

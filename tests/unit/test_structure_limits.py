@@ -262,14 +262,6 @@ _D018_ENTRIES: tuple[AllowEntry, ...] = (
         "D-018",
     ),
     AllowEntry(
-        "storage/db/backup.py",
-        MODULE_NAME,
-        "module_lines",
-        "513 行",
-        "备份编排拆分属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
         "storage/repositories/resources.py",
         "ResourceRepository.ensure",
         "function_params",
