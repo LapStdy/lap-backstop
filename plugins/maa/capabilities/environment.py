@@ -2,8 +2,8 @@
 
 ``probe`` 经只读端口核对四件事：模拟器窗口、adb 设备状态、游戏是否在前台、截图分辨率，
 按环境状态机给出 off / booting / degraded / failed / ready。``prepare`` 执行准备的前三步：
-复用或拉起 MuMu、确认 adb 与截图、把游戏拉到前台，失败按错误码返回。``reset`` /
-``cleanup`` / ``warm`` 仍返回 ``E_PLUGIN`` 失败且不触碰真机。
+复用或拉起 MuMu、确认 adb 与截图、把游戏拉到前台。``reset`` 断开并重连 adb 后重启游戏；
+``cleanup`` 按保温开关关闭游戏与实例；``warm`` 保证游戏在前台。
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ from contracts import (
 from plugins.maa.emulator_host import EmulatorHost, WindowsEmulatorHost
 from plugins.maa.windows_host import MachineHost, ScreenSize, WindowsMachineHost
 
-_ACTION_UNAVAILABLE = "环境动作不可用：未执行真机操作"
 _DEFAULT_MUMU_DIR = "H:/MuMuPlayer"
 _DEFAULT_ADB_ADDRESS = "127.0.0.1:16384"
 _DEFAULT_WINDOW_TITLE = "MuMu"
@@ -121,16 +120,79 @@ class MaaEnvironment:
         )
 
     def reset(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
-        """返回复位失败；不断开也不重连 adb。"""
-        return _unavailable(ctx)
+        """断开并重连 adb、结束并重新拉起游戏，最后确认游戏在前台。"""
+        config = ctx.config
+        started_at = ctx.clock.utc_now()
+        host = self._host_for(config)
+        actions = self._actions if self._actions is not None else _build_actions(config)
+        game = _text(config, "game_package")
+        try:
+            actions.disconnect_adb()
+            actions.connect_adb()
+            if not self._wait_adb(host, actions, config, ctx):
+                return _failure(ctx, started_at, "E_ENV_DISCONNECTED", "复位后 adb 未连上模拟器")
+            actions.stop_package(game)
+            actions.launch_package(game)
+            if not self._wait_foreground(host, game, config, ctx):
+                return _failure(ctx, started_at, "E_ENV_NOT_READY", f"复位后游戏未到前台：{game}")
+        except OSError as error:
+            return _failure(ctx, started_at, "E_ENV_DISCONNECTED", f"复位动作失败：{error}")
+        return PhaseResult(
+            ok=True,
+            detail=f"环境已复位：{game} 在前台",
+            started_at=started_at,
+            ended_at=ctx.clock.utc_now(),
+        )
 
     def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
-        """返回清理失败；不关闭游戏与模拟器。"""
-        return _unavailable(ctx)
+        """``keep_warm`` 时保留游戏与实例；否则先结束游戏进程再关实例。"""
+        config = ctx.config
+        started_at = ctx.clock.utc_now()
+        ended_at = ctx.clock.utc_now()
+        actions = self._actions if self._actions is not None else _build_actions(config)
+        game = _text(config, "game_package")
+        if keep_warm:
+            return PhaseResult(
+                ok=True,
+                detail="保温：保留游戏与模拟器",
+                started_at=started_at,
+                ended_at=ended_at,
+            )
+        try:
+            actions.stop_package(game)
+            actions.shutdown_instance(_instance_index(config))
+        except OSError as error:
+            return _failure(ctx, started_at, "E_ENV_UNREACHABLE", f"清理动作失败：{error}")
+        return PhaseResult(
+            ok=True,
+            detail="环境已清理：游戏与模拟器已关闭",
+            started_at=started_at,
+            ended_at=ctx.clock.utc_now(),
+        )
 
     def warm(self, env: EnvironmentRef, ctx: RunContext, minutes: int) -> PhaseResult:
-        """返回保温失败；不维持任何环境状态。"""
-        return _unavailable(ctx)
+        """确认游戏在前台；不在就拉起并等，保持环境可执行。"""
+        config = ctx.config
+        started_at = ctx.clock.utc_now()
+        host = self._host_for(config)
+        actions = self._actions if self._actions is not None else _build_actions(config)
+        game = _text(config, "game_package")
+        try:
+            if host.foreground_package() != game:
+                if not actions.is_package_running(game):
+                    actions.launch_package(game)
+                if not self._wait_foreground(host, game, config, ctx):
+                    return _failure(
+                        ctx, started_at, "E_ENV_NOT_READY", f"保温失败：游戏未到前台：{game}"
+                    )
+        except OSError as error:
+            return _failure(ctx, started_at, "E_ENV_UNREACHABLE", f"保温动作失败：{error}")
+        return PhaseResult(
+            ok=True,
+            detail=f"保温 {minutes} 分钟：{game} 在前台",
+            started_at=started_at,
+            ended_at=ctx.clock.utc_now(),
+        )
 
     def _host_for(self, config: Mapping[str, Any]) -> MachineHost:
         """真机只读端口按需构造：测试注入假件，生产用 Windows 实现。"""
@@ -256,15 +318,3 @@ def _build_actions(config: Mapping[str, Any]) -> EmulatorHost:
     """按配置拼出模拟器动作端口。"""
     mumu_dir = Path(str(config.get("mumu_dir", _DEFAULT_MUMU_DIR)))
     return WindowsEmulatorHost(mumu_dir=mumu_dir, adb_address=_text(config, "adb_address"))
-
-
-def _unavailable(ctx: RunContext) -> PhaseResult:
-    """构造带时间戳的失败结果；起点与终点同刻，表示未发生任何等待。"""
-    now = ctx.clock.utc_now()
-    return PhaseResult(
-        ok=False,
-        error_code="E_PLUGIN",
-        detail=_ACTION_UNAVAILABLE,
-        started_at=now,
-        ended_at=now,
-    )

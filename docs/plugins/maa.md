@@ -62,9 +62,9 @@ adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed
 - 步骤 4 命中主界面时跳过步骤 5。
 - 步骤 7 在预热窗口内执行；没有预热窗口时，等待计入准备阶段上限。
 - `gui` 模式不做预启动；MAA 启动与资源加载在 `launch` 时发生，计入执行阶段。
-- `reset` 先 `adb disconnect` 再 `adb connect`，关闭游戏，重走步骤 3 到 6；复位后环境状态回到 `booting`。
-- `warm` 在 `keep_warm_minutes` 内保持 MuMu 与游戏就绪；`binding` 模式同时保持 asst 实例常驻，省掉一次资源加载。
-- `cleanup(keep_warm)`：保温未过期时不关闭游戏与模拟器；`keep_warm=false` 时关闭。
+- `reset` 先 `adb disconnect` 再 `adb connect`，结束游戏进程后重新拉起并等它到前台；环境状态回到 `booting` 由内核按探测迁移。
+- `warm` 确认游戏在前台，不在就拉起并等；`minutes` 是本次保温时长，记进结果说明。
+- `cleanup(keep_warm)`：`keep_warm=true` 保留游戏与模拟器；`false` 时先结束游戏进程再关闭模拟器实例。
 - 登录按钮只用固定安全坐标，点击前做区域钳制。
 
 MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请求会走死代理。MAA 以工作目录 `H:/MAA` 启动，不带命令行参数。

@@ -40,6 +40,18 @@ class EmulatorHost(Protocol):
         """通过 LAUNCHER intent 拉起应用。"""
         ...
 
+    def stop_package(self, package: str) -> None:
+        """结束应用进程。"""
+        ...
+
+    def disconnect_adb(self) -> None:
+        """断开模拟器 adb 连接，供复位重连用。"""
+        ...
+
+    def shutdown_instance(self, instance_index: int) -> None:
+        """关闭指定序号的模拟器实例。"""
+        ...
+
 
 class WindowsEmulatorHost:
     """Windows 实现：MuMuManager 拉起实例，adb 连设备与拉起游戏。"""
@@ -90,6 +102,26 @@ class WindowsEmulatorHost:
             ],
             _GAME_SECONDS,
             check=False,
+        )
+
+    def stop_package(self, package: str) -> None:
+        """am force-stop 结束应用；退出码不看，后面按前台与进程复判。"""
+        self._run(
+            [str(self._adb), "-s", self._address, "shell", "am", "force-stop", package],
+            _GAME_SECONDS,
+            check=False,
+        )
+
+    def disconnect_adb(self) -> None:
+        """adb disconnect 指定地址；没有连接时命令本身也会成功返回。"""
+        self._run([str(self._adb), "disconnect", self._address], _ADB_SECONDS, check=False)
+
+    def shutdown_instance(self, instance_index: int) -> None:
+        """调用 MuMuManager 的 control shutdown；失败抛 OSError。"""
+        self._run(
+            [str(self._manager), "control", "-v", str(instance_index), "shutdown"],
+            _MANAGER_SECONDS,
+            check=True,
         )
 
     def _run(
