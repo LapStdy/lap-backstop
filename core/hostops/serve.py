@@ -97,6 +97,9 @@ class ServeOptions:
     timesync_runner: timesync.Runner = field(default_factory=lambda: subprocess.run)
     registry_get: RegistryGet = field(default_factory=lambda: registry_get)
     tailscale_runner: tailscale.Runner = field(default_factory=lambda: tailscale.default_runner)
+    # 磁盘可用字节数的注入点：用例固定一个稳定值，门禁便不看宿主机余量；
+    # None 时由 Supervisor 自算数据根所在卷的真实值，生产行为不变。
+    disk_free: Callable[[], int | None] | None = None
     on_api_listening: Callable[[str, int], None] | None = None
 
 
@@ -454,6 +457,7 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             registry,
             data_root=data_root,
             log=options.log,
+            disk_free=options.disk_free,
             shutdown=options.stop.is_set,
         )
         supervisor.startup()

@@ -31,6 +31,9 @@ from storage.repositories.events import GLOBAL_EVENTS_KEEP, EventLog
 from tests.notify_support import ENABLED, StubChannel, record_outcomes_within
 
 NOW = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
+# 固定的可用磁盘字节数：serve 启动写不写 host.disk_low 由它决定，
+# 用例因此不看宿主机余量（真磁盘低于 5 GB 会多出全局事件，保留数随之漂移）。
+_STABLE_DISK_FREE = 100 * 1024**3
 
 
 @pytest.fixture
@@ -268,6 +271,7 @@ def test_run_serve_executes_prune_once_and_survives_restart(tmp_path: Path) -> N
         register_tasks=False,
         run_timesync=False,
         registry_get=lambda _key, _name: "0",
+        disk_free=lambda: _STABLE_DISK_FREE,
     )
     assert run_serve(tmp_path, options) == 0
     reader = open_database(tmp_path / "backstop.sqlite")
