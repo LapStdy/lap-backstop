@@ -1,16 +1,18 @@
 """停机收尾的强制终止：宽限到点结束承载卡死调用的 worker 进程树，调用以失败返回。
 
-判据全部是外部可观测结果：进程是否存活（pid 文件加 os.kill 探测）、serve 退出码、
+判据全部是外部可观测结果：进程是否存活（pid 文件加内核句柄查询）、serve 退出码、
 全局与运行事件条数、运行状态与租约行；时序常量用 monkeypatch 缩到亚秒级，宽限先于
 强制终止、总时长短于等待上限都按实测经过时间断言，不同步内部窗口。
 """
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import shutil
 import sqlite3
+import sys
 import threading
 import time
 from collections.abc import Mapping
@@ -56,19 +58,36 @@ _STABLE_DISK_FREE = 100 * 1024**3
 JOIN_SECONDS = 1.0
 GRACE_SECONDS = 0.3
 _JOIN_TIMEOUT_EVENT = "supervisor.executor_join_timeout"
+_SYNCHRONIZE = 0x00100000
+_WAIT_TIMEOUT = 0x00000102
 
 
 def _pid_alive(pid: int) -> bool:
-    """进程是否仍可被系统看到；Windows 上句柄放净的死进程抛 OSError(WinError 87)。"""
+    """进程是否仍在运行；Windows 用内核句柄查询，其它平台用信号 0。
+
+    Windows 的 os.kill(pid, 0) 不是存活探测：0 会被当作 CTRL_C_EVENT 发往控制台
+    进程组，连带打断 pytest 自身，只能走 OpenProcess + WaitForSingleObject。
+    """
+    if sys.platform == "win32":
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
+        if not handle:
+            return False
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == _WAIT_TIMEOUT
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
-    except OSError:
+    except ProcessLookupError:
         return False
+    except PermissionError:
+        return True
     return True
 
 
 def _wait_pid_gone(pid: int, *, timeout: float = WAIT_SECONDS) -> bool:
-    """轮询等进程消失；强杀后的 pid 回收有内核延迟，单次探测会误判。"""
+    """轮询等进程消失；进程退出后句柄短时仍可打开，单次探测会误判。"""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _pid_alive(pid):
