@@ -119,6 +119,16 @@ def entries_of(response: ApiResponse) -> dict[str, Any]:
         return {name: json.loads(archive.read(name).decode("utf-8")) for name in archive.namelist()}
 
 
+def _zip_entries(response: ApiResponse, label: str) -> dict[str, bytes]:
+    """把导出包按条目名解成解压后的字节；包打不开即判失败并给出侧别。"""
+    assert response.binary is not None, f"{label}导出没有二进制正文"
+    try:
+        with zipfile.ZipFile(io.BytesIO(response.binary.data)) as archive:
+            return {name: archive.read(name) for name in archive.namelist()}
+    except zipfile.BadZipFile as error:
+        raise AssertionError(f"{label}导出不是合法 zip：{error}") from error
+
+
 def error_of(response: ApiResponse) -> dict[str, Any]:
     assert isinstance(response.payload, dict)
     error = response.payload["error"]
@@ -178,10 +188,20 @@ def test_export_twice_returns_valid_zips(app: ApiApp) -> None:
     second = call(app, "GET", EXPORT_PATH)
 
     assert first.status == 200 and second.status == 200
-    # 内存组装不落盘，同刻两次调用互不冲突，各自成包
-    assert set(entries_of(first)) == set(entries_of(second)) == set(ENTRY_NAMES)
-    assert first.binary is not None and second.binary is not None
-    assert first.binary.data == second.binary.data
+    # 压缩字节与 zip 元数据（条目时间戳）随导出时刻变化，不代表导出内容；
+    # 两次导出各是合法 zip、条目名与解压后的内容一致即等价（docs/03 备份口径）。
+    first_entries = _zip_entries(first, "第一次")
+    second_entries = _zip_entries(second, "第二次")
+    only_first = sorted(set(first_entries) - set(second_entries))
+    only_second = sorted(set(second_entries) - set(first_entries))
+    assert not only_first and not only_second, (
+        f"两次导出的条目名不同：第一次多 {only_first}，第二次多 {only_second}"
+    )
+    assert set(first_entries) == set(ENTRY_NAMES), f"导出条目不是文档口径：{sorted(first_entries)}"
+    different = sorted(
+        name for name in first_entries if first_entries[name] != second_entries[name]
+    )
+    assert not different, f"两次导出的解压内容不同：{different}"
 
 
 def test_export_requires_token(app: ApiApp) -> None:
