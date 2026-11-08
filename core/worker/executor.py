@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -25,15 +24,10 @@ from contracts import (
     RecoveryAction,
     RunContext,
     RunState,
-    ScriptAdapter,
-    ScriptHandle,
     ScriptObservation,
-    ScriptRef,
     ScriptState,
-    StopMode,
     Verdict,
     VerdictStatus,
-    Verifier,
 )
 from core.environments.service import EnvironmentCall, EnvironmentService
 from core.events.evidence import EvidenceService
@@ -47,13 +41,14 @@ from core.plugins.errors import PluginError, WorkerCancelledError, WorkerTimeout
 from core.plugins.registry import PluginRegistry
 from core.recovery.policy import RecoveryPolicy
 from core.resources.service import LeaseService
+from core.worker.run_scope import CancelFlag, RunScope
+from core.worker.script_run import ScriptRun
 from storage.defaults import default
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
 from storage.repositories.job_templates import JobTemplateRepository, JobTemplateRow
 from storage.repositories.resources import ResourceRepository
 
-_MAX_OBSERVATIONS = int(default("worker", "max_observations"))
 _DEFAULT_DEADLINE = timedelta(minutes=int(default("worker", "deadline_minutes")))
 _TERMINAL_BY_VERDICT: Mapping[VerdictStatus, RunState] = {
     VerdictStatus.COMPLETED: RunState.SUCCEEDED,
@@ -63,42 +58,6 @@ _TERMINAL_BY_VERDICT: Mapping[VerdictStatus, RunState] = {
 
 Emit = Callable[[str, Mapping[str, Any]], None]
 RecordEvidence = Callable[[str, Path, str], str]
-
-
-class CancelFlag:
-    """内核持有的取消标记；worker 在阶段边界检查。"""
-
-    def __init__(self) -> None:
-        self._cancelled = False
-
-    def cancel(self) -> None:
-        """置位取消标记。"""
-        self._cancelled = True
-
-    def is_cancelled(self) -> bool:
-        """是否已请求取消。"""
-        return self._cancelled
-
-
-@dataclass(slots=True)
-class RunScope:
-    """一次执行共享的状态：阶段方法只拿这一份，不再传宽参数表。"""
-
-    run: JobRunRecord
-    template: JobTemplateRow
-    call: EnvironmentCall
-    script: ScriptAdapter
-    verifier: Verifier
-    context: RunContext
-    handle: ScriptHandle | None = None
-    verdict: Verdict | None = None
-    verify_failure: VerdictError | None = None
-    has_called_cleanup: bool = False  # 本尝试是否已调用 provider 清理（docs/09）
-
-    @property
-    def run_id(self) -> str:
-        """运行 id 的短别名；日志与事件用。"""
-        return self.run.id
 
 
 class WorkerExecutor:
@@ -333,7 +292,7 @@ class WorkerExecutor:
         return None
 
     def _run_script(self, scope: RunScope) -> JobRunRecord | None:
-        """执行阶段：到点后启动脚本、采集信号，超时与失败按错误码收尾。"""
+        """执行阶段：到点后启动脚本，把观察结果交给阶段结论收口。"""
         if self._cancel.is_cancelled():
             return self._cancel_run(scope, started=True)
         now = self._clock.utc_now()
@@ -344,16 +303,9 @@ class WorkerExecutor:
         scope.run = self._runs.transition(scope.run.id, RunState.EXECUTING)
         self._environments.mark_busy(scope.call)
         phase = self._phases.start(scope.run.id, PhaseName.EXECUTE, attempt=scope.run.attempt)
-        handle = scope.script.launch(
-            ScriptRef(
-                id=scope.template.id,
-                plugin_id=scope.template.plugin_id,
-                config=dict(scope.template.config),
-            ),
-            scope.context,
-        )
-        scope.handle = handle
-        observation = self._wait_for_script(scope.script, handle, scope.context)
+        runner = self._script_lifecycle(scope)
+        handle = runner.launch(scope)
+        observation = runner.wait(scope, handle)
         if observation is None:
             self._phases.finish(phase, state=PhaseState.TIMED_OUT, detail="deadline")
             self._stop_script(scope)
@@ -361,6 +313,15 @@ class WorkerExecutor:
             if self._drain_requested():
                 return self._drain(scope.run)
             return self._recover(scope, "E_DEADLINE", "deadline")
+        return self._settle_execute(scope, phase, observation)
+
+    def _settle_execute(
+        self,
+        scope: RunScope,
+        phase: str,
+        observation: ScriptObservation,
+    ) -> JobRunRecord | None:
+        """按观察结果落执行阶段结论：信号入事件流，失败、超时与取消各自收尾。"""
         for signal in observation.signals:
             self._events.append_run(
                 scope.run.id,
@@ -459,27 +420,6 @@ class WorkerExecutor:
             else _TERMINAL_BY_VERDICT[scope.verdict.status]
         )
         return self._runs.transition(scope.run.id, target, reason="verdict")
-
-    def _wait_for_script(
-        self,
-        script: ScriptAdapter,
-        handle: ScriptHandle,
-        context: RunContext,
-    ) -> ScriptObservation | None:
-        """观察脚本直到结束；观察次数用尽或到截止时间返回 None，由调用方按超时收尾。
-
-        停机不提前退出：当前阶段要跑完写清阶段结论，阶段行不留半途（docs/08）；
-        取消仍立即返回，取消优先于停机。
-        """
-        for _ in range(_MAX_OBSERVATIONS):
-            observation = script.observe(handle, context)
-            if observation.state is not ScriptState.RUNNING:
-                return observation
-            if self._cancel.is_cancelled():
-                return observation
-            if self._clock.utc_now() >= context.deadline_at:
-                return None
-        return None
 
     def resume(self, run_id: str) -> JobRunRecord:
         """恢复等待到点时把运行放回队列；未到点或不在 recovering 时原样返回。"""
@@ -626,40 +566,13 @@ class WorkerExecutor:
             error_code=error_code,
         )
 
+    def _script_lifecycle(self, scope: RunScope) -> ScriptRun:
+        """按运行范围组装脚本生命周期对象：它只持有引用，构造无副作用。"""
+        return ScriptRun(scope.script, self._clock, self._cancel, self._log)
+
     def _stop_script(self, scope: RunScope, *, graceful: bool = False) -> None:
         """停止脚本并清空句柄；取消时先 graceful，插件没接受再 force。失败只记 WARN。"""
-        handle = scope.handle
-        if handle is None:
-            return
-        scope.handle = None
-        if graceful and self._stop_attempt(scope, handle, StopMode.GRACEFUL):
-            return
-        self._stop_attempt(scope, handle, StopMode.FORCE)
-
-    def _stop_attempt(self, scope: RunScope, handle: ScriptHandle, mode: StopMode) -> bool:
-        try:
-            result = scope.script.stop(handle, scope.context, mode)
-        except Exception as error:
-            self._log.warn(
-                {
-                    "event": "executor.script_stop_failed",
-                    "run_id": scope.run_id,
-                    "mode": mode.value,
-                    "error": str(error),
-                }
-            )
-            return False
-        if result.ok:
-            return True
-        self._log.warn(
-            {
-                "event": "executor.script_stop_failed",
-                "run_id": scope.run_id,
-                "mode": mode.value,
-                "error_code": result.error_code or "",
-            }
-        )
-        return False
+        self._script_lifecycle(scope).stop(scope, graceful=graceful)
 
     def _safe_cleanup(self, scope: RunScope, *, reason: str) -> None:
         """清理环境；本尝试已调用过 provider 清理就跳过，失败只记 WARN。
