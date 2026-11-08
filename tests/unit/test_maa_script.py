@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from contracts import RunContext, ScriptRef, ScriptState, Signal, StopMode
 from plugins.maa.capabilities.script import MaaScript
+from plugins.maa.session import SessionMarker, read_marker
 
 NOW = datetime(2026, 10, 26, 12, 0, tzinfo=UTC)
 
@@ -117,6 +119,31 @@ def test_launch_starts_process_and_records_log_dir_and_start_offsets(tmp_path: P
     assert handle.meta["gui_log_offset"] == len("旧的一行\n".encode())
     assert handle.meta["asst_log_offset"] == len("旧的一条\n".encode())
     assert handle.meta["launched_at"] == NOW.isoformat()
+
+
+def test_launch_records_session_marker_for_verification(tmp_path: Path) -> None:
+    """launch 把本次运行的日志起点写进工作目录，验证阶段只读这一段。"""
+    append_log(tmp_path, "gui.log", "旧的一行\n")
+    handle = make_script().launch(ScriptRef(id="script-1", plugin_id="maa"), make_context(tmp_path))
+    assert read_marker(tmp_path) == SessionMarker(
+        gui_offset=len("旧的一行\n".encode()),
+        asst_offset=0,
+    )
+    assert handle.meta["gui_log_offset"] == len("旧的一行\n".encode())
+
+
+def test_launch_fails_when_session_marker_cannot_be_written(tmp_path: Path) -> None:
+    """工作目录写不进标记时启动失败关闭，避免验证阶段拿不到日志段。"""
+    work_dir = tmp_path / "work"
+    work_dir.mkdir()
+    (work_dir / "maa-session.json").mkdir()
+    ctx = make_context(tmp_path)
+    ctx = replace(ctx, work_dir=work_dir)
+    try:
+        make_script().launch(ScriptRef(id="script-1", plugin_id="maa"), ctx)
+    except OSError:
+        return
+    raise AssertionError("标记写不进去时 launch 应当抛 OSError")
 
 
 def test_observe_reports_running_while_queue_in_progress(tmp_path: Path) -> None:
