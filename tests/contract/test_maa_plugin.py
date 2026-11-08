@@ -32,6 +32,7 @@ from plugins.maa.capabilities.environment import MaaEnvironment
 from plugins.maa.capabilities.script import DEFAULT_MAA_DIR, MaaScript
 from plugins.maa.capabilities.verifier import DEFAULT_POLICY_ID, MaaVerifier
 from plugins.maa.plugin import PLUGIN, load_manifest
+from plugins.maa.windows_host import ScreenSize
 
 PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "maa"
 
@@ -89,7 +90,7 @@ def test_manifest_contract_range_covers_api_version() -> None:
 
 
 def test_config_schema_locks_documented_top_level_fields() -> None:
-    """docs/plugins/maa.md 参数 schema 表：13 个配置字段、Draft 2020-12、根封闭。"""
+    """docs/plugins/maa.md 参数 schema 表：16 个配置字段、Draft 2020-12、根封闭。"""
     schema = load_schema()
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["x-schema-version"] == 1
@@ -100,6 +101,9 @@ def test_config_schema_locks_documented_top_level_fields() -> None:
         "mode",
         "mumu_dir",
         "adb_address",
+        "emulator_window_title",
+        "game_package",
+        "screen_size",
         "profile",
         "tasks",
         "launch_timeout_s",
@@ -119,6 +123,9 @@ def test_config_schema_defaults_match_plugin_doc() -> None:
     assert props["maa_dir"]["default"] == DEFAULT_MAA_DIR
     assert props["mumu_dir"]["default"] == "H:/MuMuPlayer"
     assert props["adb_address"]["default"] == "127.0.0.1:16384"
+    assert props["emulator_window_title"]["default"] == "MuMu"
+    assert props["game_package"]["default"] == "com.hypergryph.arknights"
+    assert props["screen_size"]["default"] == "1280x720"
     assert props["launch_timeout_s"]["default"] == 180
     assert props["wake_timeout_s"]["default"] == 90
     assert props["startup_timeout_s"]["default"] == 300
@@ -212,12 +219,32 @@ def test_plugin_exports_capabilities_matching_protocols() -> None:
     assert PLUGIN.manifest.id == "maa"
 
 
+class _StubHost:
+    """固定真机读数的假件：窗口在、adb 在线、游戏在前台、分辨率正确。"""
+
+    def window_titles(self) -> tuple[str, ...]:
+        return ("MuMuPlayer-12.0",)
+
+    def adb_device_state(self) -> str:
+        return "device"
+
+    def screencap_size(self) -> ScreenSize:
+        return ScreenSize(width=1280, height=720)
+
+    def foreground_package(self) -> str | None:
+        return "com.hypergryph.arknights"
+
+
 def test_probe_returns_legal_state_with_clock_timestamp() -> None:
     """docs/05 契约测试表 environment 行：probe 返回合法状态，时间来自注入时钟。"""
-    probe = MaaEnvironment().probe(env_ref(), make_context())
-    assert isinstance(probe, EnvironmentProbe)
-    assert probe.state is EnvironmentState.UNKNOWN
-    assert probe.observed_at == NOW
+    provider = MaaEnvironment(host=_StubHost())
+    first = provider.probe(env_ref(), make_context())
+    second = provider.probe(env_ref(), make_context())
+    assert isinstance(first, EnvironmentProbe)
+    assert isinstance(first.state, EnvironmentState)
+    assert first.state is EnvironmentState.READY
+    assert first.observed_at == NOW
+    assert first == second
 
 
 def test_environment_actions_are_repeatable_and_fail_closed() -> None:

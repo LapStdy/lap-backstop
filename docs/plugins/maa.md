@@ -40,7 +40,9 @@
 | MAA 资源 | `H:/MAA/resource` |
 | Python 绑定 | `H:/MAA/Python/asst` |
 
-探测 `probe` 同时确认三件事：模拟器窗口存在、adb 可连接且可截图、游戏在前台。任一不满足时返回对应状态：未启动为 `off`，启动中为 `booting`，adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed`。
+探测 `probe` 经只读端口确认四件事：模拟器窗口存在、adb 可连接且可截图、游戏在前台、
+游戏横屏时截图是 1280×720。任一不满足时返回对应状态：未启动为 `off`，启动中为 `booting`，
+adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed`。
 
 准备 `prepare` 的步骤与判据：
 
@@ -140,6 +142,9 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | `mode` | enum | `gui` | `gui` 或 `binding` |
 | `mumu_dir` | string | `H:/MuMuPlayer` | MuMu 安装目录 |
 | `adb_address` | string | `127.0.0.1:16384` | 模拟器 adb 地址 |
+| `emulator_window_title` | string | `MuMu` | 模拟器窗口标题子串，判定窗口是否存在 |
+| `game_package` | string | `com.hypergryph.arknights` | 游戏包名，判定游戏是否在前台 |
+| `screen_size` | string | `1280x720` | 游戏横屏时的截图分辨率，写法「宽x高」 |
 | `profile` | string | `Current` 指向的配置名 | 使用的 MAA 配置 |
 | `tasks` | array | 日常队列 | 每项含 `type`、`name`、`enabled`、`params` |
 | `launch_timeout_s` | integer | 180 | 启动到资源加载完成的上限 |

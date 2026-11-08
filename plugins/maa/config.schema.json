@@ -26,6 +26,25 @@
       "title": "模拟器 adb 地址",
       "default": "127.0.0.1:16384"
     },
+    "emulator_window_title": {
+      "type": "string",
+      "title": "模拟器窗口标题子串",
+      "description": "按子串匹配窗口标题，判定模拟器窗口是否存在",
+      "default": "MuMu"
+    },
+    "game_package": {
+      "type": "string",
+      "title": "游戏包名",
+      "description": "用于判定游戏是否在前台",
+      "default": "com.hypergryph.arknights"
+    },
+    "screen_size": {
+      "type": "string",
+      "title": "游戏截图分辨率",
+      "description": "游戏横屏时截图的宽x高",
+      "pattern": "^[0-9]+x[0-9]+$",
+      "default": "1280x720"
+    },
     "profile": {
       "type": "string",
       "title": "MAA 配置名",
