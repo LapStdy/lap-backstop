@@ -1,0 +1,9 @@
+{
+  "id": "hang",
+  "name": "hang · 停机强制终止测试插件",
+  "version": "1.0.0",
+  "api_version": 1,
+  "capabilities": ["environment", "script", "verifier"],
+  "config_schema": "config.schema.json",
+  "requires": {"contract": ">=1 <2", "platform": "windows"}
+}

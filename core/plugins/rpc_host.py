@@ -213,6 +213,16 @@ class RpcPluginHost:
             channel.close()
         self._channels.clear()
 
+    def abort_workers(self, plugin_ids: Sequence[str]) -> None:
+        """立即结束指定插件的 worker 进程树；未启动或已结束的插件 id 忽略。
+
+        停机收尾的强制终止入口：只终止承载卡死调用的插件，不动其余 worker。
+        """
+        for plugin_id in plugin_ids:
+            channel = self._channels.get(plugin_id)
+            if channel is not None:
+                channel.abort()
+
     def __enter__(self) -> RpcPluginHost:
         return self
 

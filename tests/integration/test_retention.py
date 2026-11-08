@@ -200,7 +200,12 @@ class _StubSupervisor:
     def tick(self) -> None:
         self.ticks += 1
 
-    def join_executors(self, timeout_seconds: float) -> None:
+    def join_executors(
+        self,
+        timeout_seconds: float,
+        *,
+        abort_grace_seconds: float = 0.0,
+    ) -> None:
         return None
 
     @property

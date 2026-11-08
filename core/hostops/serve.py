@@ -64,6 +64,9 @@ TICK_INTERVAL_SECONDS = 1.0
 # 停机与循环退出时等待执行线程的上限：等待有界，超时按下次启动回收（docs/08）；
 # 不做成配置键，把收尾时限留在代码里。
 _EXECUTOR_JOIN_SECONDS = 60.0
+# 停机收尾的强制终止宽限：执行线程超过它仍未收尾，才结束承载在途调用的 worker
+# 子进程树（docs/08 停机与阶段边界）；同样留在代码里，不做成配置键。
+_EXECUTOR_ABORT_GRACE_SECONDS = 30.0
 AUTOLOGON_CHECKED_EVENT = "host.autologon_checked"
 # 事件名的属主是 tasks 模块；这里保留同名导出，供既有引用方使用。
 TASKS_REGISTERED_EVENT = tasks.TASKS_REGISTERED_EVENT
@@ -200,8 +203,10 @@ class ServeLoop:
         return EXIT_OK
 
     def _join_executors(self) -> None:
-        """等待执行线程收尾；上限取模块常量，超时记账在 supervisor。"""
-        self._supervisor.join_executors(_EXECUTOR_JOIN_SECONDS)
+        """等待执行线程收尾；宽限到点强制终止卡死调用的 worker，上限取模块常量。"""
+        self._supervisor.join_executors(
+            _EXECUTOR_JOIN_SECONDS, abort_grace_seconds=_EXECUTOR_ABORT_GRACE_SECONDS
+        )
 
     def _poll_notify(self) -> None:
         """通知轮询：任何失败只记日志，通知故障不拖垮核心循环。"""
@@ -459,6 +464,7 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             log=options.log,
             disk_free=options.disk_free,
             shutdown=options.stop.is_set,
+            abort_workers=plugin_host.abort_workers,
         )
         supervisor.startup()
         # 校时先于其余宿主动作：注册与补报落在尽量校准过的钟上。

@@ -103,3 +103,12 @@ class WorkerChannel:
     def close(self) -> None:
         """发送 shutdown 并结束进程树；已退出的通道重复关闭无副作用。"""
         self._session.close()
+
+    def abort(self) -> None:
+        """立即结束进程树，让在途调用以失败返回；停机收尾的强制终止用。
+
+        不发 shutdown、不等优雅退出——卡死的调用读不到 shutdown，等它只会白耗
+        收尾时间；复用取消到期同一条收尾路径（结束进程树、不计 worker 的失败），
+        停机是系统决定，不算插件的一次重启失败。已结束的通道重复调用无副作用。
+        """
+        self._session.fail_process(counts_as_failure=False)
