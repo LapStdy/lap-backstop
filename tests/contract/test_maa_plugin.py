@@ -265,29 +265,32 @@ class _StubActions:
     def connect_adb(self) -> None:
         self.calls.append("connect")
 
+    def disconnect_adb(self) -> None:
+        self.calls.append("disconnect")
+
     def is_package_running(self, package: str) -> bool:
         return True
 
     def launch_package(self, package: str) -> None:
         self.calls.append(f"launch:{package}")
 
+    def stop_package(self, package: str) -> None:
+        self.calls.append(f"stop:{package}")
 
-def test_environment_actions_are_repeatable_and_fail_closed() -> None:
-    """docs/05 契约测试表 environment 行：prepare 可重复；未实现动作失败关闭。"""
+    def shutdown_instance(self, instance_index: int) -> None:
+        self.calls.append(f"shutdown:{instance_index}")
+
+
+def test_environment_actions_are_repeatable_and_idempotent() -> None:
+    """docs/05 契约测试表 environment 行：四个动作可重复调用且都成功。"""
     provider = MaaEnvironment(host=_StubHost(), actions=_StubActions())
     ctx = make_context()
     ref = env_ref()
     for _ in range(2):
         assert provider.prepare(ref, ctx).ok is True
-        for result in (
-            provider.reset(ref, ctx),
-            provider.cleanup(ref, ctx, keep_warm=False),
-            provider.warm(ref, ctx, minutes=30),
-        ):
-            assert result.ok is False
-            assert result.error_code == "E_PLUGIN"
-            assert result.started_at == NOW
-            assert result.ended_at == NOW
+        assert provider.reset(ref, ctx).ok is True
+        assert provider.cleanup(ref, ctx, keep_warm=False).ok is True
+        assert provider.warm(ref, ctx, minutes=30).ok is True
 
 
 class _StubProcessHost:
