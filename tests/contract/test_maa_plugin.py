@@ -30,7 +30,7 @@ from contracts.manifest import range_covers
 from plugins.maa.capabilities.config_projection import MaaConfigProjection
 from plugins.maa.capabilities.environment import MaaEnvironment
 from plugins.maa.capabilities.script import DEFAULT_MAA_DIR, MaaScript
-from plugins.maa.capabilities.verifier import DEFAULT_POLICY_ID, MaaVerifier
+from plugins.maa.capabilities.verifier import DEFAULT_POLICY_ID, EVIDENCE_NOTE_NAME, MaaVerifier
 from plugins.maa.plugin import PLUGIN, load_manifest
 from plugins.maa.windows_host import ScreenSize
 from tests.config_store_support import (
@@ -193,7 +193,9 @@ class _Logger:
 
 
 def make_context(
-    evidence_dir: Path | None = None, config: Mapping[str, Any] | None = None
+    evidence_dir: Path | None = None,
+    config: Mapping[str, Any] | None = None,
+    work_dir: Path | None = None,
 ) -> RunContext:
     """构造契约测试用的 RunContext；证据 id 恒为 evidence-1。"""
     return RunContext(
@@ -203,7 +205,7 @@ def make_context(
         plugin_id="maa",
         environment_id="env-1",
         config={} if config is None else config,
-        work_dir=Path("."),
+        work_dir=Path(".") if work_dir is None else work_dir,
         evidence_dir=Path(".") if evidence_dir is None else evidence_dir,
         deadline_at=NOW + timedelta(minutes=5),
         cancel=_CancelFlag(),
@@ -322,7 +324,7 @@ class _StubProcessHost:
 def test_launch_returns_handle_and_observe_is_repeatable(tmp_path: Path) -> None:
     """docs/05 契约测试表 script 行：launch 返回句柄；observe 只读且可重复。"""
     adapter = MaaScript(host=_StubProcessHost())
-    ctx = make_context(config={"maa_dir": str(tmp_path)})
+    ctx = make_context(config={"maa_dir": str(tmp_path)}, work_dir=tmp_path)
     handle = adapter.launch(script_ref(), ctx)
     assert isinstance(handle, ScriptHandle)
     assert handle.pid == 4321
@@ -338,7 +340,7 @@ def test_launch_returns_handle_and_observe_is_repeatable(tmp_path: Path) -> None
 def test_stop_is_idempotent_and_recover_fails_closed(tmp_path: Path) -> None:
     """docs/05 契约测试表 script 行：stop 可重复；recover 对四种内核动作都不执行。"""
     adapter = MaaScript(host=_StubProcessHost())
-    ctx = make_context(config={"maa_dir": str(tmp_path)})
+    ctx = make_context(config={"maa_dir": str(tmp_path)}, work_dir=tmp_path)
     handle = adapter.launch(script_ref(), ctx)
     assert adapter.stop(handle, ctx, StopMode.GRACEFUL).ok
     assert adapter.stop(handle, ctx, StopMode.FORCE).ok
@@ -357,7 +359,7 @@ def test_verifier_returns_unknown_with_evidence_stably(tmp_path: Path) -> None:
     assert first.evidence_ids
     assert first.status == second.status
     assert first.policy_id == second.policy_id == DEFAULT_POLICY_ID
-    assert (tmp_path / "verify.log").is_file()
+    assert (tmp_path / EVIDENCE_NOTE_NAME).is_file()
 
 
 def test_config_projection_diff_reports_nested_changes_in_order() -> None:
