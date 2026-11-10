@@ -138,6 +138,7 @@
 | [docs/arknights/01-识别与动作.md](docs/arknights/01-识别与动作.md) | 截图、模板、ROI、安全红线 |
 | [docs/arknights/02-MAA操作与配置.md](docs/arknights/02-MAA操作与配置.md) | MAA 路径、日志、配置、边界 |
 | [docs/arknights/03-主界面判定与导航.md](docs/arknights/03-主界面判定与导航.md) | 主题无关锚点、双通道判定、页面状态与导航 |
+| [docs/arknights/04-主界面探针实现.md](docs/arknights/04-主界面探针实现.md) | 判定器模块、帧端口、模板、冻结样本、证据与测试口径 |
 | [docs/arknights/05-更新模式.md](docs/arknights/05-更新模式.md) | 更新作业、让路、补跑、失败处置 |
 | [docs/adr/](docs/adr/) | 架构决策记录 |
 | [docs/research/00-调研索引.md](docs/research/00-调研索引.md) | 外部调研结论索引 |
