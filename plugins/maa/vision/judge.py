@@ -92,7 +92,7 @@ def evaluate_gates(total_score: int, appearance_hits: int) -> tuple[bool, bool]:
     return handover, navigation
 
 
-def _vision_modules() -> tuple[ModuleType, ModuleType]:
+def vision_modules() -> tuple[ModuleType, ModuleType]:
     """懒加载 cv2 与 numpy；缺依赖抛 RuntimeError 并带安装命令。"""
     try:
         import cv2
@@ -108,7 +108,7 @@ def suppress_badges(bgr: np.ndarray) -> np.ndarray:
     输入数组不被修改；模板与搜索窗口都经本函数处理后再匹配，橙黄角标
     只剩形状与明暗，颜色不参与得分。
     """
-    cv2, _ = _vision_modules()
+    cv2, _ = vision_modules()
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     gray[(hsv[:, :, 1] > BADGE_S_LIMIT) & (hsv[:, :, 2] > BADGE_V_LIMIT)] = BADGE_GRAY
@@ -130,7 +130,7 @@ class HomeJudge:
     """主界面判定器：输入一帧 1280×720 BGR 图像与时间戳，输出 ``VisionResult``。"""
 
     def __init__(self, template_dir: Path | None = None) -> None:
-        self._cv2, self._np = _vision_modules()
+        self._cv2, self._np = vision_modules()
         self._template_dir = DEFAULT_TEMPLATE_DIR if template_dir is None else template_dir
         self._templates: dict[str, tuple[np.ndarray, ...]] = {
             anchor.name: tuple(self._load_template(anchor, file) for file in anchor.templates)
