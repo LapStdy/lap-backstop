@@ -79,13 +79,16 @@ class StubOptions:
     probe_error: Exception | None = None
 
 
+_DEFAULT_STUB_OPTIONS = StubOptions()
+
+
 class StubProvider:
     """按预设状态序列返回探针结果，其余动作由开关控制。"""
 
     def __init__(
         self,
         states: list[EnvironmentState] | None = None,
-        options: StubOptions = StubOptions(),
+        options: StubOptions = _DEFAULT_STUB_OPTIONS,
     ) -> None:
         self._states = list(states or [])
         self._options = options
@@ -127,7 +130,7 @@ class HookedProvider(StubProvider):
         *,
         on_probe: Callable[[], None] | None = None,
         on_prepare: Callable[[], None] | None = None,
-        options: StubOptions = StubOptions(),
+        options: StubOptions = _DEFAULT_STUB_OPTIONS,
     ) -> None:
         super().__init__(states, options)
         self._on_probe = on_probe
@@ -260,9 +263,7 @@ def test_prepare_failure_marks_failed(
     env: tuple[sqlite3.Connection, VirtualClock, EnvironmentService],
 ) -> None:
     __connection, clock, service = env
-    result = service.prepare(
-        make_call(StubProvider(options=StubOptions(prepare_ok=False)), clock)
-    )
+    result = service.prepare(make_call(StubProvider(options=StubOptions(prepare_ok=False)), clock))
     assert not result.ok
     assert service.get(ENV_ID).state is EnvironmentState.FAILED
 

@@ -60,8 +60,11 @@ class CallOptions:
     token: str | None = TOKEN
 
 
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 def call(
-    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
+    app: ApiApp, method: str, path: str, options: CallOptions = _DEFAULT_CALL_OPTIONS
 ) -> ApiResponse:
     merged = {"authorization": f"Bearer {options.token}"} if options.token is not None else {}
     merged.update(options.headers or {})
@@ -144,8 +147,11 @@ def test_second_put_records_change_diff(app: ApiApp, database: Path) -> None:
 def test_put_with_stale_if_match_is_conflict(app: ApiApp) -> None:
     call(app, "PUT", config_path(), CallOptions(body={"path": "D:/MAA"}))
     response = call(
-        app, "PUT", config_path(), CallOptions(body={"path": "D:/other"}, headers={"if-match": '"stale"'}
-    ))
+        app,
+        "PUT",
+        config_path(),
+        CallOptions(body={"path": "D:/other"}, headers={"if-match": '"stale"'}),
+    )
     assert response.status == 409
     assert body_of(response)["error"]["code"] == "E_CONFLICT"
 
@@ -157,9 +163,11 @@ def test_put_with_matching_if_match_succeeds(app: ApiApp) -> None:
         app,
         "PUT",
         config_path(),
-        CallOptions(body={"path": "D:/MAA3"},
-        headers={"if-match": current.etag},
-    ))
+        CallOptions(
+            body={"path": "D:/MAA3"},
+            headers={"if-match": current.etag},
+        ),
+    )
     assert response.status == 200
     assert body_of(response) == {"config": {"path": "D:/MAA3"}, "revision": 1}
 

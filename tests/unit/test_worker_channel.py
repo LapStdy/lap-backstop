@@ -131,7 +131,10 @@ class _ContextDeps:
     config: Mapping[str, Any] | None = None
 
 
-def _context(tmp_path: Path, deps: _ContextDeps = _ContextDeps()) -> RunContext:
+_DEFAULT_CONTEXT_DEPS = _ContextDeps()
+
+
+def _context(tmp_path: Path, deps: _ContextDeps = _DEFAULT_CONTEXT_DEPS) -> RunContext:
     """构造一次能力调用的上下文；取消令牌、日志、证据与 emit 由用例注入。"""
     return RunContext(
         run_id="run-1",
@@ -149,9 +152,7 @@ def _context(tmp_path: Path, deps: _ContextDeps = _ContextDeps()) -> RunContext:
         log=_RecordingLog() if deps.log is None else deps.log,
         emit=_noop_emit if deps.emit is None else deps.emit,
         record_evidence=(
-            _default_record_evidence
-            if deps.record_evidence is None
-            else deps.record_evidence
+            _default_record_evidence if deps.record_evidence is None else deps.record_evidence
         ),
     )
 
@@ -199,6 +200,9 @@ class _ChannelOptions:
         )
 
 
+_DEFAULT_CHANNEL_OPTIONS = _ChannelOptions()
+
+
 class _ChannelFactory:
     """为单个用例造通道，并负责用例结束时关闭所有子进程。"""
 
@@ -207,7 +211,7 @@ class _ChannelFactory:
         self._channels: list[WorkerChannel] = []
 
     def __call__(
-        self, mode: str, options: _ChannelOptions = _ChannelOptions()
+        self, mode: str, options: _ChannelOptions = _DEFAULT_CHANNEL_OPTIONS
     ) -> WorkerChannel:
         command = [sys.executable, "-u", str(STUB), mode]
         if options.control is not None:
@@ -305,9 +309,7 @@ def test_crash_then_next_call_restarts_worker(channels: _ChannelFactory) -> None
 def test_repeated_failures_degrade_channel(channels: _ChannelFactory) -> None:
     log = _RecordingLog()
     control = _control(channels, "crash", "crash")
-    channel = channels(
-        "sequence", _ChannelOptions(control=control, max_restarts=2, log=log)
-    )
+    channel = channels("sequence", _ChannelOptions(control=control, max_restarts=2, log=log))
     for _ in range(2):
         with pytest.raises(WorkerCrashError):
             channel.call("environment", "probe", {}, _context(channels.tmp_path))
@@ -507,9 +509,7 @@ def test_degraded_recovers_after_retry_window(channels: _ChannelFactory) -> None
     control = _control(channels, "crash", "ok")
     channel = channels(
         "sequence",
-        _ChannelOptions(
-            control=control, max_restarts=1, degraded_retry_seconds=0.2, log=log
-        ),
+        _ChannelOptions(control=control, max_restarts=1, degraded_retry_seconds=0.2, log=log),
     )
     with pytest.raises(WorkerCrashError):
         channel.call("environment", "probe", {}, _context(channels.tmp_path))

@@ -79,11 +79,14 @@ class RunOverrides:
     deadline_at: datetime | None = None
 
 
+_DEFAULT_OVERRIDES = RunOverrides()
+
+
 def prepare_run(
     runs: JobRunService,
     *,
     key: str,
-    overrides: RunOverrides = RunOverrides(),
+    overrides: RunOverrides = _DEFAULT_OVERRIDES,
 ) -> str:
     record, _ = runs.create_scheduled(
         NewRun(

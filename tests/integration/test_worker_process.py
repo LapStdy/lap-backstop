@@ -29,6 +29,9 @@ class CallOptions:
     call_id: int = 1
 
 
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 class WorkerProcess:
     """测试用的协议客户端：按行收发 JSON，回调由测试决定返回值。"""
 
@@ -72,7 +75,7 @@ class WorkerProcess:
         capability: str,
         method: str,
         args: Mapping[str, Any],
-        options: CallOptions = CallOptions(),
+        options: CallOptions = _DEFAULT_CALL_OPTIONS,
     ) -> dict[str, Any]:
         assert self._process.stdin is not None
         message = {

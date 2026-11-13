@@ -101,8 +101,11 @@ class CallOptions:
     query: dict[str, str] | None = None
 
 
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 def call(
-    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
+    app: ApiApp, method: str, path: str, options: CallOptions = _DEFAULT_CALL_OPTIONS
 ) -> ApiResponse:
     return app.handle(
         ApiRequest(
@@ -139,7 +142,9 @@ def test_list_runs_filters_state_and_template(app: ApiApp, database: Path) -> No
     assert len(body_of(by_template)["runs"]) == 2
     assert call(app, "GET", "/api/v1/runs", CallOptions(query={"limit": "1"})).status == 200
     assert call(app, "GET", "/api/v1/runs", CallOptions(query={"state": "flying"})).status == 400
-    assert call(app, "GET", "/api/v1/runs", CallOptions(query={"since": "not-a-time"})).status == 400
+    assert (
+        call(app, "GET", "/api/v1/runs", CallOptions(query={"since": "not-a-time"})).status == 400
+    )
 
 
 def test_run_detail_includes_phases_evidence_verdicts(app: ApiApp, database: Path) -> None:
@@ -162,8 +167,10 @@ def test_stop_run_cancels_queued_and_rejects_terminal(app: ApiApp, database: Pat
         app,
         "POST",
         f"/api/v1/runs/{queued_id}/stop",
-        CallOptions(body='{"reason": "改配置"}'.encode(),
-    ))
+        CallOptions(
+            body='{"reason": "改配置"}'.encode(),
+        ),
+    )
     assert stopped.status == 200
     assert body_of(stopped)["run"]["state"] == "cancelled"
     again = call(app, "POST", f"/api/v1/runs/{queued_id}/stop")
@@ -197,7 +204,9 @@ def test_stop_rejects_shutdown_as_cancel_reason(app: ApiApp, database: Path) -> 
         app,
         "POST",
         f"/api/v1/runs/{queued_id}/stop",
-        CallOptions(body=b'{"reason": "shutdown"}',
-    ))
+        CallOptions(
+            body=b'{"reason": "shutdown"}',
+        ),
+    )
     assert response.status == 400
     assert error_code_of(response) == "E_BAD_REQUEST"

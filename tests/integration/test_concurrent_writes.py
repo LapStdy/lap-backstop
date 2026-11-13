@@ -55,8 +55,11 @@ class CallOptions:
     extra_headers: dict[str, str] | None = None
 
 
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 def call(
-    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
+    app: ApiApp, method: str, path: str, options: CallOptions = _DEFAULT_CALL_OPTIONS
 ) -> ApiResponse:
     headers = {"authorization": f"Bearer {TOKEN}"}
     if options.extra_headers is not None:
@@ -122,7 +125,9 @@ def test_concurrent_run_now_with_same_key_creates_one_run(app: ApiApp) -> None:
 def test_concurrent_settings_writes_keep_both_keys(app: ApiApp) -> None:
     responses = run_in_two_threads(
         [
-            lambda: call(app, "PUT", "/api/v1/settings", CallOptions(body={"api.host": "127.0.0.2"})),
+            lambda: call(
+                app, "PUT", "/api/v1/settings", CallOptions(body={"api.host": "127.0.0.2"})
+            ),
             lambda: call(app, "PUT", "/api/v1/settings", CallOptions(body={"api.port": 9999})),
         ]
     )

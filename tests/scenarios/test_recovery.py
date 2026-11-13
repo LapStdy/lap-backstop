@@ -84,10 +84,13 @@ class RunOverrides:
     key: str = "run-key"
 
 
+_DEFAULT_OVERRIDES = RunOverrides()
+
+
 def prepare_run(
     connection: sqlite3.Connection,
     runs: JobRunService,
-    overrides: RunOverrides = RunOverrides(),
+    overrides: RunOverrides = _DEFAULT_OVERRIDES,
 ) -> str:
     record, _ = runs.create_scheduled(
         NewRun(
@@ -112,11 +115,14 @@ class ExecutorStubs:
     script: FakeScriptAdapter | None = None
 
 
+_DEFAULT_STUBS = ExecutorStubs()
+
+
 def make_executor(
     connection: sqlite3.Connection,
     clock: VirtualClock,
     data_root: Path,
-    stubs: ExecutorStubs = ExecutorStubs(),
+    stubs: ExecutorStubs = _DEFAULT_STUBS,
 ) -> WorkerExecutor:
     registry = PluginRegistry()
     registry.register(
@@ -206,9 +212,7 @@ def test_deadline_aborts_without_retry(
 ) -> None:
     connection, clock, runs, data_root = env
     insert_template(connection, "instant")
-    run_id = prepare_run(
-        connection, runs, RunOverrides(deadline_at=T0 + timedelta(minutes=30))
-    )
+    run_id = prepare_run(connection, runs, RunOverrides(deadline_at=T0 + timedelta(minutes=30)))
     clock.advance(timedelta(hours=1))
     result = make_executor(connection, clock, data_root).execute(run_id)
     assert result.state is RunState.FAILED
@@ -226,9 +230,9 @@ def test_disabled_reset_falls_back_to_retry(
     )
     run_id = prepare_run(connection, runs)
     provider = FakeEnvironmentProvider()
-    result = make_executor(
-        connection, clock, data_root, ExecutorStubs(provider=provider)
-    ).execute(run_id)
+    result = make_executor(connection, clock, data_root, ExecutorStubs(provider=provider)).execute(
+        run_id
+    )
     assert result.state is RunState.RECOVERING
     assert "reset" not in provider.calls
 

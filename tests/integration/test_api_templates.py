@@ -49,8 +49,11 @@ class CallOptions:
     extra_headers: dict[str, str] | None = None
 
 
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 def call(
-    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
+    app: ApiApp, method: str, path: str, options: CallOptions = _DEFAULT_CALL_OPTIONS
 ) -> ApiResponse:
     headers = {"authorization": f"Bearer {TOKEN}"}
     if options.extra_headers is not None:
@@ -125,8 +128,10 @@ def test_create_rejects_policy_with_missing_or_mistyped_fields(app: ApiApp) -> N
             app,
             "POST",
             "/api/v1/job-templates",
-            CallOptions(body={**MINIMAL, "verification_policy": policy},
-        ))
+            CallOptions(
+                body={**MINIMAL, "verification_policy": policy},
+            ),
+        )
         assert response.status == 400, f"非法策略被接受：{policy!r}"
         assert error_code_of(response) == "E_BAD_REQUEST"
         assert "verification_policy" in error_message_of(response)
@@ -136,16 +141,24 @@ def test_put_validates_policy_and_keeps_omitted_policy(app: ApiApp) -> None:
     created = call(app, "POST", "/api/v1/job-templates", CallOptions(body=MINIMAL))
     template_id = str(body_of(created)["job_template"]["id"])
     updated = call(
-        app, "PUT", f"/api/v1/job-templates/{template_id}", CallOptions(body={"verification_policy": POLICY}
-    ))
+        app,
+        "PUT",
+        f"/api/v1/job-templates/{template_id}",
+        CallOptions(body={"verification_policy": POLICY}),
+    )
     assert updated.status == 200
     assert body_of(updated)["job_template"]["verification_policy"] == POLICY
-    unchanged = call(app, "PUT", f"/api/v1/job-templates/{template_id}", CallOptions(body={"enabled": False}))
+    unchanged = call(
+        app, "PUT", f"/api/v1/job-templates/{template_id}", CallOptions(body={"enabled": False})
+    )
     assert unchanged.status == 200
     assert body_of(unchanged)["job_template"]["verification_policy"] == POLICY
     empty = call(
-        app, "PUT", f"/api/v1/job-templates/{template_id}", CallOptions(body={"verification_policy": {}}
-    ))
+        app,
+        "PUT",
+        f"/api/v1/job-templates/{template_id}",
+        CallOptions(body={"verification_policy": {}}),
+    )
     assert empty.status == 400
     assert "verification_policy" in error_message_of(empty)
 
@@ -175,7 +188,9 @@ def test_read_template_with_historical_empty_policy_keeps_shape(tmp_path: Path) 
 
 
 def test_create_rejects_bad_payload_shape(app: ApiApp) -> None:
-    response = call(app, "POST", "/api/v1/job-templates", CallOptions(body={**MINIMAL, "config": [1]}))
+    response = call(
+        app, "POST", "/api/v1/job-templates", CallOptions(body={**MINIMAL, "config": [1]})
+    )
     assert response.status == 400
     assert error_code_of(response) == "E_BAD_REQUEST"
     assert call(app, "POST", "/api/v1/job-templates", CallOptions(body={"name": "x"})).status == 400
@@ -190,9 +205,11 @@ def test_put_merges_and_enforces_if_match(app: ApiApp) -> None:
         app,
         "PUT",
         f"/api/v1/job-templates/{template_id}",
-        CallOptions(body={"config": {"stage": "1-7"}},
-        extra_headers={"if-match": detail.etag},
-    ))
+        CallOptions(
+            body={"config": {"stage": "1-7"}},
+            extra_headers={"if-match": detail.etag},
+        ),
+    )
     assert updated.status == 200
     assert body_of(updated)["job_template"]["config"] == {"stage": "1-7"}
     assert updated.etag != detail.etag
@@ -200,9 +217,11 @@ def test_put_merges_and_enforces_if_match(app: ApiApp) -> None:
         app,
         "PUT",
         f"/api/v1/job-templates/{template_id}",
-        CallOptions(body={"config": {}},
-        extra_headers={"if-match": detail.etag},
-    ))
+        CallOptions(
+            body={"config": {}},
+            extra_headers={"if-match": detail.etag},
+        ),
+    )
     assert stale.status == 409
     assert error_code_of(stale) == "E_CONFLICT"
 
@@ -221,8 +240,15 @@ def test_delete_rejects_template_referenced_by_schedule(app: ApiApp) -> None:
         app,
         "POST",
         "/api/v1/schedules",
-        CallOptions(body={"name": "每日", "kind": "cron", "expr": "0 4 * * *", "job_template_id": template_id},
-    ))
+        CallOptions(
+            body={
+                "name": "每日",
+                "kind": "cron",
+                "expr": "0 4 * * *",
+                "job_template_id": template_id,
+            },
+        ),
+    )
     assert schedule.status == 201
     response = call(app, "DELETE", f"/api/v1/job-templates/{template_id}")
     assert response.status == 409

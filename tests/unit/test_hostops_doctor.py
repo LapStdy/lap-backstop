@@ -367,9 +367,7 @@ def firewall_block(rule: FirewallRule) -> str:
 
 
 def test_check_inbound_firewall_rule_in_scope_passes(tmp_path: Path) -> None:
-    script = {
-        FIREWALL_QUERY: completed(firewall_block(_IN_SCOPE_RULE).encode())
-    }
+    script = {FIREWALL_QUERY: completed(firewall_block(_IN_SCOPE_RULE).encode())}
     deps = make_deps(tmp_path, runner=scripted(script))
     assert single(deps, 14).level is doctor.Level.PASS
 

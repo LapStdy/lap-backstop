@@ -217,10 +217,13 @@ class RunOverrides:
     key: str = "run-key"
 
 
+_DEFAULT_OVERRIDES = RunOverrides()
+
+
 def prepare_run(
     connection: sqlite3.Connection,
     runs: JobRunService,
-    overrides: RunOverrides = RunOverrides(),
+    overrides: RunOverrides = _DEFAULT_OVERRIDES,
 ) -> str:
     record, _ = runs.create_scheduled(
         NewRun(

@@ -49,8 +49,11 @@ class CallOptions:
     extra_headers: dict[str, str] | None = None
 
 
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 def call(
-    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
+    app: ApiApp, method: str, path: str, options: CallOptions = _DEFAULT_CALL_OPTIONS
 ) -> ApiResponse:
     headers = {"authorization": f"Bearer {TOKEN}"}
     if options.extra_headers is not None:
@@ -103,7 +106,9 @@ def test_create_rejects_unknown_or_missing_fields(app: ApiApp) -> None:
     unknown = call(app, "POST", "/api/v1/schedules", CallOptions(body={**MINIMAL, "colour": "red"}))
     assert unknown.status == 400
     assert error_code_of(unknown) == "E_BAD_REQUEST"
-    missing = call(app, "POST", "/api/v1/schedules", CallOptions(body={"name": "x", "kind": "cron"}))
+    missing = call(
+        app, "POST", "/api/v1/schedules", CallOptions(body={"name": "x", "kind": "cron"})
+    )
     assert missing.status == 400
 
 
@@ -114,7 +119,9 @@ def test_interval_schedule_survives_update(app: ApiApp) -> None:
     assert created.status == 201
     assert body_of(created)["schedule"]["expr"] == "30"
     schedule_id = str(body_of(created)["schedule"]["id"])
-    updated = call(app, "PUT", f"/api/v1/schedules/{schedule_id}", CallOptions(body={"name": "改名"}))
+    updated = call(
+        app, "PUT", f"/api/v1/schedules/{schedule_id}", CallOptions(body={"name": "改名"})
+    )
     assert updated.status == 200
     assert body_of(updated)["schedule"]["expr"] == "30"
 
@@ -124,8 +131,10 @@ def test_create_rejects_window_larger_than_deadline(app: ApiApp) -> None:
         app,
         "POST",
         "/api/v1/schedules",
-        CallOptions(body={**MINIMAL, "window_minutes": 300, "deadline_minutes": 120},
-    ))
+        CallOptions(
+            body={**MINIMAL, "window_minutes": 300, "deadline_minutes": 120},
+        ),
+    )
     assert response.status == 400
     assert error_code_of(response) == "E_CONFIG"
 
@@ -135,24 +144,32 @@ def test_create_rejects_bad_timezone_kind_and_template(app: ApiApp) -> None:
         app,
         "POST",
         "/api/v1/schedules",
-        CallOptions(body={**MINIMAL, "timezone": "Mars/Olympus"},
-    ))
+        CallOptions(
+            body={**MINIMAL, "timezone": "Mars/Olympus"},
+        ),
+    )
     assert bad_timezone.status == 400
-    bad_kind = call(app, "POST", "/api/v1/schedules", CallOptions(body={**MINIMAL, "kind": "daily"}))
+    bad_kind = call(
+        app, "POST", "/api/v1/schedules", CallOptions(body={**MINIMAL, "kind": "daily"})
+    )
     assert bad_kind.status == 400
     bad_template = call(
         app,
         "POST",
         "/api/v1/schedules",
-        CallOptions(body={**MINIMAL, "job_template_id": "nope"},
-    ))
+        CallOptions(
+            body={**MINIMAL, "job_template_id": "nope"},
+        ),
+    )
     assert bad_template.status == 400
     assert "job_template_id" in str(body_of(bad_template)["error"]["message"])
 
 
 def test_create_rejects_at_field_not_rfc3339_for_any_kind(app: ApiApp) -> None:
     """at 的字段表类型是带时区的 RFC3339 文本；kind 不是 at 时出现，同样按该类型校验。"""
-    bad_text = call(app, "POST", "/api/v1/schedules", CallOptions(body={**MINIMAL, "at": "not-a-time"}))
+    bad_text = call(
+        app, "POST", "/api/v1/schedules", CallOptions(body={**MINIMAL, "at": "not-a-time"})
+    )
     assert bad_text.status == 400
     assert error_code_of(bad_text) == "E_BAD_REQUEST"
     bad_type = call(app, "POST", "/api/v1/schedules", CallOptions(body={**MINIMAL, "at": 123}))
@@ -166,8 +183,10 @@ def test_create_at_kind_requires_timestamp(app: ApiApp) -> None:
         app,
         "POST",
         "/api/v1/schedules",
-        CallOptions(body={"name": "定点跑", "kind": "at", "job_template_id": TEMPLATE_ID},
-    ))
+        CallOptions(
+            body={"name": "定点跑", "kind": "at", "job_template_id": TEMPLATE_ID},
+        ),
+    )
     assert missing.status == 400
     body = {**MINIMAL, "kind": "at", "at": "2026-10-27T10:00:00+08:00"}
     created = call(app, "POST", "/api/v1/schedules", CallOptions(body=body))
@@ -193,7 +212,9 @@ def created_schedule(app: ApiApp) -> str:
 def test_put_merges_and_rotates_etag(app: ApiApp) -> None:
     schedule_id = created_schedule(app)
     detail = call(app, "GET", f"/api/v1/schedules/{schedule_id}")
-    response = call(app, "PUT", f"/api/v1/schedules/{schedule_id}", CallOptions(body={"name": "改名"}))
+    response = call(
+        app, "PUT", f"/api/v1/schedules/{schedule_id}", CallOptions(body={"name": "改名"})
+    )
     assert response.status == 200
     schedule = body_of(response)["schedule"]
     assert schedule["name"] == "改名"
@@ -209,18 +230,22 @@ def test_put_with_stale_if_match_returns_409(app: ApiApp) -> None:
         app,
         "PUT",
         f"/api/v1/schedules/{schedule_id}",
-        CallOptions(body={"name": "第一次"},
-        extra_headers={"if-match": fresh.etag},
-    ))
+        CallOptions(
+            body={"name": "第一次"},
+            extra_headers={"if-match": fresh.etag},
+        ),
+    )
     assert first.status == 200
     # 旧 ETag 再改必须被拒，重读后的新 ETag 可以改
     stale = call(
         app,
         "PUT",
         f"/api/v1/schedules/{schedule_id}",
-        CallOptions(body={"name": "第二次"},
-        extra_headers={"if-match": fresh.etag},
-    ))
+        CallOptions(
+            body={"name": "第二次"},
+            extra_headers={"if-match": fresh.etag},
+        ),
+    )
     assert stale.status == 409
     assert error_code_of(stale) == "E_CONFLICT"
     assert call(app, "GET", f"/api/v1/schedules/{schedule_id}").status == 200

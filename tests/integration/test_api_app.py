@@ -44,8 +44,11 @@ class CallOptions:
     body: bytes = b""
 
 
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 def call(
-    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
+    app: ApiApp, method: str, path: str, options: CallOptions = _DEFAULT_CALL_OPTIONS
 ) -> ApiResponse:
     headers = {} if options.token is None else {"authorization": f"Bearer {options.token}"}
     return app.handle(

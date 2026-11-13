@@ -63,10 +63,13 @@ class _Readings:
     screencap_ok: bool = True
 
 
+_DEFAULT_READINGS = _Readings()
+
+
 class _FakeHost:
     """可调的真机读数假件：四个方法都只返回预置值。"""
 
-    def __init__(self, readings: _Readings = _Readings()) -> None:
+    def __init__(self, readings: _Readings = _DEFAULT_READINGS) -> None:
         self._titles = tuple(readings.titles)
         self._adb_state = readings.adb_state
         self._size = ScreenSize(width=1280, height=720) if readings.size is None else readings.size
@@ -150,9 +153,7 @@ def test_probe_reports_degraded_when_game_not_foreground() -> None:
 
 def test_probe_reports_failed_on_resolution_mismatch() -> None:
     """游戏在前台但分辨率不符：停手并给人看，不自动改设置。"""
-    provider = MaaEnvironment(
-        host=_FakeHost(_Readings(size=ScreenSize(width=720, height=1280)))
-    )
+    provider = MaaEnvironment(host=_FakeHost(_Readings(size=ScreenSize(width=720, height=1280))))
     probe = provider.probe(ENV, make_context())
     assert probe.state is EnvironmentState.FAILED
     assert "720x1280" in probe.detail

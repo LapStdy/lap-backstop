@@ -56,8 +56,11 @@ class CallOptions:
     extra_headers: dict[str, str] | None = None
 
 
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 def call(
-    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
+    app: ApiApp, method: str, path: str, options: CallOptions = _DEFAULT_CALL_OPTIONS
 ) -> ApiResponse:
     headers = {"authorization": f"Bearer {TOKEN}"}
     if options.extra_headers is not None:
@@ -113,7 +116,12 @@ def created_schedule_id(app: ApiApp) -> str:
     ],
 )
 def test_missing_required_field_returns_400(app: ApiApp, path: str, body: dict[str, Any]) -> None:
-    assert_error(call(app, "POST", path, CallOptions(body=body)), 400, "E_BAD_REQUEST", fragment="缺少必填字段")
+    assert_error(
+        call(app, "POST", path, CallOptions(body=body)),
+        400,
+        "E_BAD_REQUEST",
+        fragment="缺少必填字段",
+    )
 
 
 def test_run_now_without_idempotency_key_returns_400(app: ApiApp) -> None:
@@ -144,7 +152,9 @@ def test_run_now_without_idempotency_key_returns_400(app: ApiApp) -> None:
 def test_wrong_field_type_returns_400(
     app: ApiApp, path: str, body: dict[str, Any], fragment: str
 ) -> None:
-    assert_error(call(app, "POST", path, CallOptions(body=body)), 400, "E_BAD_REQUEST", fragment=fragment)
+    assert_error(
+        call(app, "POST", path, CallOptions(body=body)), 400, "E_BAD_REQUEST", fragment=fragment
+    )
 
 
 def test_settings_body_must_be_json_object(app: ApiApp) -> None:
@@ -178,7 +188,9 @@ def test_settings_body_must_be_json_object(app: ApiApp) -> None:
 def test_out_of_range_value_returns_400(
     app: ApiApp, body: dict[str, Any], code: str, fragment: str
 ) -> None:
-    assert_error(call(app, "POST", "/api/v1/schedules", CallOptions(body=body)), 400, code, fragment=fragment)
+    assert_error(
+        call(app, "POST", "/api/v1/schedules", CallOptions(body=body)), 400, code, fragment=fragment
+    )
 
 
 @pytest.mark.parametrize(
@@ -192,7 +204,10 @@ def test_out_of_range_value_returns_400(
 )
 def test_out_of_range_query_returns_400(app: ApiApp, query: dict[str, str], fragment: str) -> None:
     assert_error(
-        call(app, "GET", "/api/v1/runs", CallOptions(query=query)), 400, "E_BAD_REQUEST", fragment=fragment
+        call(app, "GET", "/api/v1/runs", CallOptions(query=query)),
+        400,
+        "E_BAD_REQUEST",
+        fragment=fragment,
     )
 
 

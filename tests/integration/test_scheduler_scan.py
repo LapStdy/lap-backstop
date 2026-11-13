@@ -196,9 +196,7 @@ def test_disabled_schedule_is_ignored(
     env: Env,
 ) -> None:
     connection, _clock, _runs, scanner = env
-    insert_schedule(
-        connection, ScheduleSeed(next_run_at=T0 + timedelta(hours=1), enabled=0)
-    )
+    insert_schedule(connection, ScheduleSeed(next_run_at=T0 + timedelta(hours=1), enabled=0))
     assert scanner.tick(T0 + timedelta(hours=4)) == ()
 
 

@@ -219,11 +219,14 @@ class RunOverrides:
     policy: Mapping[str, Any] | None = None
 
 
+_DEFAULT_OVERRIDES = RunOverrides()
+
+
 def prepare_run(
     connection: sqlite3.Connection,
     runs: JobRunService,
     scenario: str,
-    overrides: RunOverrides = RunOverrides(),
+    overrides: RunOverrides = _DEFAULT_OVERRIDES,
 ) -> str:
     insert_template(connection, scenario, policy=overrides.policy)
     record, _ = runs.create_scheduled(
@@ -249,11 +252,14 @@ class ExecutorOptions:
     log: Logger | None = None
 
 
+_DEFAULT_EXECUTOR_OPTIONS = ExecutorOptions()
+
+
 def executor_for(
     connection: sqlite3.Connection,
     clock: VirtualClock,
     data_root: Path,
-    options: ExecutorOptions = ExecutorOptions(),
+    options: ExecutorOptions = _DEFAULT_EXECUTOR_OPTIONS,
 ) -> WorkerExecutor:
     return WorkerExecutor(
         connection,
@@ -417,9 +423,9 @@ def test_cancel_flag_prevents_start(
     run_id = prepare_run(connection, runs, "instant")
     flag = CancelFlag()
     flag.cancel()
-    result = executor_for(
-        connection, clock, data_root, ExecutorOptions(cancel=flag)
-    ).execute(run_id)
+    result = executor_for(connection, clock, data_root, ExecutorOptions(cancel=flag)).execute(
+        run_id
+    )
     assert result.state is RunState.CANCELLED
     assert phases(connection, run_id) == {}
 

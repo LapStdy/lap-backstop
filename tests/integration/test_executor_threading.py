@@ -184,12 +184,15 @@ class _RunOverrides:
     deadline_at: datetime | None = None
 
 
+_DEFAULT_OVERRIDES = _RunOverrides()
+
+
 def _create_run(
     runs: JobRunService,
     template_id: str,
     *,
     key: str,
-    overrides: _RunOverrides = _RunOverrides(),
+    overrides: _RunOverrides = _DEFAULT_OVERRIDES,
 ) -> str:
     record, _ = runs.create_scheduled(
         NewRun(
