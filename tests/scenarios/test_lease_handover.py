@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -69,23 +70,30 @@ def make_registry() -> PluginRegistry:
     return registry
 
 
+@dataclass(frozen=True, slots=True)
+class RunOverrides:
+    """prepare_run 的 NewRun 字段覆盖：默认零优先级、按 T0 整点、无截止。"""
+
+    priority: int = 0
+    scheduled_at: datetime = T0
+    deadline_at: datetime | None = None
+
+
 def prepare_run(
     runs: JobRunService,
     *,
     key: str,
-    priority: int = 0,
-    scheduled_at: datetime = T0,
-    deadline_at: datetime | None = None,
+    overrides: RunOverrides = RunOverrides(),
 ) -> str:
     record, _ = runs.create_scheduled(
         NewRun(
             template_id=TEMPLATE_ID,
             schedule_id=None,
-            scheduled_at=scheduled_at,
+            scheduled_at=overrides.scheduled_at,
             created_at=T0,
             idempotency_key=key,
-            priority=priority,
-            deadline_at=deadline_at,
+            priority=overrides.priority,
+            deadline_at=overrides.deadline_at,
         )
     )
     runs.enqueue(record.id)
@@ -114,7 +122,7 @@ def test_second_run_waits_for_environment_until_first_releases_lease(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     connection, clock, runs, data_root = env
-    first = prepare_run(runs, key="first", priority=10)
+    first = prepare_run(runs, key="first", overrides=RunOverrides(priority=10))
     second = prepare_run(runs, key="second")
     supervisor = Supervisor(
         connection, clock, make_registry(), data_root=data_root, disk_free=lambda: _STABLE_DISK_FREE
@@ -136,7 +144,7 @@ def test_expired_lease_is_handed_to_queued_run_and_holder_retries(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     connection, clock, runs, data_root = env
-    first = prepare_run(runs, key="first", priority=10)
+    first = prepare_run(runs, key="first", overrides=RunOverrides(priority=10))
     runs.transition(first, RunState.PREPARING)
     ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
     LeaseService(connection, clock).acquire(first, (ENV_ID,), ttl=LEASE_TTL)
@@ -195,7 +203,9 @@ def test_recovery_retry_with_busy_lease_stays_queued_until_deadline(
     """
     connection, clock, runs, data_root = env
     deadline = T0 + timedelta(minutes=90)
-    first = prepare_run(runs, key="first", priority=10, deadline_at=deadline)
+    first = prepare_run(
+        runs, key="first", overrides=RunOverrides(priority=10, deadline_at=deadline)
+    )
     runs.transition(first, RunState.PREPARING)
     ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
     leases = LeaseService(connection, clock)
@@ -211,7 +221,7 @@ def test_recovery_retry_with_busy_lease_stays_queued_until_deadline(
     blocker = prepare_run(
         runs,
         key="blocker",
-        scheduled_at=T0 + timedelta(hours=1),
+        overrides=RunOverrides(scheduled_at=T0 + timedelta(hours=1)),
     )
     runs.transition(blocker, RunState.PREPARING)
     runs.transition(blocker, RunState.WAITING)

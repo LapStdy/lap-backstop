@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -74,43 +75,55 @@ def env(
         connection.close()
 
 
+@dataclass(frozen=True, slots=True)
+class RunOverrides:
+    """prepare_run 的 NewRun 字段覆盖：默认按 T0 整点、无截止、键 run-key。"""
+
+    scheduled_at: datetime = T0
+    deadline_at: datetime | None = None
+    key: str = "run-key"
+
+
 def prepare_run(
     connection: sqlite3.Connection,
     runs: JobRunService,
-    *,
-    scheduled_at: datetime = T0,
-    deadline_at: datetime | None = None,
-    key: str = "run-key",
+    overrides: RunOverrides = RunOverrides(),
 ) -> str:
     record, _ = runs.create_scheduled(
         NewRun(
             template_id=TEMPLATE_ID,
             schedule_id=None,
-            scheduled_at=scheduled_at,
+            scheduled_at=overrides.scheduled_at,
             created_at=T0,
-            idempotency_key=key,
+            idempotency_key=overrides.key,
             priority=0,
-            deadline_at=deadline_at,
+            deadline_at=overrides.deadline_at,
         )
     )
     runs.enqueue(record.id)
     return record.id
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutorStubs:
+    """make_executor 的假件注入：缺省用各自的 Fake 实现。"""
+
+    provider: FakeEnvironmentProvider | None = None
+    script: FakeScriptAdapter | None = None
+
+
 def make_executor(
     connection: sqlite3.Connection,
     clock: VirtualClock,
     data_root: Path,
-    *,
-    provider: FakeEnvironmentProvider | None = None,
-    script: FakeScriptAdapter | None = None,
+    stubs: ExecutorStubs = ExecutorStubs(),
 ) -> WorkerExecutor:
     registry = PluginRegistry()
     registry.register(
         PluginCapabilities(
             plugin_id="fake",
-            environment=FakeEnvironmentProvider() if provider is None else provider,
-            script=FakeScriptAdapter() if script is None else script,
+            environment=FakeEnvironmentProvider() if stubs.provider is None else stubs.provider,
+            script=FakeScriptAdapter() if stubs.script is None else stubs.script,
             verifier=FakeVerifier(),
         )
     )
@@ -137,7 +150,7 @@ def test_retry_then_success(
     )
     run_id = prepare_run(connection, runs)
     script = FakeScriptAdapter()
-    executor = make_executor(connection, clock, data_root, script=script)
+    executor = make_executor(connection, clock, data_root, ExecutorStubs(script=script))
     first = executor.execute(run_id)
     assert first.state is RunState.RECOVERING
     assert first.attempt == 1
@@ -181,7 +194,7 @@ def test_environment_failure_routes_to_reset(
     insert_template(connection, "never-ready", recovery={"max_attempts": 3})
     run_id = prepare_run(connection, runs)
     provider = FakeEnvironmentProvider()
-    executor = make_executor(connection, clock, data_root, provider=provider)
+    executor = make_executor(connection, clock, data_root, ExecutorStubs(provider=provider))
     result = executor.execute(run_id)
     assert result.state is RunState.RECOVERING
     assert result.attempt == 1
@@ -194,9 +207,7 @@ def test_deadline_aborts_without_retry(
     connection, clock, runs, data_root = env
     insert_template(connection, "instant")
     run_id = prepare_run(
-        connection,
-        runs,
-        deadline_at=T0 + timedelta(minutes=30),
+        connection, runs, RunOverrides(deadline_at=T0 + timedelta(minutes=30))
     )
     clock.advance(timedelta(hours=1))
     result = make_executor(connection, clock, data_root).execute(run_id)
@@ -215,7 +226,9 @@ def test_disabled_reset_falls_back_to_retry(
     )
     run_id = prepare_run(connection, runs)
     provider = FakeEnvironmentProvider()
-    result = make_executor(connection, clock, data_root, provider=provider).execute(run_id)
+    result = make_executor(
+        connection, clock, data_root, ExecutorStubs(provider=provider)
+    ).execute(run_id)
     assert result.state is RunState.RECOVERING
     assert "reset" not in provider.calls
 
@@ -233,7 +246,9 @@ def test_plugin_emit_of_kernel_event_fails_the_call(
     connection, clock, runs, data_root = env
     insert_template(connection, "instant", recovery={"max_attempts": 3})
     run_id = prepare_run(connection, runs)
-    executor = make_executor(connection, clock, data_root, script=KernelEventScript())
+    executor = make_executor(
+        connection, clock, data_root, ExecutorStubs(script=KernelEventScript())
+    )
     result = executor.execute(run_id)
     # E_PLUGIN 未归类进恢复类别，按 system 处置：默认动作 abort，直接落 failed。
     assert result.state is RunState.FAILED
