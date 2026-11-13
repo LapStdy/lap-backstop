@@ -9,7 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -76,7 +76,7 @@ class _SilentLogger:
 class _FakeFrames:
     """按序列返回预置帧的假帧源；耗尽后返回 None 并记录截帧次数。"""
 
-    def __init__(self, frames: list[Frame | None]) -> None:
+    def __init__(self, frames: Sequence[Frame | None]) -> None:
         self._frames = list(frames)
         self.captures = 0
 
