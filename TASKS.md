@@ -57,7 +57,7 @@
 
 ## 工程治理
 
-- [ ] 结构上限检查扩到 `tests/` 与 `scripts/`：现状 41 处超限，先清或并入允许清单再改扫描范围（`D-019`）。
+- [ ] 按允许清单逐项收缩 `tests/` 与 `scripts/` 的 41 处超限（清单在 `tests/unit/test_structure_limits.py` 的 `_D019_ENTRIES`）。
 
 ## 技术验证
 
