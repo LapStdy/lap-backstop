@@ -2,7 +2,8 @@
 
 ``probe`` 经只读端口核对四件事：模拟器窗口、adb 设备状态、游戏是否在前台、截图分辨率，
 按环境状态机给出 off / booting / degraded / failed / ready。``prepare`` 执行准备的前三步：
-复用或拉起 MuMu、确认 adb 与截图、把游戏拉到前台。``reset`` 断开并重连 adb 后重启游戏；
+复用或拉起 MuMu、确认 adb 与截图、把游戏拉到前台，随后过主界面门控（``page_gate``
+开关，规则见 docs/arknights/03、04），放行才算就绪。``reset`` 断开并重连 adb 后重启游戏；
 ``cleanup`` 按保温开关关闭游戏与实例；``warm`` 保证游戏在前台。
 """
 
@@ -21,7 +22,9 @@ from contracts import (
     PhaseResult,
     RunContext,
 )
+from plugins.maa.capabilities.page_gate import PageGate
 from plugins.maa.emulator_host import EmulatorHost, WindowsEmulatorHost
+from plugins.maa.vision.frames import AdbFrameSource, FrameSource
 from plugins.maa.windows_host import MachineHost, ScreenSize, WindowsMachineHost
 
 _DEFAULT_MUMU_DIR = "H:/MuMuPlayer"
@@ -45,10 +48,12 @@ class MaaEnvironment:
         host: MachineHost | None = None,
         actions: EmulatorHost | None = None,
         wait: Callable[[float], None] = time.sleep,
+        frames: FrameSource | None = None,
     ) -> None:
         self._host = host
         self._actions = actions
         self._wait = wait
+        self._frames = frames
 
     def probe(self, env: EnvironmentRef, ctx: RunContext) -> EnvironmentProbe:
         """按窗口、adb、前台与分辨率四项给出环境状态；只读且可重复。"""
@@ -92,7 +97,7 @@ class MaaEnvironment:
         )
 
     def prepare(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
-        """复用或拉起模拟器、确认 adb 与截图、把游戏拉到前台。"""
+        """复用或拉起模拟器、确认 adb 与截图、把游戏拉到前台，再过主界面门控。"""
         config = ctx.config
         started_at = ctx.clock.utc_now()
         host = self._host_for(config)
@@ -112,9 +117,16 @@ class MaaEnvironment:
                 return _failure(ctx, started_at, "E_ENV_NOT_READY", f"游戏未在限期内到前台：{game}")
         except OSError as error:
             return _failure(ctx, started_at, "E_ENV_UNREACHABLE", f"环境动作失败：{error}")
+        gate_summary = ""
+        if _is_gate_enabled(config):
+            outcome = self._gate(config).run(ctx)
+            gate_error = None if outcome.passed else outcome.error_code
+            if gate_error is not None:
+                return _failure(ctx, started_at, gate_error.value, outcome.detail)
+            gate_summary = f"；{outcome.detail}"
         return PhaseResult(
             ok=True,
-            detail=f"环境就绪：{address} 在线，{game} 在前台",
+            detail=f"环境就绪：{address} 在线，{game} 在前台{gate_summary}",
             started_at=started_at,
             ended_at=ctx.clock.utc_now(),
         )
@@ -198,6 +210,11 @@ class MaaEnvironment:
         """真机只读端口按需构造：测试注入假件，生产用 Windows 实现。"""
         return self._host if self._host is not None else _build_host(config)
 
+    def _gate(self, config: Mapping[str, Any]) -> PageGate:
+        """主界面门控按需装配：测试注入帧源，生产用 adb 截帧实现。"""
+        frames = self._frames if self._frames is not None else _build_frames(config)
+        return PageGate(frames=frames, wait=self._wait)
+
     def _wait_adb(
         self,
         host: MachineHost,
@@ -257,6 +274,20 @@ def _find_window(titles: Sequence[str], needle: str) -> str | None:
         if needle in title:
             return title
     return None
+
+
+def _is_gate_enabled(config: Mapping[str, Any]) -> bool:
+    """主界面门控开关；未配置或写法非法按开启处理（schema 默认 true）。"""
+    value = config.get("page_gate")
+    return value if isinstance(value, bool) else True
+
+
+def _build_frames(config: Mapping[str, Any]) -> FrameSource:
+    """按配置拼出 adb 帧端口：与真机端口同一目录树取 adb。"""
+    mumu_dir = Path(str(config.get("mumu_dir", _DEFAULT_MUMU_DIR)))
+    return AdbFrameSource(
+        adb_path=mumu_dir / "nx_main" / "adb.exe", address=_text(config, "adb_address")
+    )
 
 
 def _text(config: Mapping[str, Any], key: str) -> str:

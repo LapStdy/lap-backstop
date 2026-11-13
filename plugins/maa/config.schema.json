@@ -63,6 +63,12 @@
       "minimum": 1,
       "default": 60
     },
+    "page_gate": {
+      "type": "boolean",
+      "title": "主界面门控",
+      "description": "prepare 在拉起游戏后截帧判定主界面，连续两帧确认才放行",
+      "default": true
+    },
     "profile": {
       "type": "string",
       "title": "MAA 配置名",

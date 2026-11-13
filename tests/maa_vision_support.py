@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ import cv2
 import numpy as np
 
 from plugins.maa.vision.anchors import ANCHORS, APPEARANCE_PAD, Anchor
+from plugins.maa.vision.frames import Frame, FrameOrigin
 from plugins.maa.vision.judge import HomeJudge, suppress_badges
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "maa_gate"
@@ -67,6 +69,27 @@ def rebuild_canvas(entry: dict) -> np.ndarray:
 def make_judge() -> HomeJudge:
     """默认模板目录（plugins/maa/templates/）的判定器。"""
     return HomeJudge()
+
+
+def fixture_frame(entry: dict) -> Frame:
+    """把冻结样本重建为 1280×720 满帧并编码 PNG 字节，门控测试共用。
+
+    ``sha256`` 按重建字节计算，与门控落盘证据的字节一致，内核登记哈希
+    因此可以逐帧断言。
+    """
+    image = rebuild_canvas(entry)
+    ok, encoded = cv2.imencode(".png", image)
+    assert ok, "重建画布编码 PNG 失败"
+    data = encoded.tobytes()
+    return Frame(
+        image=image,
+        width=image.shape[1],
+        height=image.shape[0],
+        captured_at=NOW,
+        sha256=hashlib.sha256(data).hexdigest(),
+        source=FrameOrigin.ADB,
+        png=data,
+    )
 
 
 def _search_window(frame: np.ndarray, anchor: Anchor) -> np.ndarray:

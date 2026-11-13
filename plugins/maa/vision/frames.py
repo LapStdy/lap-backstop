@@ -61,7 +61,11 @@ def subprocess_runner(args: list[str], timeout: float) -> subprocess.CompletedPr
 
 @dataclass(frozen=True)
 class Frame:
-    """截到的一帧：BGR 图像、宽高、UTC 截取时刻、原始 PNG 摘要与来源。"""
+    """截到的一帧：BGR 图像、宽高、UTC 截取时刻、原始 PNG 字节与摘要、来源。
+
+    ``png`` 保留编码前的原始截帧字节：证据落盘必须用原字节，登记哈希才与
+    ``sha256`` 一致；由 BGR 数组重编码会产生不同的字节流。
+    """
 
     image: np.ndarray
     width: int
@@ -69,6 +73,7 @@ class Frame:
     captured_at: datetime
     sha256: str
     source: FrameOrigin
+    png: bytes
 
 
 def _decode_bgr(data: bytes) -> np.ndarray | None:
@@ -117,4 +122,5 @@ class AdbFrameSource:
             captured_at=datetime.now(UTC),
             sha256=hashlib.sha256(data).hexdigest(),
             source=FrameOrigin.ADB,
+            png=data,
         )

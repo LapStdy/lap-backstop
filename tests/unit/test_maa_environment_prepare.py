@@ -1,6 +1,7 @@
 """MaaEnvironment.prepare 的单元测试（docs/plugins/maa.md 环境节）。
 
-模拟器动作与真机读数全部用假件：不启动实例、不连 adb、不拉起游戏、不真等。
+模拟器动作、真机读数与帧源全部用假件：不启动实例、不连 adb、不拉起游戏、
+不截真帧；主界面判定输入用冻结样本重建的满帧。
 """
 
 from __future__ import annotations
@@ -12,7 +13,9 @@ from typing import Any
 
 from contracts import EnvironmentRef, RunContext
 from plugins.maa.capabilities.environment import MaaEnvironment
+from plugins.maa.vision.frames import Frame, FrameSource
 from plugins.maa.windows_host import ScreenSize
+from tests.maa_vision_support import fixture_frame, load_manifest
 
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=UTC)
 ENV = EnvironmentRef(id="env-1", provider_id="maa")
@@ -119,7 +122,9 @@ class _FakeActions:
         self.calls.append(f"shutdown:{instance_index}")
 
 
-def make_context(config: Mapping[str, Any] | None = None) -> RunContext:
+def make_context(
+    config: Mapping[str, Any] | None = None, evidence_dir: Path | None = None
+) -> RunContext:
     return RunContext(
         run_id="run-1",
         attempt=1,
@@ -127,8 +132,8 @@ def make_context(config: Mapping[str, Any] | None = None) -> RunContext:
         plugin_id="maa",
         environment_id="env-1",
         config={} if config is None else dict(config),
-        work_dir=Path("."),
-        evidence_dir=Path("."),
+        work_dir=Path(".") if evidence_dir is None else evidence_dir,
+        evidence_dir=Path(".") if evidence_dir is None else evidence_dir,
         deadline_at=NOW + timedelta(minutes=5),
         cancel=_CancelFlag(),
         clock=_Clock(),
@@ -139,42 +144,66 @@ def make_context(config: Mapping[str, Any] | None = None) -> RunContext:
     )
 
 
+class _RepeatFrames:
+    """每次截帧返回同一满帧的假帧源：门控两帧确认用同一帧。"""
+
+    def __init__(self, frame: Frame) -> None:
+        self._frame = frame
+        self.captures = 0
+
+    def capture(self) -> Frame | None:
+        self.captures += 1
+        return self._frame
+
+
+def _home_frames() -> FrameSource:
+    """冻结样本第一帧主界面重建的满帧源，prepare 成功用例的门控输入。"""
+    homes = [entry for entry in load_manifest()["frames"] if entry["expected"] == "home"]
+    return _RepeatFrames(fixture_frame(homes[0]))
+
+
 def make_provider(
     host: _FakeHost,
     actions: _FakeActions,
     ctx: RunContext,
+    frames: FrameSource | None = None,
 ) -> MaaEnvironment:
     """装配环境能力；等待只推进该上下文注入的假时钟，测试不真等。"""
 
     def wait(seconds: float) -> None:
         ctx.clock.monotonic_seconds += seconds  # type: ignore[attr-defined]
 
-    return MaaEnvironment(host=host, actions=actions, wait=wait)
+    return MaaEnvironment(
+        host=host,
+        actions=actions,
+        wait=wait,
+        frames=frames if frames is not None else _home_frames(),
+    )
 
 
-def test_prepare_reuses_running_instance_without_actions() -> None:
+def test_prepare_reuses_running_instance_without_actions(tmp_path: Path) -> None:
     """实例已在跑、adb 在线、游戏在前台：prepare 不发任何动作。"""
     actions = _FakeActions()
-    ctx = make_context()
+    ctx = make_context(evidence_dir=tmp_path)
     result = make_provider(_FakeHost(), actions, ctx).prepare(ENV, ctx)
     assert result.ok is True
     assert actions.calls == []
     assert result.started_at == NOW
 
 
-def test_prepare_starts_instance_when_window_missing() -> None:
+def test_prepare_starts_instance_when_window_missing(tmp_path: Path) -> None:
     """窗口不存在时先拉起实例，再等 adb 上线。"""
     actions = _FakeActions()
-    ctx = make_context()
+    ctx = make_context(evidence_dir=tmp_path)
     result = make_provider(_FakeHost(titles=()), actions, ctx).prepare(ENV, ctx)
     assert result.ok is True
     assert actions.calls[0] == "start:0"
 
 
-def test_prepare_reconnects_adb_when_offline() -> None:
+def test_prepare_reconnects_adb_when_offline(tmp_path: Path) -> None:
     """adb 不在线时先重连；连上后继续准备。"""
     actions = _FakeActions()
-    ctx = make_context()
+    ctx = make_context(evidence_dir=tmp_path)
     host = _FakeHost(adb_states=("offline", "device"))
     result = make_provider(host, actions, ctx).prepare(ENV, ctx)
     assert result.ok is True
@@ -202,10 +231,10 @@ def test_prepare_fails_when_screencap_missing() -> None:
     assert actions.calls == []
 
 
-def test_prepare_launches_game_when_not_running() -> None:
+def test_prepare_launches_game_when_not_running(tmp_path: Path) -> None:
     """游戏进程不在时拉起，等它到前台。"""
     actions = _FakeActions(package_running=False)
-    ctx = make_context()
+    ctx = make_context(evidence_dir=tmp_path)
     host = _FakeHost(packages=("app.lawnchair", GAME))
     result = make_provider(host, actions, ctx).prepare(ENV, ctx)
     assert result.ok is True

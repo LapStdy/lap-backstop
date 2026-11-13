@@ -51,16 +51,26 @@ adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed
 | 1 | 复用或启动 MuMu | 窗口存在；adb 设备在线（先 `kill-server` 再 `connect`） | 180 秒 |
 | 2 | 确认可截图 | 截到一帧 | 单次截图 |
 | 3 | 拉起游戏 | 游戏包在前台 | 60 秒 |
-| 4 | 等登录界面 | 登录界面模板命中，或锚点判定为 `HOME` | 300 秒 |
-| 5 | 点登录按钮 | 固定安全坐标点击后画面变化 | 30 秒 |
-| 6 | 等主界面 | 锚点判定为 `HOME` 并稳定（规则见 [03](../arknights/03-主界面判定与导航.md)，实现见 [04](../arknights/04-主界面探针实现.md)） | 300 秒 |
-| 7 | 启动 MAA 并加载资源（`binding`） | `load` 与 `connect` 成功 | 180 秒 |
+| 4 | 主界面门控 | 交接档：总分 ≥ 8、外观命中 ≥ 2、连续 2 帧（规则见 [03](../arknights/03-主界面判定与导航.md)，实现见 [04](../arknights/04-主界面探针实现.md)） | 2 秒 |
+| 5 | 等登录界面 | 登录界面模板命中，或锚点判定为 `HOME` | 300 秒 |
+| 6 | 点登录按钮 | 固定安全坐标点击后画面变化 | 30 秒 |
+| 7 | 等主界面 | 锚点判定为 `HOME` 并稳定 | 300 秒 |
+| 8 | 启动 MAA 并加载资源（`binding`） | `load` 与 `connect` 成功 | 180 秒 |
 
-- 步骤 1–3 由环境 provider 的 `prepare` 执行；步骤 4–6 属就绪状态机，步骤 7 属脚本能力。
+- 步骤 1–4 由环境 provider 的 `prepare` 执行（步骤 4 可用配置 `page_gate` 关闭）；步骤 5–7 属就绪状态机，步骤 8 属脚本能力。
 - 分辨率在 `probe` 里核对：仅当游戏在前台时比较截图的宽高与 `screen_size`。
 
-- 步骤 4 判定为 `HOME` 时跳过步骤 5。
-- 步骤 7 在预热窗口内执行；没有预热窗口时，等待计入准备阶段上限。
+主界面门控（步骤 4）的口径：
+
+- 帧来源是帧端口 `FrameSource`，默认 adb 截帧实现（`adb -s <地址> exec-out screencap -p`）；判定器与连续帧确认复用 03、04 的同一套锚点与门槛，只判定不点击、不按键、不启停任何进程。
+- 每次判定写两条证据：截帧 PNG（`screenshot`，原始帧字节，文件名含帧哈希前 12 位）与判定明细 JSON（`probe`，逐锚点得分、偏移、两路命中、通道、总分、档位、结论、判定耗时与帧哈希）。
+- 连续 2 帧未达交接档：prepare 失败并返回 `E_ENV_NOT_READY`，另写一条 `run.signal`（`kind=maa.gate.unknown`，载荷含总分、外观命中数与帧哈希）；截帧失败或帧不是 PNG 返回 `E_ENV_UNREACHABLE`；帧宽高不是 1280×720 返回 `E_ENV_RESOLUTION`，不缩放继续识别。
+- `page_gate=false` 时不截帧、不写证据、不写信号，prepare 在步骤 3 完成后直接放行，行为与未接门控一致。
+- 前三步失败时不做门控，保持原有错误码与语义。
+- 门控一次约 1.5 秒：adb 截帧约 600 毫秒 ×2、帧间等待 0.3 秒、判定 3.4–4.1 毫秒，预算 2 秒。
+
+- 步骤 5 判定为 `HOME` 时跳过步骤 6。
+- 步骤 8 在预热窗口内执行；没有预热窗口时，等待计入准备阶段上限。
 - `gui` 模式不做预启动；MAA 启动与资源加载在 `launch` 时发生，计入执行阶段。
 - `reset` 先 `adb disconnect` 再 `adb connect`，结束游戏进程后重新拉起并等它到前台；环境状态回到 `booting` 由内核按探测迁移。
 - `warm` 确认游戏在前台，不在就拉起并等；`minutes` 是本次保温时长，记进结果说明。
@@ -148,6 +158,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | `mumu_instance_index` | integer | 0 | 模拟器实例序号 |
 | `mumu_boot_timeout_s` | integer | 180 | 模拟器启动到 adb 可连的上限 |
 | `game_launch_timeout_s` | integer | 60 | 游戏启动到前台的时限 |
+| `page_gate` | boolean | `true` | 主界面门控：prepare 拉起游戏后截帧判定主界面，连续两帧确认才放行 |
 | `profile` | string | `Current` 指向的配置名 | 使用的 MAA 配置 |
 | `tasks` | array | 日常队列 | 每项含 `type`、`name`、`enabled`、`params` |
 | `launch_timeout_s` | integer | 180 | 启动到资源加载完成的上限 |
