@@ -114,6 +114,7 @@ def test_config_schema_locks_documented_top_level_fields() -> None:
         "mumu_instance_index",
         "mumu_boot_timeout_s",
         "game_launch_timeout_s",
+        "page_gate",
         "profile",
         "tasks",
         "launch_timeout_s",
@@ -139,6 +140,7 @@ def test_config_schema_defaults_match_plugin_doc() -> None:
     assert props["mumu_instance_index"]["default"] == 0
     assert props["mumu_boot_timeout_s"]["default"] == 180
     assert props["game_launch_timeout_s"]["default"] == 60
+    assert props["page_gate"]["default"] is True
     assert props["launch_timeout_s"]["default"] == 180
     assert props["wake_timeout_s"]["default"] == 90
     assert props["startup_timeout_s"]["default"] == 300
@@ -293,7 +295,8 @@ class _StubActions:
 def test_environment_actions_are_repeatable_and_idempotent() -> None:
     """docs/05 契约测试表 environment 行：四个动作可重复调用且都成功。"""
     provider = MaaEnvironment(host=_StubHost(), actions=_StubActions())
-    ctx = make_context()
+    # 契约测试不依赖可选视觉 extra（maa-vision），主界面门控路径由单元测试覆盖。
+    ctx = make_context(config={"page_gate": False})
     ref = env_ref()
     for _ in range(2):
         assert provider.prepare(ref, ctx).ok is True
