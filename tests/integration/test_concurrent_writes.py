@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import threading
 from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -46,18 +47,21 @@ def app(tmp_path: Path) -> Iterator[ApiApp]:
     yield ApiApp(database, clock=VirtualClock(NOW))
 
 
+@dataclass(frozen=True, slots=True)
+class CallOptions:
+    """call 的可选请求要素：JSON 体与附加请求头。"""
+
+    body: dict[str, Any] | None = None
+    extra_headers: dict[str, str] | None = None
+
+
 def call(
-    app: ApiApp,
-    method: str,
-    path: str,
-    *,
-    body: dict[str, Any] | None = None,
-    extra_headers: dict[str, str] | None = None,
+    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
 ) -> ApiResponse:
     headers = {"authorization": f"Bearer {TOKEN}"}
-    if extra_headers is not None:
-        headers.update(extra_headers)
-    payload = b"" if body is None else json.dumps(body).encode("utf-8")
+    if options.extra_headers is not None:
+        headers.update(options.extra_headers)
+    payload = b"" if options.body is None else json.dumps(options.body).encode("utf-8")
     return app.handle(ApiRequest(method, path, {}, headers, payload))
 
 
@@ -92,15 +96,15 @@ def run_in_two_threads(
 
 
 def test_concurrent_run_now_with_same_key_creates_one_run(app: ApiApp) -> None:
-    created = call(app, "POST", "/api/v1/schedules", body=MINIMAL)
+    created = call(app, "POST", "/api/v1/schedules", CallOptions(body=MINIMAL))
     assert created.status == 201
     path = f"/api/v1/schedules/{body_of(created)['schedule']['id']}/run"
     headers = {"idempotency-key": "race-key"}
 
     responses = run_in_two_threads(
         [
-            lambda: call(app, "POST", path, extra_headers=headers),
-            lambda: call(app, "POST", path, extra_headers=headers),
+            lambda: call(app, "POST", path, CallOptions(extra_headers=headers)),
+            lambda: call(app, "POST", path, CallOptions(extra_headers=headers)),
         ]
     )
 
@@ -118,8 +122,8 @@ def test_concurrent_run_now_with_same_key_creates_one_run(app: ApiApp) -> None:
 def test_concurrent_settings_writes_keep_both_keys(app: ApiApp) -> None:
     responses = run_in_two_threads(
         [
-            lambda: call(app, "PUT", "/api/v1/settings", body={"api.host": "127.0.0.2"}),
-            lambda: call(app, "PUT", "/api/v1/settings", body={"api.port": 9999}),
+            lambda: call(app, "PUT", "/api/v1/settings", CallOptions(body={"api.host": "127.0.0.2"})),
+            lambda: call(app, "PUT", "/api/v1/settings", CallOptions(body={"api.port": 9999})),
         ]
     )
 

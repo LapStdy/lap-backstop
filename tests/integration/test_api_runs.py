@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -92,21 +93,24 @@ def seed_run(database: Path, *, state: RunState, created_at: datetime) -> str:
         connection.close()
 
 
+@dataclass(frozen=True, slots=True)
+class CallOptions:
+    """call 的可选请求要素：原始字节体与查询串。"""
+
+    body: bytes = b""
+    query: dict[str, str] | None = None
+
+
 def call(
-    app: ApiApp,
-    method: str,
-    path: str,
-    *,
-    body: bytes = b"",
-    query: dict[str, str] | None = None,
+    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
 ) -> ApiResponse:
     return app.handle(
         ApiRequest(
             method,
             path,
-            {} if query is None else query,
+            {} if options.query is None else options.query,
             {"authorization": f"Bearer {TOKEN}"},
-            body,
+            options.body,
         )
     )
 
@@ -129,13 +133,13 @@ def test_list_runs_filters_state_and_template(app: ApiApp, database: Path) -> No
         state=RunState.QUEUED,
         created_at=NOW + timedelta(minutes=1),
     )
-    queued = call(app, "GET", "/api/v1/runs", query={"state": "queued"})
+    queued = call(app, "GET", "/api/v1/runs", CallOptions(query={"state": "queued"}))
     assert [run["id"] for run in body_of(queued)["runs"]] == [queued_id]
-    by_template = call(app, "GET", "/api/v1/runs", query={"template_id": TEMPLATE_ID})
+    by_template = call(app, "GET", "/api/v1/runs", CallOptions(query={"template_id": TEMPLATE_ID}))
     assert len(body_of(by_template)["runs"]) == 2
-    assert call(app, "GET", "/api/v1/runs", query={"limit": "1"}).status == 200
-    assert call(app, "GET", "/api/v1/runs", query={"state": "flying"}).status == 400
-    assert call(app, "GET", "/api/v1/runs", query={"since": "not-a-time"}).status == 400
+    assert call(app, "GET", "/api/v1/runs", CallOptions(query={"limit": "1"})).status == 200
+    assert call(app, "GET", "/api/v1/runs", CallOptions(query={"state": "flying"})).status == 400
+    assert call(app, "GET", "/api/v1/runs", CallOptions(query={"since": "not-a-time"})).status == 400
 
 
 def test_run_detail_includes_phases_evidence_verdicts(app: ApiApp, database: Path) -> None:
@@ -158,8 +162,8 @@ def test_stop_run_cancels_queued_and_rejects_terminal(app: ApiApp, database: Pat
         app,
         "POST",
         f"/api/v1/runs/{queued_id}/stop",
-        body='{"reason": "改配置"}'.encode(),
-    )
+        CallOptions(body='{"reason": "改配置"}'.encode(),
+    ))
     assert stopped.status == 200
     assert body_of(stopped)["run"]["state"] == "cancelled"
     again = call(app, "POST", f"/api/v1/runs/{queued_id}/stop")
@@ -193,7 +197,7 @@ def test_stop_rejects_shutdown_as_cancel_reason(app: ApiApp, database: Path) -> 
         app,
         "POST",
         f"/api/v1/runs/{queued_id}/stop",
-        body=b'{"reason": "shutdown"}',
-    )
+        CallOptions(body=b'{"reason": "shutdown"}',
+    ))
     assert response.status == 400
     assert error_code_of(response) == "E_BAD_REQUEST"

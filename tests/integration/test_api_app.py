@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -35,16 +36,21 @@ def app(database: Path) -> ApiApp:
     return ApiApp(database, clock=VirtualClock(NOW))
 
 
+@dataclass(frozen=True, slots=True)
+class CallOptions:
+    """call 的可选请求要素：token 为 None 时不带鉴权头。"""
+
+    token: str | None = TOKEN
+    body: bytes = b""
+
+
 def call(
-    app: ApiApp,
-    method: str,
-    path: str,
-    *,
-    token: str | None = TOKEN,
-    body: bytes = b"",
+    app: ApiApp, method: str, path: str, options: CallOptions = CallOptions()
 ) -> ApiResponse:
-    headers = {} if token is None else {"authorization": f"Bearer {token}"}
-    return app.handle(ApiRequest(method=method, path=path, query={}, headers=headers, body=body))
+    headers = {} if options.token is None else {"authorization": f"Bearer {options.token}"}
+    return app.handle(
+        ApiRequest(method=method, path=path, query={}, headers=headers, body=options.body)
+    )
 
 
 def payload_of(response: ApiResponse) -> dict[str, Any]:
@@ -71,13 +77,13 @@ def test_health_returns_version_server_id_and_capabilities(app: ApiApp) -> None:
 
 
 def test_request_without_authorization_is_rejected(app: ApiApp) -> None:
-    response = call(app, "GET", "/api/v1/health", token=None)
+    response = call(app, "GET", "/api/v1/health", CallOptions(token=None))
     assert response.status == 401
     assert error_code_of(response) == "E_AUTH"
 
 
 def test_request_with_wrong_token_is_rejected(app: ApiApp) -> None:
-    assert call(app, "GET", "/api/v1/health", token="wrong").status == 401
+    assert call(app, "GET", "/api/v1/health", CallOptions(token="wrong")).status == 401
 
 
 @pytest.mark.parametrize(
@@ -96,6 +102,6 @@ def test_unknown_route_returns_404(app: ApiApp, method: str, path: str) -> None:
 
 
 def test_malformed_json_body_returns_400(app: ApiApp) -> None:
-    response = call(app, "GET", "/api/v1/health", body=b"{not-json")
+    response = call(app, "GET", "/api/v1/health", CallOptions(body=b"{not-json"))
     assert response.status == 400
     assert error_code_of(response) == "E_BAD_REQUEST"
