@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -119,15 +120,18 @@ def _default_record_evidence(kind: str, path: Path, summary: str) -> str:
     return "ev-1"
 
 
-def _context(
-    tmp_path: Path,
-    *,
-    cancel: _Cancel | None = None,
-    log: _RecordingLog | None = None,
-    record_evidence: RecordEvidence | None = None,
-    emit: Emit | None = None,
-    config: Mapping[str, Any] | None = None,
-) -> RunContext:
+@dataclass(frozen=True, slots=True)
+class _ContextDeps:
+    """_context 的可注入协作者：取消令牌、日志、证据、emit 与插件配置。"""
+
+    cancel: _Cancel | None = None
+    log: _RecordingLog | None = None
+    record_evidence: RecordEvidence | None = None
+    emit: Emit | None = None
+    config: Mapping[str, Any] | None = None
+
+
+def _context(tmp_path: Path, deps: _ContextDeps = _ContextDeps()) -> RunContext:
     """构造一次能力调用的上下文；取消令牌、日志、证据与 emit 由用例注入。"""
     return RunContext(
         run_id="run-1",
@@ -135,16 +139,20 @@ def _context(
         template_id="template-1",
         plugin_id="stub",
         environment_id="env-1",
-        config={"scenario": "stub"} if config is None else dict(config),
+        config={"scenario": "stub"} if deps.config is None else dict(deps.config),
         work_dir=tmp_path / "work",
         evidence_dir=tmp_path / "evidence",
         deadline_at=NOW + timedelta(minutes=30),
-        cancel=_Cancel() if cancel is None else cancel,
+        cancel=_Cancel() if deps.cancel is None else deps.cancel,
         clock=VirtualClock(NOW),
         secrets={},
-        log=_RecordingLog() if log is None else log,
-        emit=_noop_emit if emit is None else emit,
-        record_evidence=_default_record_evidence if record_evidence is None else record_evidence,
+        log=_RecordingLog() if deps.log is None else deps.log,
+        emit=_noop_emit if deps.emit is None else deps.emit,
+        record_evidence=(
+            _default_record_evidence
+            if deps.record_evidence is None
+            else deps.record_evidence
+        ),
     )
 
 
@@ -168,6 +176,29 @@ def _env_args(plugin_id: str) -> dict[str, Any]:
     return {"env": {"id": "env-1", "provider_id": plugin_id, "config": {}}}
 
 
+@dataclass(frozen=True, slots=True)
+class _ChannelOptions:
+    """channels() 的可调参数：超时与重启字段带测试口径的默认值。"""
+
+    control: Path | None = None
+    call_timeout_seconds: float = CALL_TIMEOUT_SECONDS
+    start_timeout_seconds: float = START_TIMEOUT_SECONDS
+    cancel_grace_seconds: float = CANCEL_GRACE_SECONDS
+    max_restarts: int = MAX_RESTARTS
+    degraded_retry_seconds: float = DEGRADED_RETRY_SECONDS
+    log: _RecordingLog | None = None
+
+    def limits(self) -> WorkerLimits:
+        """把超时、取消与重启字段映射成通道参数。"""
+        return WorkerLimits(
+            call_timeout_seconds=self.call_timeout_seconds,
+            start_timeout_seconds=self.start_timeout_seconds,
+            cancel_grace_seconds=self.cancel_grace_seconds,
+            max_restarts=self.max_restarts,
+            degraded_retry_seconds=self.degraded_retry_seconds,
+        )
+
+
 class _ChannelFactory:
     """为单个用例造通道，并负责用例结束时关闭所有子进程。"""
 
@@ -176,34 +207,18 @@ class _ChannelFactory:
         self._channels: list[WorkerChannel] = []
 
     def __call__(
-        self,
-        mode: str,
-        *,
-        control: Path | None = None,
-        call_timeout_seconds: float = CALL_TIMEOUT_SECONDS,
-        start_timeout_seconds: float = START_TIMEOUT_SECONDS,
-        cancel_grace_seconds: float = CANCEL_GRACE_SECONDS,
-        max_restarts: int = MAX_RESTARTS,
-        degraded_retry_seconds: float = DEGRADED_RETRY_SECONDS,
-        log: _RecordingLog | None = None,
+        self, mode: str, options: _ChannelOptions = _ChannelOptions()
     ) -> WorkerChannel:
         command = [sys.executable, "-u", str(STUB), mode]
-        if control is not None:
-            command.append(str(control))
-        limits = WorkerLimits(
-            call_timeout_seconds=call_timeout_seconds,
-            start_timeout_seconds=start_timeout_seconds,
-            cancel_grace_seconds=cancel_grace_seconds,
-            max_restarts=max_restarts,
-            degraded_retry_seconds=degraded_retry_seconds,
-        )
+        if options.control is not None:
+            command.append(str(options.control))
         channel = WorkerChannel(
             "stub",
             WorkerConfig(
                 plugins_root=self.tmp_path / "plugins",
                 command=tuple(command),
-                limits=limits,
-                log=_RecordingLog() if log is None else log,
+                limits=options.limits(),
+                log=_RecordingLog() if options.log is None else options.log,
             ),
         )
         self._channels.append(channel)
@@ -271,7 +286,7 @@ def test_call_timeout_kills_worker(channels: _ChannelFactory) -> None:
 
 def test_crash_then_next_call_restarts_worker(channels: _ChannelFactory) -> None:
     control = _control(channels, "crash", "ok")
-    channel = channels("sequence", control=control)
+    channel = channels("sequence", _ChannelOptions(control=control))
     channel.start()
     first_pid = channel.pid
     assert first_pid is not None
@@ -290,7 +305,9 @@ def test_crash_then_next_call_restarts_worker(channels: _ChannelFactory) -> None
 def test_repeated_failures_degrade_channel(channels: _ChannelFactory) -> None:
     log = _RecordingLog()
     control = _control(channels, "crash", "crash")
-    channel = channels("sequence", control=control, max_restarts=2, log=log)
+    channel = channels(
+        "sequence", _ChannelOptions(control=control, max_restarts=2, log=log)
+    )
     for _ in range(2):
         with pytest.raises(WorkerCrashError):
             channel.call("environment", "probe", {}, _context(channels.tmp_path))
@@ -308,7 +325,7 @@ def test_repeated_failures_degrade_channel(channels: _ChannelFactory) -> None:
 def test_degradation_reason_reflects_last_failure(channels: _ChannelFactory) -> None:
     """降级原因实时反映触发降级的失败形态；未降级时为 None。"""
     control = _control(channels, "crash", "crash")
-    channel = channels("sequence", control=control, max_restarts=2)
+    channel = channels("sequence", _ChannelOptions(control=control, max_restarts=2))
     assert channel.degradation_reason is None
     for _ in range(2):
         with pytest.raises(WorkerCrashError):
@@ -321,7 +338,7 @@ def test_degradation_reason_reflects_last_failure(channels: _ChannelFactory) -> 
 
 def test_success_resets_failure_counter(channels: _ChannelFactory) -> None:
     control = _control(channels, "crash", "ok", "crash", "crash")
-    channel = channels("sequence", control=control)
+    channel = channels("sequence", _ChannelOptions(control=control))
     with pytest.raises(WorkerCrashError):
         channel.call("environment", "probe", {}, _context(channels.tmp_path))
     assert channel.is_degraded is False
@@ -337,7 +354,7 @@ def test_session_fail_discards_process_and_counts_degradation(
 ) -> None:
     """失败收尾落在会话模块：整树结束进程，连续失败计入降级预算并记因。"""
     log = _RecordingLog()
-    channel = channels("ok", max_restarts=2, log=log)
+    channel = channels("ok", _ChannelOptions(max_restarts=2, log=log))
     channel.start()
     session = channel._session
     pid = channel.pid
@@ -355,7 +372,7 @@ def test_session_fail_discards_process_and_counts_degradation(
 def test_cancel_grace_kills_worker(channels: _ChannelFactory) -> None:
     cancel = _Cancel()
     # 调用超时留得比「发现取消 + 宽限」更长，否则先撞上超时分支。
-    channel = channels("silent", call_timeout_seconds=0.5)
+    channel = channels("silent", _ChannelOptions(call_timeout_seconds=0.5))
     channel.start()
     pid = channel.pid
     assert pid is not None
@@ -368,7 +385,7 @@ def test_cancel_grace_kills_worker(channels: _ChannelFactory) -> None:
                 "environment",
                 "probe",
                 {},
-                _context(channels.tmp_path, cancel=cancel),
+                _context(channels.tmp_path, _ContextDeps(cancel=cancel)),
             )
     finally:
         timer.cancel()
@@ -381,7 +398,7 @@ def test_cancel_grace_kills_worker(channels: _ChannelFactory) -> None:
 def test_cancel_does_not_count_as_restart_failure(channels: _ChannelFactory) -> None:
     """用户取消不是重启失败：max_restarts=1 时取消一次也不应降级。"""
     cancel = _Cancel()
-    channel = channels("silent", call_timeout_seconds=0.5, max_restarts=1)
+    channel = channels("silent", _ChannelOptions(call_timeout_seconds=0.5, max_restarts=1))
     channel.start()
     timer = threading.Timer(CANCEL_DELAY_SECONDS, cancel.cancel)
     timer.start()
@@ -391,7 +408,7 @@ def test_cancel_does_not_count_as_restart_failure(channels: _ChannelFactory) -> 
                 "environment",
                 "probe",
                 {},
-                _context(channels.tmp_path, cancel=cancel),
+                _context(channels.tmp_path, _ContextDeps(cancel=cancel)),
             )
     finally:
         timer.cancel()
@@ -426,7 +443,7 @@ def test_callback_result_is_applied_by_context(channels: _ChannelFactory) -> Non
         "verifier",
         "verify",
         {},
-        _context(channels.tmp_path, record_evidence=record_evidence),
+        _context(channels.tmp_path, _ContextDeps(record_evidence=record_evidence)),
     )
     assert value == {"evidence": "ev-1"}
     assert recorded == [("log", Path("stub.log"), "stub")]
@@ -435,7 +452,9 @@ def test_callback_result_is_applied_by_context(channels: _ChannelFactory) -> Non
 def test_notify_reaches_context_log(channels: _ChannelFactory) -> None:
     log = _RecordingLog()
     channel = channels("notify")
-    value = channel.call("environment", "probe", {}, _context(channels.tmp_path, log=log))
+    value = channel.call(
+        "environment", "probe", {}, _context(channels.tmp_path, _ContextDeps(log=log))
+    )
     assert value == OK_VALUE
     assert ("info", {"message": "stub notify"}) in log.entries
 
@@ -488,10 +507,9 @@ def test_degraded_recovers_after_retry_window(channels: _ChannelFactory) -> None
     control = _control(channels, "crash", "ok")
     channel = channels(
         "sequence",
-        control=control,
-        max_restarts=1,
-        degraded_retry_seconds=0.2,
-        log=log,
+        _ChannelOptions(
+            control=control, max_restarts=1, degraded_retry_seconds=0.2, log=log
+        ),
     )
     with pytest.raises(WorkerCrashError):
         channel.call("environment", "probe", {}, _context(channels.tmp_path))
@@ -521,11 +539,13 @@ def test_emit_allows_run_signal(tmp_path: Path) -> None:
             _env_args("emitter"),
             _context(
                 tmp_path,
-                emit=emit,
-                config={
-                    "event": "run.signal",
-                    "payload": {"kind": "progress", "payload": {"p": 1}},
-                },
+                _ContextDeps(
+                    emit=emit,
+                    config={
+                        "event": "run.signal",
+                        "payload": {"kind": "progress", "payload": {"p": 1}},
+                    },
+                ),
             ),
         )
     finally:
@@ -556,7 +576,10 @@ def test_emit_rejects_events_outside_contract(
                 "environment",
                 "probe",
                 _env_args("emitter"),
-                _context(tmp_path, config={"event": event, "payload": payload}),
+                _context(
+                    tmp_path,
+                    _ContextDeps(config={"event": event, "payload": payload}),
+                ),
             )
     finally:
         channel.close()

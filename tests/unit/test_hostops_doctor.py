@@ -7,7 +7,7 @@ import json
 import os
 import socket
 import subprocess
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -328,28 +328,47 @@ FIREWALL_QUERY: tuple[str, ...] = (
 )
 
 
-def firewall_block(enabled: str, direction: str, action: str, remote: str, port: str) -> str:
+@dataclass(frozen=True, slots=True)
+class FirewallRule:
+    """一段 netsh show rule 输出里的可解析字段。"""
+
+    enabled: str
+    direction: str
+    action: str
+    remote: str
+    port: str
+
+
+# 覆盖回环与 tailnet 的标准放行规则；各用例按需派生差异字段。
+_IN_SCOPE_RULE = FirewallRule(
+    enabled="是",
+    direction="入",
+    action="允许",
+    remote="100.64.0.0/10,127.0.0.0/8",
+    port="8787",
+)
+
+
+def firewall_block(rule: FirewallRule) -> str:
     """构造一段 netsh show rule 的中文输出。"""
     return (
         f"规则名称:                            {doctor.FIREWALL_RULE_NAME}\n"
         "----------------------------------------------------------------------\n"
-        f"已启用:                               {enabled}\n"
-        f"方向:                                 {direction}\n"
+        f"已启用:                               {rule.enabled}\n"
+        f"方向:                                 {rule.direction}\n"
         "配置文件:                             域, 专用, 公用\n"
         "本地IP:                               Any\n"
-        f"远程IP:                               {remote}\n"
+        f"远程IP:                               {rule.remote}\n"
         "协议:                                 TCP\n"
-        f"本地端口:                             {port}\n"
+        f"本地端口:                             {rule.port}\n"
         "远程端口:                             Any\n"
-        f"操作:                                 {action}\n"
+        f"操作:                                 {rule.action}\n"
     )
 
 
 def test_check_inbound_firewall_rule_in_scope_passes(tmp_path: Path) -> None:
     script = {
-        FIREWALL_QUERY: completed(
-            firewall_block("是", "入", "允许", "100.64.0.0/10,127.0.0.0/8", "8787").encode()
-        )
+        FIREWALL_QUERY: completed(firewall_block(_IN_SCOPE_RULE).encode())
     }
     deps = make_deps(tmp_path, runner=scripted(script))
     assert single(deps, 14).level is doctor.Level.PASS
@@ -369,9 +388,7 @@ def test_check_inbound_firewall_rule_in_scope_passes(tmp_path: Path) -> None:
     assert single(deps, 14).level is doctor.Level.PASS
 
     # 中文宿主控制台的 GBK 输出也能解出字段
-    script[FIREWALL_QUERY] = completed(
-        firewall_block("是", "入", "允许", "100.64.0.0/10,127.0.0.0/8", "8787").encode("gbk")
-    )
+    script[FIREWALL_QUERY] = completed(firewall_block(_IN_SCOPE_RULE).encode("gbk"))
     assert single(deps, 14).level is doctor.Level.PASS
 
 
@@ -381,20 +398,22 @@ def test_check_inbound_firewall_missing_or_out_of_scope_warns(tmp_path: Path) ->
     # 规则缺失（命令不可用是等价形态）
     assert single(deps, 14).level is doctor.Level.WARN
 
-    script[FIREWALL_QUERY] = completed(firewall_block("是", "入", "允许", "Any", "8787").encode())
+    script[FIREWALL_QUERY] = completed(
+        firewall_block(replace(_IN_SCOPE_RULE, remote="Any")).encode()
+    )
     result = single(deps, 14)
     assert result.level is doctor.Level.WARN
     assert "超出回环与 tailnet" in result.detail
 
     script[FIREWALL_QUERY] = completed(
-        firewall_block("否", "入", "允许", "100.64.0.0/10,127.0.0.0/8", "8787").encode()
+        firewall_block(replace(_IN_SCOPE_RULE, enabled="否")).encode()
     )
     result = single(deps, 14)
     assert result.level is doctor.Level.WARN
     assert "未启用" in result.detail
 
     script[FIREWALL_QUERY] = completed(
-        firewall_block("是", "入", "允许", "100.64.0.0/10,127.0.0.0/8", "9999").encode()
+        firewall_block(replace(_IN_SCOPE_RULE, port="9999")).encode()
     )
     result = single(deps, 14)
     assert result.level is doctor.Level.WARN
