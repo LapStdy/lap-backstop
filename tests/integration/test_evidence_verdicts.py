@@ -19,7 +19,7 @@ from contracts import (
     VerdictStatus,
 )
 from core.clock import VirtualClock
-from core.events.evidence import EvidenceService
+from core.events.evidence import EvidenceDraft, EvidenceService
 from core.events.verdicts import MissingEvidenceError, VerdictPolicyError, VerdictService
 from core.jobs.run_service import JobRunService
 from storage import migrate, open_database
@@ -88,9 +88,7 @@ def test_evidence_is_hashed_and_recorded(
     service = EvidenceService(connection, evidence_root, clock)
     evidence_id = service.record(
         run_id,
-        kind=EvidenceKind.LOG,
-        path=Path("shot.log"),
-        summary="测试证据",
+        EvidenceDraft(kind=EvidenceKind.LOG, path=Path("shot.log"), summary="测试证据"),
     )
     stored = service.for_run(run_id)
     assert [item.id for item in stored] == [evidence_id]
@@ -114,9 +112,7 @@ def test_evidence_path_cannot_escape_root(
     with pytest.raises(ValueError):
         service.record(
             run_id,
-            kind=EvidenceKind.LOG,
-            path=Path("../outside.log"),
-            summary="逃逸",
+            EvidenceDraft(kind=EvidenceKind.LOG, path=Path("../outside.log"), summary="逃逸"),
         )
 
 
@@ -246,7 +242,5 @@ def _record_log(evidence: EvidenceService, evidence_root: Path, run_id: str) -> 
     target.write_text("hello", encoding="utf-8")
     return evidence.record(
         run_id,
-        kind=EvidenceKind.LOG,
-        path=Path("shot.log"),
-        summary="测试证据",
+        EvidenceDraft(kind=EvidenceKind.LOG, path=Path("shot.log"), summary="测试证据"),
     )

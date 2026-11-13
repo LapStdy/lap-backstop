@@ -24,7 +24,7 @@ from core.events.maintenance import (
 from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeOptions, run_serve
 from core.hostops.watchdog import WATCHDOG_GAVE_UP_EVENT
 from core.jobs.run_service import JobRunService
-from core.notify.service import NotifyService
+from core.notify.service import NotifyOptions, NotifyService
 from core.supervisor import Supervisor
 from storage import migrate, open_database
 from storage.repositories.events import GLOBAL_EVENTS_KEEP, EventLog
@@ -356,9 +356,11 @@ def _notify_service(
         database,
         clock,
         data_root=Path("data"),
-        settings_reader=lambda: dict(ENABLED),
-        channel_factory=lambda config: stub,
-        wait=lambda seconds: None,
+        options=NotifyOptions(
+            settings_reader=lambda: dict(ENABLED),
+            channel_factory=lambda config: stub,
+            wait=lambda seconds: None,
+        ),
     )
 
 

@@ -24,7 +24,7 @@ from contracts import (
     StopMode,
     StopResult,
 )
-from core.api.app import ApiApp
+from core.api.app import ApiApp, ApiDeps
 from core.api.store import TOKEN_KEY, put_settings
 from core.api.wire import ApiRequest, ApiResponse
 from core.clock import VirtualClock
@@ -40,7 +40,7 @@ from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, Fake
 from storage import migrate, open_database
 from storage.repositories.environments import EnvironmentRepository
 from storage.repositories.job_runs import NewRun
-from storage.repositories.resources import ResourceRepository
+from storage.repositories.resources import ResourceRepository, ResourceSpec
 from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
@@ -190,7 +190,7 @@ def _stop_over_http(
     database: Path, clock: VirtualClock, supervisor: Supervisor, run_id: str
 ) -> ApiResponse:
     """走与 serve 相同的注入面：ApiApp 只拿到 RunStopper，不摸 Supervisor 内部。"""
-    app = ApiApp(database, clock=clock, run_stopper=supervisor)
+    app = ApiApp(database, clock=clock, deps=ApiDeps(run_stopper=supervisor))
     return app.handle(
         ApiRequest(
             "POST",
@@ -246,7 +246,9 @@ def test_expired_lease_moves_run_to_recovering(
     insert_template(connection)
     run_id = prepare_run(connection, runs)
     runs.enqueue(run_id)
-    ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+    ResourceRepository(connection).ensure(
+        ENV_ID, ResourceSpec(resource_type="environment", name=ENV_ID)
+    )
     leases = LeaseService(connection, clock)
     leases.acquire(run_id, (ENV_ID,), ttl=timedelta(minutes=10))
     runs.transition(run_id, RunState.PREPARING)
@@ -268,7 +270,9 @@ def test_cleaning_run_holds_lease_across_renewal_ticks(
     insert_template(connection)
     run_id = prepare_run(connection, runs)
     runs.enqueue(run_id)
-    ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+    ResourceRepository(connection).ensure(
+        ENV_ID, ResourceSpec(resource_type="environment", name=ENV_ID)
+    )
     leases = LeaseService(connection, clock)
     leases.acquire(run_id, (ENV_ID,), ttl=timedelta(minutes=10))
     runs.transition(run_id, RunState.PREPARING)
@@ -319,7 +323,9 @@ def test_startup_marks_orphan_executing_run_unknown(
     insert_template(connection)
     run_id = prepare_run(connection, runs)
     runs.enqueue(run_id)
-    ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+    ResourceRepository(connection).ensure(
+        ENV_ID, ResourceSpec(resource_type="environment", name=ENV_ID)
+    )
     leases = LeaseService(connection, clock)
     leases.acquire(run_id, (ENV_ID,))
     runs.transition(run_id, RunState.PREPARING)

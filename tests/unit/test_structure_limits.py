@@ -179,89 +179,9 @@ _D013_ENTRIES: tuple[AllowEntry, ...] = (
     ),
 )
 
-# 其余既有超限不在 D-013 范围，打包记 D-018 由后续重构卡偿还。
-_D018_ENTRIES: tuple[AllowEntry, ...] = (
-    AllowEntry(
-        "core/api/app.py",
-        "ApiApp.__init__",
-        "function_params",
-        "7 个",
-        "API 装配注入点收敛属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
-        "core/events/evidence.py",
-        "EvidenceService.record",
-        "function_params",
-        "5 个",
-        "证据登记参数收敛属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
-        "core/hostops/environment_actions.py",
-        "EnvironmentActionService.__init__",
-        "function_params",
-        "5 个",
-        "环境动作注入点收敛属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
-        "core/hostops/retention.py",
-        "RetentionRunner.__init__",
-        "function_params",
-        "5 个",
-        "保留清理注入点收敛属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
-        "core/hostops/upgrade_state.py",
-        "record_failed",
-        "function_params",
-        "5 个",
-        "升级事件参数收敛属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
-        "core/notify/service.py",
-        "NotifyService.__init__",
-        "function_params",
-        "7 个",
-        "通知装配注入点收敛属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
-        "core/plugins/worker.py",
-        "_Reader.__init__",
-        "function_params",
-        "5 个",
-        "worker 通道读取注入点收敛属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
-        "core/supervisor_environments.py",
-        "EnvironmentSupervision.__init__",
-        "function_params",
-        "6 个",
-        "环境监督注入点收敛属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
-        "core/supervisor_leases.py",
-        "LeaseSupervision.__init__",
-        "function_params",
-        "5 个",
-        "租约监督注入点收敛属独立重构",
-        "D-018",
-    ),
-    AllowEntry(
-        "storage/repositories/resources.py",
-        "ResourceRepository.ensure",
-        "function_params",
-        "5 个",
-        "资源注册参数收敛属独立重构",
-        "D-018",
-    ),
-)
+# 其余既有超限打包记的 D-018 已全部归还：十个构造与记录函数参数收敛随
+# feat/card66-param-tighten，storage/db/backup.py 模块拆分随 c2ee3f4；清单清空。
+_D018_ENTRIES: tuple[AllowEntry, ...] = ()
 
 # D-019：tests/ 与 scripts/ 的既有超限随扫描范围扩展入闸，逐项收缩由 TASKS.md「工程治理」承接。
 _D019_ENTRIES: tuple[AllowEntry, ...] = (

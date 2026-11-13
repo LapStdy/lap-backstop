@@ -14,7 +14,7 @@ from typing import Any
 import pytest
 
 from contracts import RunState
-from core.api.app import ApiApp
+from core.api.app import ApiApp, ApiDeps
 from core.api.store import TOKEN_KEY, put_settings
 from core.api.wire import ApiRequest, ApiResponse
 from core.clock import VirtualClock
@@ -58,12 +58,14 @@ def app(database: Path, tmp_path: Path) -> Iterator[ApiApp]:
         yield ApiApp(
             database,
             clock=clock,
-            run_stopper=Supervisor(
-                connection,
-                clock,
-                PluginRegistry(),
-                data_root=tmp_path,
-                disk_free=lambda: _STABLE_DISK_FREE,
+            deps=ApiDeps(
+                run_stopper=Supervisor(
+                    connection,
+                    clock,
+                    PluginRegistry(),
+                    data_root=tmp_path,
+                    disk_free=lambda: _STABLE_DISK_FREE,
+                ),
             ),
         )
     finally:

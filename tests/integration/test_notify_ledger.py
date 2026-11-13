@@ -18,7 +18,7 @@ import pytest
 from contracts import EventType, Logger
 from core.clock import VirtualClock
 from core.logging import JsonLineLogger
-from core.notify.service import NotifyService
+from core.notify.service import NotifyOptions, NotifyService
 from storage import BUSY_TIMEOUT_MS, migrate
 from storage.repositories.notifications import NotificationRepository
 from tests.notify_support import (
@@ -84,10 +84,12 @@ def _service(
         connection,
         VirtualClock(NOW),
         data_root=Path("data"),
-        log=log,
-        settings_reader=lambda: dict(ENABLED),
-        channel_factory=lambda config: stub,
-        wait=lambda seconds: None,
+        options=NotifyOptions(
+            log=log,
+            settings_reader=lambda: dict(ENABLED),
+            channel_factory=lambda config: stub,
+            wait=lambda seconds: None,
+        ),
     )
 
 

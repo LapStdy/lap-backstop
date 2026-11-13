@@ -22,7 +22,7 @@ from core.supervisor import Supervisor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
-from storage.repositories.resources import ResourceRepository
+from storage.repositories.resources import ResourceRepository, ResourceSpec
 from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
@@ -149,7 +149,9 @@ def test_expired_lease_is_handed_to_queued_run_and_holder_retries(
     connection, clock, runs, data_root = env
     first = prepare_run(runs, key="first", overrides=RunOverrides(priority=10))
     runs.transition(first, RunState.PREPARING)
-    ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+    ResourceRepository(connection).ensure(
+        ENV_ID, ResourceSpec(resource_type="environment", name=ENV_ID)
+    )
     LeaseService(connection, clock).acquire(first, (ENV_ID,), ttl=LEASE_TTL)
     second = prepare_run(runs, key="second")
 
@@ -181,7 +183,9 @@ def test_exhausted_lease_recovery_marks_run_failed(
     insert_template(connection, {"max_attempts": 1})
     run_id = prepare_run(runs, key="only")
     runs.transition(run_id, RunState.PREPARING)
-    ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+    ResourceRepository(connection).ensure(
+        ENV_ID, ResourceSpec(resource_type="environment", name=ENV_ID)
+    )
     LeaseService(connection, clock).acquire(run_id, (ENV_ID,), ttl=LEASE_TTL)
 
     supervisor = Supervisor(
@@ -210,7 +214,9 @@ def test_recovery_retry_with_busy_lease_stays_queued_until_deadline(
         runs, key="first", overrides=RunOverrides(priority=10, deadline_at=deadline)
     )
     runs.transition(first, RunState.PREPARING)
-    ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+    ResourceRepository(connection).ensure(
+        ENV_ID, ResourceSpec(resource_type="environment", name=ENV_ID)
+    )
     leases = LeaseService(connection, clock)
     leases.acquire(first, (ENV_ID,), ttl=LEASE_TTL)
 

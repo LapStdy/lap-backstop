@@ -24,7 +24,7 @@ from core.api.store import TOKEN_KEY, put_settings
 from core.clock import VirtualClock
 from core.environments.actions import EnvironmentActionResult
 from core.environments.errors import EnvironmentStateError
-from core.hostops.environment_actions import EnvironmentActionService
+from core.hostops.environment_actions import ActionOptions, EnvironmentActionService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from plugins.fake.plugin import FakeEnvironmentProvider
 from storage import migrate, open_database
@@ -86,7 +86,10 @@ def test_prepare_from_request_thread_succeeds_while_tick_connection_is_open(
 def test_prepare_rejects_as_busy_when_another_action_holds_the_lock(database: Path) -> None:
     """等锁超时按环境忙拒绝：第二个动作不挂在请求线程上，也不改环境行。"""
     actions = EnvironmentActionService(
-        database, VirtualClock(NOW), PluginRegistry(), lock_timeout_seconds=0.01
+        database,
+        VirtualClock(NOW),
+        PluginRegistry(),
+        options=ActionOptions(lock_timeout_seconds=0.01),
     )
     actions._lock.acquire()
     try:

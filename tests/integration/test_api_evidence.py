@@ -23,7 +23,7 @@ from core.api.server import ApiOptions, ApiServer, start_api_server
 from core.api.store import TOKEN_KEY, put_settings
 from core.api.wire import ApiRequest, ApiResponse, FileBody
 from core.clock import VirtualClock
-from core.events.evidence import EvidenceService
+from core.events.evidence import EvidenceDraft, EvidenceService
 from core.jobs.run_service import JobRunService
 from storage import migrate, open_database
 from storage.repositories.evidence import EvidenceRepository
@@ -104,9 +104,7 @@ def record_evidence(database: Path, run_id: str, name: str, content: bytes) -> s
         service = EvidenceService(connection, root, VirtualClock(NOW))
         return service.record(
             run_id,
-            kind=EvidenceKind.LOG,
-            path=Path(name),
-            summary="测试证据",
+            EvidenceDraft(kind=EvidenceKind.LOG, path=Path(name), summary="测试证据"),
         )
     finally:
         connection.close()

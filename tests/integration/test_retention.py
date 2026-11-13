@@ -22,6 +22,7 @@ from core.clock import VirtualClock
 from core.hostops.retention import (
     RETENTION_PRUNED_EVENT,
     RETENTION_PRUNED_ON_KEY,
+    RetentionOptions,
     RetentionPolicy,
     RetentionRunner,
 )
@@ -296,7 +297,10 @@ def test_evidence_quota_deletes_oldest_terminal_files(
     seed_evidence(database, "run-new", "run-new/new.bin", created_at=NOW - timedelta(days=1))
 
     runner = RetentionRunner(
-        database, clock, data_root=tmp_path, policy=policy_with(evidence_total_bytes=150)
+        database,
+        clock,
+        data_root=tmp_path,
+        options=RetentionOptions(policy=policy_with(evidence_total_bytes=150)),
     )
     outcome = runner.run_once()
 

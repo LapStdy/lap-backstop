@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from core.api.app import ApiApp
+from core.api.app import ApiApp, ApiDeps
 from core.api.store import TOKEN_KEY, put_settings
 from core.api.wire import ApiRequest, ApiResponse
 from core.clock import VirtualClock
@@ -47,7 +47,7 @@ def schtasks() -> tuple[FakeRunner, list[list[str]]]:
 @pytest.fixture
 def app(database: Path, schtasks: tuple[FakeRunner, list[list[str]]]) -> ApiApp:
     runner, _calls = schtasks
-    return ApiApp(database, clock=VirtualClock(NOW), task_runner=runner)
+    return ApiApp(database, clock=VirtualClock(NOW), deps=ApiDeps(task_runner=runner))
 
 
 def call(app: ApiApp, method: str, path: str, *, token: str | None = TOKEN) -> ApiResponse:
@@ -111,7 +111,7 @@ def test_register_event_matches_startup_shape(app: ApiApp, database: Path) -> No
 
 def test_register_failure_keeps_structured_result_and_event(app: ApiApp, database: Path) -> None:
     runner, _calls = fake_runner(returncode=1)
-    failing = ApiApp(database, clock=VirtualClock(NOW), task_runner=runner)
+    failing = ApiApp(database, clock=VirtualClock(NOW), deps=ApiDeps(task_runner=runner))
 
     response = call(failing, "POST", REGISTER_PATH)
 
@@ -130,7 +130,7 @@ def test_register_timeout_keeps_structured_result_and_event(database: Path) -> N
     def slow(_command: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
         raise subprocess.TimeoutExpired(cmd=_command, timeout=10.0)
 
-    timing_out = ApiApp(database, clock=VirtualClock(NOW), task_runner=slow)
+    timing_out = ApiApp(database, clock=VirtualClock(NOW), deps=ApiDeps(task_runner=slow))
 
     response = call(timing_out, "POST", REGISTER_PATH)
 
@@ -167,7 +167,9 @@ def test_drain_endpoint_reports_accepted_and_active_runs(
     runner, _calls = schtasks
     seen: list[int] = []
     app = ApiApp(
-        database, clock=VirtualClock(NOW), task_runner=runner, drain_requester=_requester(seen)
+        database,
+        clock=VirtualClock(NOW),
+        deps=ApiDeps(task_runner=runner, drain_requester=_requester(seen)),
     )
 
     response = call(app, "POST", "/api/v1/host/drain")
