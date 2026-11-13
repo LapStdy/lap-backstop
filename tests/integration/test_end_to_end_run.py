@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -145,45 +146,52 @@ class _EventStream:
         return line.decode("utf-8", errors="replace")
 
 
-def _probe(
-    host: str,
-    port: int,
-    seen: dict[str, Any],
-    connected: threading.Event,
-    stop: threading.Event,
-) -> None:
+@dataclass(frozen=True, slots=True)
+class _ProbeInputs:
+    """探针线程的全部输入：目标地址、跨线程结果槽与放行/停机事件。"""
+
+    host: str
+    port: int
+    seen: dict[str, Any]
+    connected: threading.Event
+    stop: threading.Event
+
+
+def _probe(inputs: _ProbeInputs) -> None:
     """事件流上等运行结束，再用 HTTP 取回运行详情与证据文件，最后放行停机。
 
     首帧（心跳）到手才置 connected：此时事件流的游标已定在水位之后，tick 里写的
     运行事件才会被这条流交付。收集失败记进 seen，由主线程断言时抛出。
     """
-    base = f"http://{host}:{port}"
+    base = f"http://{inputs.host}:{inputs.port}"
     frames: list[Frame] = []
     try:
-        stream = _EventStream(host, port)
+        stream = _EventStream(inputs.host, inputs.port)
         try:
-            seen["status_line"] = stream.status_line
-            seen["first_frame"] = stream.next_frame(STREAM_TIMEOUT)
-            connected.set()
+            inputs.seen["status_line"] = stream.status_line
+            inputs.seen["first_frame"] = stream.next_frame(STREAM_TIMEOUT)
+            inputs.connected.set()
             while True:
                 frame = stream.next_frame(FRAME_TIMEOUT)
                 frames.append(frame)
                 if frame[1] == "run.finished":
                     break
-            seen["frames"] = frames
+            inputs.seen["frames"] = frames
         finally:
             stream.close()
         run_id = str(frames[-1][2]["run_id"])
-        seen["run_detail"] = _get_json(f"{base}/api/v1/runs/{run_id}")
-        evidence = seen["run_detail"].get("evidence") or []
+        inputs.seen["run_detail"] = _get_json(f"{base}/api/v1/runs/{run_id}")
+        evidence = inputs.seen["run_detail"].get("evidence") or []
         if evidence:
             first = evidence[0]
-            seen["evidence_file"] = _request(f"{base}/api/v1/runs/{run_id}/evidence/{first['id']}")
+            inputs.seen["evidence_file"] = _request(
+                f"{base}/api/v1/runs/{run_id}/evidence/{first['id']}"
+            )
     except Exception as error:
-        seen["failure"] = error
+        inputs.seen["failure"] = error
     finally:
-        connected.set()
-        stop.set()
+        inputs.connected.set()
+        inputs.stop.set()
 
 
 def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
@@ -201,7 +209,7 @@ def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
     def on_api_listening(host: str, port: int) -> None:
         probe = threading.Thread(
             target=_probe,
-            args=(host, port, seen, connected, stop),
+            args=(_ProbeInputs(host, port, seen, connected, stop),),
             name="e2e-probe",
             daemon=True,
         )

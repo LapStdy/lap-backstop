@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,15 @@ from core.plugins import rpc
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGINS_ROOT = REPO_ROOT / "plugins"
 FIXTURE_PLUGINS = Path(__file__).resolve().parents[1] / "fixtures" / "plugins"
+
+
+@dataclass(frozen=True, slots=True)
+class CallOptions:
+    """call 的可调要素：插件配置、回调处理与协议调用 id。"""
+
+    config: Mapping[str, Any] | None = None
+    on_callback: Callable[[dict[str, Any]], Any] | None = None
+    call_id: int = 1
 
 
 class WorkerProcess:
@@ -62,19 +72,16 @@ class WorkerProcess:
         capability: str,
         method: str,
         args: Mapping[str, Any],
-        *,
-        config: Mapping[str, Any] | None = None,
-        on_callback: Callable[[dict[str, Any]], Any] | None = None,
-        call_id: int = 1,
+        options: CallOptions = CallOptions(),
     ) -> dict[str, Any]:
         assert self._process.stdin is not None
         message = {
             "kind": rpc.CALL,
-            "id": call_id,
+            "id": options.call_id,
             "capability": capability,
             "method": method,
             "args": dict(args),
-            "context": self.context(config or {}),
+            "context": self.context(options.config or {}),
         }
         self._process.stdin.write(json.dumps(message) + "\n")
         self._process.stdin.flush()
@@ -82,7 +89,7 @@ class WorkerProcess:
             reply = self._read()
             kind = reply.get("kind")
             if kind == rpc.CALLBACK:
-                value = None if on_callback is None else on_callback(reply)
+                value = None if options.on_callback is None else options.on_callback(reply)
                 self._respond(reply, value)
             elif kind == rpc.RESULT:
                 return reply
@@ -157,7 +164,7 @@ def test_environment_probe_runs_in_worker(worker: WorkerProcess) -> None:
         "environment",
         "probe",
         {"env": {"id": "env-1", "provider_id": "fake", "config": {}}},
-        config={"scenario": "instant"},
+        CallOptions(config={"scenario": "instant"}),
     )
     assert reply["ok"] is True
     assert reply["value"]["state"] == "ready"
@@ -175,8 +182,7 @@ def test_verifier_callback_records_evidence(worker: WorkerProcess) -> None:
         "verifier",
         "verify",
         {},
-        config={"scenario": "instant"},
-        on_callback=callback,
+        CallOptions(config={"scenario": "instant"}, on_callback=callback),
     )
     assert reply["ok"] is True
     assert [item["op"] for item in seen] == ["record_evidence"]
@@ -191,7 +197,7 @@ def test_plugin_exception_returns_error_result(worker: WorkerProcess) -> None:
         "script",
         "launch",
         {"script": {"id": "script-1", "plugin_id": "fake", "config": {}}},
-        config={"scenario": "crash"},
+        CallOptions(config={"scenario": "crash"}),
     )
     assert reply["ok"] is False
     assert reply["error"]["type"] == "RuntimeError"
@@ -262,10 +268,10 @@ def test_cancel_is_scoped_to_one_call(tmp_path: Path) -> None:
     session = WorkerProcess(tmp_path, "cancel_probe", plugins_root=FIXTURE_PLUGINS)
     args = {"env": {"id": "env-1", "provider_id": "cancel_probe", "config": {}}}
     try:
-        first = session.call("environment", "probe", args, call_id=1)
+        first = session.call("environment", "probe", args, CallOptions(call_id=1))
         assert first["value"]["detail"] == "cancelled=False"
         session.send({"kind": rpc.CANCEL, "id": 1})
-        second = session.call("environment", "probe", args, call_id=2)
+        second = session.call("environment", "probe", args, CallOptions(call_id=2))
         assert second["value"]["detail"] == "cancelled=False"
     finally:
         session.close()

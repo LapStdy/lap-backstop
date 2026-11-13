@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -67,50 +68,54 @@ def make_context(clock: VirtualClock) -> RunContext:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class StubOptions:
+    """StubProvider 的动作开关：各阶段是否成功与探针抛出的错误。"""
+
+    prepare_ok: bool = True
+    reset_ok: bool = True
+    cleanup_ok: bool = True
+    warm_ok: bool = True
+    probe_error: Exception | None = None
+
+
 class StubProvider:
     """按预设状态序列返回探针结果，其余动作由开关控制。"""
 
     def __init__(
         self,
         states: list[EnvironmentState] | None = None,
-        *,
-        prepare_ok: bool = True,
-        reset_ok: bool = True,
-        cleanup_ok: bool = True,
-        warm_ok: bool = True,
-        probe_error: Exception | None = None,
+        options: StubOptions = StubOptions(),
     ) -> None:
         self._states = list(states or [])
-        self.prepare_ok = prepare_ok
-        self.reset_ok = reset_ok
-        self.cleanup_ok = cleanup_ok
-        self.warm_ok = warm_ok
-        self.probe_error = probe_error
+        self._options = options
         self.calls: list[str] = []
 
     def probe(self, env: EnvironmentRef, ctx: RunContext) -> EnvironmentProbe:
         self.calls.append("probe")
-        if self.probe_error is not None:
-            raise self.probe_error
+        if self._options.probe_error is not None:
+            raise self._options.probe_error
         state = self._states.pop(0) if self._states else EnvironmentState.READY
         return EnvironmentProbe(state=state, detail="stub", observed_at=ctx.clock.utc_now())
 
     def prepare(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
         self.calls.append("prepare")
         now = ctx.clock.utc_now()
-        return PhaseResult(ok=self.prepare_ok, detail="prepared", started_at=now, ended_at=now)
+        return PhaseResult(
+            ok=self._options.prepare_ok, detail="prepared", started_at=now, ended_at=now
+        )
 
     def reset(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
         self.calls.append("reset")
-        return PhaseResult(ok=self.reset_ok, detail="reset")
+        return PhaseResult(ok=self._options.reset_ok, detail="reset")
 
     def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
         self.calls.append("cleanup")
-        return PhaseResult(ok=self.cleanup_ok, detail=f"cleanup keep_warm={keep_warm}")
+        return PhaseResult(ok=self._options.cleanup_ok, detail=f"cleanup keep_warm={keep_warm}")
 
     def warm(self, env: EnvironmentRef, ctx: RunContext, minutes: int) -> PhaseResult:
         self.calls.append("warm")
-        return PhaseResult(ok=self.warm_ok, detail=f"warm {minutes}")
+        return PhaseResult(ok=self._options.warm_ok, detail=f"warm {minutes}")
 
 
 class HookedProvider(StubProvider):
@@ -122,9 +127,9 @@ class HookedProvider(StubProvider):
         *,
         on_probe: Callable[[], None] | None = None,
         on_prepare: Callable[[], None] | None = None,
-        **kwargs: Any,
+        options: StubOptions = StubOptions(),
     ) -> None:
-        super().__init__(states, **kwargs)
+        super().__init__(states, options)
         self._on_probe = on_probe
         self._on_prepare = on_prepare
 
@@ -220,7 +225,9 @@ def test_probe_failure_marks_unknown_and_returns_none(
 ) -> None:
     _connection, clock, service = env
     service.prepare(make_call(StubProvider(), clock))
-    probe = service.probe(make_call(StubProvider(probe_error=TimeoutError("探针超时")), clock))
+    probe = service.probe(
+        make_call(StubProvider(options=StubOptions(probe_error=TimeoutError("探针超时"))), clock)
+    )
     assert probe is None
     assert service.get(ENV_ID).state is EnvironmentState.UNKNOWN
     last = state_events(_connection)[-1]
@@ -253,7 +260,9 @@ def test_prepare_failure_marks_failed(
     env: tuple[sqlite3.Connection, VirtualClock, EnvironmentService],
 ) -> None:
     __connection, clock, service = env
-    result = service.prepare(make_call(StubProvider(prepare_ok=False), clock))
+    result = service.prepare(
+        make_call(StubProvider(options=StubOptions(prepare_ok=False)), clock)
+    )
     assert not result.ok
     assert service.get(ENV_ID).state is EnvironmentState.FAILED
 
