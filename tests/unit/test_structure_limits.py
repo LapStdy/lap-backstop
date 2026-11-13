@@ -1,4 +1,4 @@
-"""docs/11「规模上限」的机械检查：扫 core/、storage/、contracts/ 全部 .py。
+"""docs/11「规模上限」的机械检查：扫 core/、storage/、contracts/、tests/、scripts/ 全部 .py。
 
 口径：函数行数按 ast 节点首尾行计（含 def/class 行与 docstring），嵌套函数
 另立条目、限定名 ``Class.method`` 形式；参数个数含仅位置、仅关键字与
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_SCAN_ROOTS = ("core", "storage", "contracts")
+_SCAN_ROOTS = ("core", "storage", "contracts", "tests", "scripts")
 
 FUNCTION_MAX_LINES = 50
 FUNCTION_MAX_PARAMS = 4
@@ -263,7 +263,348 @@ _D018_ENTRIES: tuple[AllowEntry, ...] = (
     ),
 )
 
-_ALLOWLIST: tuple[AllowEntry, ...] = _D013_ENTRIES + _D018_ENTRIES
+# D-019：tests/ 与 scripts/ 的既有超限随扫描范围扩展入闸，逐项收缩由 TASKS.md「工程治理」承接。
+_D019_ENTRIES: tuple[AllowEntry, ...] = (
+    AllowEntry(
+        "tests/integration/test_api_app.py",
+        "call",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_api_error_paths.py",
+        "call",
+        "function_params",
+        "6 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_api_error_paths.py",
+        "test_unknown_resource_returns_404",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_api_export.py",
+        "database",
+        "function_lines",
+        "53 行",
+        "测试函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_api_plugin_config.py",
+        "call",
+        "function_params",
+        "6 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_api_runs.py",
+        "call",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_api_schedules.py",
+        "call",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_api_templates.py",
+        "call",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_concurrent_writes.py",
+        "call",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_end_to_end_run.py",
+        "_probe",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_end_to_end_run.py",
+        "test_due_schedule_runs_to_completion_and_results_are_queryable_over_http",
+        "function_lines",
+        "89 行",
+        "测试函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_environments.py",
+        "StubProvider.__init__",
+        "function_params",
+        "6 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_executor_threading.py",
+        "_create_run",
+        "function_params",
+        "6 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_scheduler_scan.py",
+        "insert_schedule",
+        "function_params",
+        "10 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_serve_shell.py",
+        MODULE_NAME,
+        "module_lines",
+        "1001 行",
+        "测试模块拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_serve_shell.py",
+        "test_run_serve_sweeps_pending_notifications_from_previous_process",
+        "function_lines",
+        "52 行",
+        "测试函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_serve_shell.py",
+        "test_serve_loop_writes_heartbeat_while_run_blocks_in_executor",
+        "function_lines",
+        "63 行",
+        "测试函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_serve_shell.py",
+        "test_shutdown_writes_single_interrupt_at_phase_boundary",
+        "function_lines",
+        "96 行",
+        "测试函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_serve_shell.py",
+        "test_stuck_executor_times_out_bounded_wait_and_exits",
+        "function_lines",
+        "74 行",
+        "测试函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_serve_shutdown_force_abort.py",
+        MODULE_NAME,
+        "module_lines",
+        "591 行",
+        "测试模块拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_serve_shutdown_force_abort.py",
+        "test_force_abort_kills_worker_tree_and_drains_run",
+        "function_lines",
+        "92 行",
+        "测试函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_serve_shutdown_force_abort.py",
+        "_stuck_supervisor",
+        "function_lines",
+        "70 行",
+        "测试函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_upgrade.py",
+        "_step_inputs",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_watchdog_roundtrip.py",
+        "write_files",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/integration/test_worker_process.py",
+        "WorkerProcess.call",
+        "function_params",
+        "6 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/scenarios/test_lease_handover.py",
+        "prepare_run",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/scenarios/test_recovery.py",
+        "prepare_run",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/scenarios/test_recovery.py",
+        "make_executor",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/scenarios/test_supervisor.py",
+        MODULE_NAME,
+        "module_lines",
+        "529 行",
+        "测试模块拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/scenarios/test_supervisor.py",
+        "prepare_run",
+        "function_params",
+        "6 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/scenarios/test_worker_lifecycle.py",
+        MODULE_NAME,
+        "module_lines",
+        "881 行",
+        "测试模块拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/scenarios/test_worker_lifecycle.py",
+        "prepare_run",
+        "function_params",
+        "7 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/scenarios/test_worker_lifecycle.py",
+        "executor_for",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/unit/test_hostops_doctor.py",
+        "firewall_block",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/unit/test_maa_environment.py",
+        "_FakeHost.__init__",
+        "function_params",
+        "5 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/unit/test_worker_channel.py",
+        MODULE_NAME,
+        "module_lines",
+        "592 行",
+        "测试模块拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/unit/test_worker_channel.py",
+        "_context",
+        "function_params",
+        "6 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "tests/unit/test_worker_channel.py",
+        "_ChannelFactory.__call__",
+        "function_params",
+        "8 个",
+        "测试参数收敛随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "scripts/check_artifacts.py",
+        MODULE_NAME,
+        "module_lines",
+        "613 行",
+        "脚本模块拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "scripts/check_artifacts.py",
+        "scan_file",
+        "function_lines",
+        "52 行",
+        "脚本函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    AllowEntry(
+        "scripts/maa_config.py",
+        "main",
+        "function_lines",
+        "55 行",
+        "脚本函数拆分随 TASKS.md 收缩条目偿还",
+        "D-019",
+    ),
+    # 检查器与允许清单内嵌同一文件，清单扩充后自身超过模块上限。
+    AllowEntry(
+        "tests/unit/test_structure_limits.py",
+        MODULE_NAME,
+        "module_lines",
+        "834 行",
+        "允许清单必须内嵌在本测试（docs/11 口径），拆分随收缩条目一并偿还",
+        "D-019",
+    ),
+)
+
+_ALLOWLIST: tuple[AllowEntry, ...] = _D013_ENTRIES + _D018_ENTRIES + _D019_ENTRIES
 
 
 def scan_source(source: str, path: str) -> tuple[Violation, ...]:
@@ -277,7 +618,7 @@ def scan_source(source: str, path: str) -> tuple[Violation, ...]:
 
 
 def scan_repo(root: Path) -> tuple[Violation, ...]:
-    """扫仓库三个包的全部 .py，返回全部超限项；顺序稳定，失败输出可 diff。"""
+    """扫仓库五个根的全部 .py，返回全部超限项；顺序稳定，失败输出可 diff。"""
     violations: list[Violation] = []
     for path in _py_files(root):
         source = path.read_text(encoding="utf-8")
@@ -286,7 +627,7 @@ def scan_repo(root: Path) -> tuple[Violation, ...]:
 
 
 def _py_files(root: Path) -> tuple[Path, ...]:
-    """按固定顺序收集三个包下的全部 .py 文件。"""
+    """按固定顺序收集五个根下的全部 .py 文件。"""
     return tuple(path for subdir in _SCAN_ROOTS for path in sorted((root / subdir).rglob("*.py")))
 
 
@@ -433,10 +774,10 @@ def test_allowlist_entries_complete_fields_explicit_keys_no_wildcards() -> None:
     assert len(keys) == len(_ALLOWLIST)
 
 
-def test_py_files_covers_core_storage_contracts() -> None:
+def test_py_files_covers_all_scan_roots() -> None:
     relatives = {p.relative_to(_REPO_ROOT).as_posix() for p in _py_files(_REPO_ROOT)}
-    assert relatives, "三个包下应至少收集到一个 .py 文件"
-    for subdir in _SCAN_ROOTS:
+    assert relatives, "五个根下应至少收集到一个 .py 文件"
+    for subdir in ("core", "storage", "contracts", "tests", "scripts"):
         assert any(rel.startswith(f"{subdir}/") for rel in relatives), subdir
     assert all(rel.split("/")[0] in _SCAN_ROOTS for rel in relatives)
 
@@ -444,6 +785,34 @@ def test_py_files_covers_core_storage_contracts() -> None:
 def test_real_repo_no_violation_outside_allowlist() -> None:
     unexpected = [v for v in scan_repo(_REPO_ROOT) if not _allowed(v)]
     assert not unexpected, "\n".join(v.message for v in unexpected)
+
+
+def test_unlisted_violation_in_tests_root_is_reported(tmp_path: Path) -> None:
+    source = "def wide(a: int, b: int, c: int, d: int, e: int) -> None:\n" + "".join(
+        f"    value_{i} = {i}\n" for i in range(60)
+    )
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "synthetic.py").write_text(source, encoding="utf-8")
+    hits = scan_repo(tmp_path)
+    assert {v.path for v in hits} == {"tests/synthetic.py"}
+    assert {(v.name, v.actual) for v in hits} == {("wide", 61), ("wide", 5)}
+    assert {v.kind for v in hits} == {"function_lines", "function_params"}
+    assert all(not _allowed(v) for v in hits)
+    global _ALLOWLIST
+    entry = AllowEntry(
+        "tests/synthetic.py",
+        "wide",
+        "function_lines",
+        "61 行",
+        "合成样例验证清单放行",
+        "D-019",
+    )
+    original = _ALLOWLIST
+    _ALLOWLIST = (*original, entry)
+    try:
+        assert all(_allowed(v) for v in hits)
+    finally:
+        _ALLOWLIST = original
 
 
 def test_key_entry_functions_within_limits() -> None:
