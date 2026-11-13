@@ -36,6 +36,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 STREAM_TIMEOUT = 10.0
 FRAME_TIMEOUT = 30.0
 PROBE_TIMEOUT = 60.0
+# 调度建运行有 2 GiB 磁盘守卫（docs/08）；tmp 数据根落在宿主卷上，余量贴着守护线时
+# 每轮扫描都被拒、事件全无，探针只会看到 30 秒沉默。钉一个远高于 WARN 线的值，
+# 用例不随宿主余量漂移。
+STABLE_DISK_FREE = 100 * 1024**3
 Frame = tuple[str | None, str, dict[str, Any]]
 
 
@@ -227,6 +231,7 @@ def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
             tick_interval_seconds=0.05,
             stop=stop,
             on_api_listening=on_api_listening,
+            disk_free=lambda: STABLE_DISK_FREE,
         ),
     )
     for probe in probes:
