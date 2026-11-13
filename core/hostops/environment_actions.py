@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 import threading
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
@@ -21,7 +22,7 @@ from core.environments.errors import EnvironmentStateError
 from core.environments.service import EnvironmentService
 from core.logging import NullLogger
 from core.plugins.registry import PluginRegistry
-from core.supervisor_environments import EnvironmentSupervision
+from core.supervisor_environments import EnvironmentSupervision, SupervisionIo
 from storage import open_database
 from storage.repositories.events import EventLog
 
@@ -30,6 +31,14 @@ Action = Callable[[EnvironmentSupervision], PhaseResult]
 # 动作可能耗掉 provider 的整个超时周期；等锁超时按「环境忙」拒绝，
 # 不让第二个请求线程无限期挂在 HTTP 连接上（docs/11 并发：锁一律带超时）。
 _LOCK_TIMEOUT_SECONDS: Final[float] = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class ActionOptions:
+    """环境动作的可选注入：结构化日志与等锁超时。"""
+
+    log: Logger | None = None
+    lock_timeout_seconds: float = _LOCK_TIMEOUT_SECONDS
 
 
 class EnvironmentActionService:
@@ -41,15 +50,15 @@ class EnvironmentActionService:
         clock: Clock,
         registry: PluginRegistry,
         *,
-        log: Logger | None = None,
-        lock_timeout_seconds: float = _LOCK_TIMEOUT_SECONDS,
+        options: ActionOptions | None = None,
     ) -> None:
+        resolved = ActionOptions() if options is None else options
         self._database = database
         self._data_root = database.parent
         self._clock = clock
         self._registry = registry
-        self._log: Logger = NullLogger() if log is None else log
-        self._lock_timeout_seconds = lock_timeout_seconds
+        self._log: Logger = NullLogger() if resolved.log is None else resolved.log
+        self._lock_timeout_seconds = resolved.lock_timeout_seconds
         self._lock = threading.Lock()
 
     def prepare(self, environment_id: str) -> EnvironmentActionResult:
@@ -111,10 +120,8 @@ class EnvironmentActionService:
             EnvironmentService(connection, clock),
             self._registry,
             clock,
-            data_root=self._data_root,
-            log=self._log,
-            emit_global=emit_global,
+            io=SupervisionIo(data_root=self._data_root, log=self._log, emit_global=emit_global),
         )
 
 
-__all__ = ["EnvironmentActionService"]
+__all__ = ["ActionOptions", "EnvironmentActionService"]

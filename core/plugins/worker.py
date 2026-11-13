@@ -15,6 +15,7 @@ import sys
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, BinaryIO, Final
@@ -91,24 +92,23 @@ class _RemoteLogger:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _ReaderChannels:
+    """读线程的分流目标：调用与回调各进一个队列，cancel 记入共享标记集。"""
+
+    calls: queue.Queue[dict[str, Any] | None]
+    callbacks: queue.Queue[dict[str, Any]]
+    cancelled: set[int]
+    lock: threading.Lock
+
+
 class _Reader(threading.Thread):
     """读内核消息：调用进队列，回调结果进队列，cancel 置位，shutdown 退出。"""
 
-    def __init__(
-        self,
-        stream: BinaryIO,
-        *,
-        calls: queue.Queue[dict[str, Any] | None],
-        callbacks: queue.Queue[dict[str, Any]],
-        cancelled: set[int],
-        lock: threading.Lock,
-    ) -> None:
+    def __init__(self, stream: BinaryIO, *, channels: _ReaderChannels) -> None:
         super().__init__(name="worker-reader", daemon=True)
         self._stream = stream
-        self._calls = calls
-        self._callbacks = callbacks
-        self._cancelled = cancelled
-        self._lock = lock
+        self._channels = channels
 
     def run(self) -> None:
         try:
@@ -122,18 +122,18 @@ class _Reader(threading.Thread):
                     continue
                 kind = message.get("kind")
                 if kind == rpc.CALL:
-                    self._calls.put(message)
+                    self._channels.calls.put(message)
                 elif kind == rpc.CALLBACK_RESULT:
-                    self._callbacks.put(message)
+                    self._channels.callbacks.put(message)
                 elif kind == rpc.CANCEL:
                     cancelled_id = message.get("id")
                     if isinstance(cancelled_id, int):
-                        with self._lock:
-                            self._cancelled.add(cancelled_id)
+                        with self._channels.lock:
+                            self._channels.cancelled.add(cancelled_id)
                 elif kind == rpc.SHUTDOWN:
                     return
         finally:
-            self._calls.put(None)
+            self._channels.calls.put(None)
 
 
 class _Server:
@@ -158,10 +158,12 @@ class _Server:
         self._clock = _ProcessClock()
         self._reader = _Reader(
             incoming,
-            calls=self._calls,
-            callbacks=self._callbacks,
-            cancelled=self._cancelled,
-            lock=self._cancel_lock,
+            channels=_ReaderChannels(
+                calls=self._calls,
+                callbacks=self._callbacks,
+                cancelled=self._cancelled,
+                lock=self._cancel_lock,
+            ),
         )
 
     def run(self) -> int:

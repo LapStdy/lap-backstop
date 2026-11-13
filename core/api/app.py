@@ -80,6 +80,19 @@ class Route:
     handler: Handler
 
 
+@dataclass(frozen=True, slots=True)
+class ApiDeps:
+    """请求处理依赖的内核动作注入：任务执行、环境动作、叫停与排水。
+
+    缺省即生产口径：任务用 ``subprocess.run``，三个动作端点按未接入应答。
+    """
+
+    task_runner: Runner = subprocess.run
+    environment_actions: EnvironmentActions | None = None
+    run_stopper: RunStopper | None = None
+    drain_requester: DrainRequester | None = None
+
+
 ROUTES: tuple[Route, ...] = (
     Route("GET", ("health",), health),
     Route("GET", ("status",), get_status),
@@ -150,17 +163,15 @@ class ApiApp:
         *,
         clock: Clock | None = None,
         log: Logger | None = None,
-        task_runner: Runner = subprocess.run,
-        environment_actions: EnvironmentActions | None = None,
-        run_stopper: RunStopper | None = None,
-        drain_requester: DrainRequester | None = None,
+        deps: ApiDeps | None = None,
     ) -> None:
+        actions = ApiDeps() if deps is None else deps
         self._database = database
         self._clock: Clock = SystemClock() if clock is None else clock
         self._log: Logger = NullLogger() if log is None else log
-        self._task_runner: Runner = task_runner
-        self._environment_actions = environment_actions
-        self._routes = _bind_routes(run_stopper, drain_requester)
+        self._task_runner: Runner = actions.task_runner
+        self._environment_actions = actions.environment_actions
+        self._routes = _bind_routes(actions.run_stopper, actions.drain_requester)
         self._capabilities = tuple(
             sorted({route.segments[0] for route in ROUTES} | {EVENTS_CAPABILITY})
         )
@@ -311,4 +322,4 @@ def _match_route(
     return params
 
 
-__all__ = ["API_PREFIX", "EVENTS_CAPABILITY", "ROUTES", "ApiApp", "Route"]
+__all__ = ["API_PREFIX", "EVENTS_CAPABILITY", "ROUTES", "ApiApp", "ApiDeps", "Route"]

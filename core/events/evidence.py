@@ -25,6 +25,16 @@ class EvidenceFile:
     size: int
 
 
+@dataclass(frozen=True, slots=True)
+class EvidenceDraft:
+    """待登记的证据：文件与描述；id 与哈希由内核登记时补齐。"""
+
+    kind: EvidenceKind
+    path: Path
+    summary: str
+    source: EvidenceSource = EvidenceSource.PLUGIN
+
+
 class EvidenceService:
     """证据文件的唯一入口；路径必须落在证据根目录内。"""
 
@@ -40,22 +50,14 @@ class EvidenceService:
         self._evidence = EvidenceRepository(connection)
         self._events = EventLog(connection)
 
-    def record(
-        self,
-        run_id: str,
-        *,
-        kind: EvidenceKind,
-        path: Path,
-        summary: str,
-        source: EvidenceSource = EvidenceSource.PLUGIN,
-    ) -> str:
+    def record(self, run_id: str, draft: EvidenceDraft) -> str:
         """登记一份证据，返回内核分配的 id。
 
         Raises:
             ValueError: 路径逃出证据根目录。
             FileNotFoundError: 证据文件不存在。
         """
-        absolute = self._resolve(path)
+        absolute = self._resolve(draft.path)
         relative = absolute.relative_to(self._root)
         digest = hashlib.sha256(absolute.read_bytes()).hexdigest()
         evidence_id = uuid4().hex
@@ -65,11 +67,11 @@ class EvidenceService:
                 EvidenceRow(
                     id=evidence_id,
                     run_id=run_id,
-                    kind=kind,
-                    source=source,
+                    kind=draft.kind,
+                    source=draft.source,
                     path=relative.as_posix(),
                     sha256=digest,
-                    summary=summary,
+                    summary=draft.summary,
                     created_at=now,
                 )
             )
@@ -78,7 +80,7 @@ class EvidenceService:
                 EventType.EVIDENCE,
                 {
                     "run_id": run_id,
-                    "kind": kind.value,
+                    "kind": draft.kind.value,
                     "path": relative.as_posix(),
                     "sha256": digest,
                 },
@@ -124,4 +126,4 @@ class EvidenceService:
         return resolved
 
 
-__all__ = ["EvidenceFile", "EvidenceService"]
+__all__ = ["EvidenceDraft", "EvidenceFile", "EvidenceService"]

@@ -46,6 +46,14 @@ class UpgradeIdentity:
     previous_version: str
 
 
+@dataclass(frozen=True, slots=True)
+class UpgradeFailure:
+    """升级失败的结论：症状汇总与服务是否恢复到旧版本并就绪。"""
+
+    detail: str
+    is_healthy: bool
+
+
 def marker_path(data_root: Path) -> Path:
     """回滚凭据文件路径。"""
     return data_root / "run" / STATE_FILENAME
@@ -103,13 +111,13 @@ def record_finished(
 
 
 def record_failed(
-    database: Path, identity: UpgradeIdentity, *, detail: str, is_healthy: bool, at: datetime
+    database: Path, identity: UpgradeIdentity, failure: UpgradeFailure, *, at: datetime
 ) -> None:
     """升级失败事件：ok 表示服务是否恢复到旧版本并就绪，供通知分支判断。"""
     _record_event(
         database,
         UPGRADE_FAILED_EVENT,
-        {"detail": detail, "ok": is_healthy, **_identity_payload(identity)},
+        {"detail": failure.detail, "ok": failure.is_healthy, **_identity_payload(identity)},
         at=at,
     )
 
@@ -142,6 +150,7 @@ __all__ = [
     "UPGRADE_FAILED_EVENT",
     "UPGRADE_FINISHED_EVENT",
     "UpgradeError",
+    "UpgradeFailure",
     "UpgradeIdentity",
     "UpgradeMarker",
     "clear_marker",

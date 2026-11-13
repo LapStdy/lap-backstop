@@ -6,6 +6,7 @@ Supervisor 只保留 tick 的推进顺序与调度决策；租约过期后的运
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from contracts import Clock, Logger, RunState
@@ -34,21 +35,28 @@ _HOLDING_LEASE_STATES = frozenset(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class LeaseSupervisionDeps:
+    """租约看护的协作对象：运行状态机、租约服务与模板仓储。"""
+
+    runs: JobRunService
+    leases: LeaseService
+    templates: JobTemplateRepository
+
+
 class LeaseSupervision:
     """tick 上的租约看护：过期按恢复预算处置，持有中的活动运行周期续租。"""
 
     def __init__(
         self,
-        runs: JobRunService,
-        leases: LeaseService,
-        templates: JobTemplateRepository,
+        deps: LeaseSupervisionDeps,
         clock: Clock,
         *,
         log: Logger,
     ) -> None:
-        self._runs = runs
-        self._leases = leases
-        self._templates = templates
+        self._runs = deps.runs
+        self._leases = deps.leases
+        self._templates = deps.templates
         self._clock = clock
         self._log = log
         self._last_renew_at: datetime | None = None
@@ -123,4 +131,4 @@ class LeaseSupervision:
             return RecoveryPolicy()
 
 
-__all__ = ["LeaseSupervision"]
+__all__ = ["LeaseSupervision", "LeaseSupervisionDeps"]

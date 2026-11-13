@@ -30,7 +30,7 @@ from contracts import (
     VerdictStatus,
 )
 from core.environments.service import EnvironmentCall, EnvironmentService
-from core.events.evidence import EvidenceService
+from core.events.evidence import EvidenceDraft, EvidenceService
 from core.events.verdicts import VerdictError, VerdictService
 from core.jobs.errors import IllegalRunTransitionError, RunNotFoundError
 from core.jobs.phases import PhaseTracker
@@ -47,7 +47,7 @@ from storage.defaults import default
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
 from storage.repositories.job_templates import JobTemplateRepository, JobTemplateRow
-from storage.repositories.resources import ResourceRepository
+from storage.repositories.resources import ResourceRepository, ResourceSpec
 
 _DEFAULT_DEADLINE = timedelta(minutes=int(default("worker", "deadline_minutes")))
 _TERMINAL_BY_VERDICT: Mapping[VerdictStatus, RunState] = {
@@ -233,8 +233,7 @@ class WorkerExecutor:
         environment_id = template.environment_id
         self._resources.ensure(
             environment_id,
-            resource_type="environment",
-            name=environment_id,
+            ResourceSpec(resource_type="environment", name=environment_id),
         )
         self._environments.register(
             environment_id,
@@ -656,9 +655,7 @@ class WorkerExecutor:
             target = path if path.is_absolute() else evidence_dir / path
             return self._evidence.record(
                 run_id,
-                kind=EvidenceKind(kind),
-                path=target,
-                summary=summary,
+                EvidenceDraft(kind=EvidenceKind(kind), path=target, summary=summary),
             )
 
         return record

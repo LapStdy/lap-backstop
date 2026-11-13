@@ -114,6 +114,14 @@ class _RowCounts:
     advisor: int
 
 
+@dataclass(frozen=True, slots=True)
+class RetentionOptions:
+    """保留清理的可选注入：结构化日志与保留期限。"""
+
+    log: Logger | None = None
+    policy: RetentionPolicy | None = None
+
+
 class RetentionRunner:
     """保留清理日闸门：每天到点后的第一个 tick 执行，当天其余 tick 跳过。"""
 
@@ -123,26 +131,25 @@ class RetentionRunner:
         clock: Clock,
         *,
         data_root: Path,
-        log: Logger | None = None,
-        policy: RetentionPolicy | None = None,
+        options: RetentionOptions | None = None,
     ) -> None:
         """创建清理器；执行与否只看 settings 里的本地日期键，进程内不记状态。
-
-        构造参数超过上限 4 属评审已说明的例外：连接、时钟、数据根是清理对象，
-        log 与 policy 是可选注入项，测试按需替换，语义互不重叠。
 
         Args:
             connection: 内核单写连接。
             clock: 「现在」与事件落库时间的唯一来源。
             data_root: 数据根；证据与日志分别在其下的 evidence 与 logs。
-            log: 结构化日志；记录被跳过的文件，不落事件载荷。
-            policy: 保留期限；缺省按 config/defaults.toml 组装。
+            options: 可选注入（日志与保留期限）；缺省记跳过文件、期限按
+                config/defaults.toml 组装。日志不落事件载荷。
         """
+        resolved = RetentionOptions() if options is None else options
         self._connection = connection
         self._clock = clock
         self._data_root = data_root
-        self._log: Logger = NullLogger() if log is None else log
-        self._policy = RetentionPolicy.from_defaults() if policy is None else policy
+        self._log: Logger = NullLogger() if resolved.log is None else resolved.log
+        self._policy = (
+            RetentionPolicy.from_defaults() if resolved.policy is None else resolved.policy
+        )
         self._zone = ZoneInfo(str(default("scheduler", "timezone")))
         self._events = EventLog(connection)
 
@@ -477,6 +484,7 @@ __all__ = [
     "LOGS_DIRNAME",
     "RETENTION_PRUNED_EVENT",
     "RETENTION_PRUNED_ON_KEY",
+    "RetentionOptions",
     "RetentionOutcome",
     "RetentionPolicy",
     "RetentionRunner",
