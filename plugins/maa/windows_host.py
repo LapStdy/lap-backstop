@@ -110,6 +110,18 @@ class WindowsMachineHost:
             return None
         return _png_size(completed.stdout)
 
+    def capture(self) -> bytes | None:
+        """整帧 PNG 字节给视觉帧端口；只做 screencap 与进程调用，失败返回 None 不抛。"""
+        completed = self._run(
+            ("-s", self._address, "exec-out", "screencap", "-p"),
+            _SCREENCAP_TIMEOUT_SECONDS,
+        )
+        if completed is None or completed.returncode != 0:
+            return None
+        if _png_size(completed.stdout) is None:
+            return None
+        return completed.stdout
+
     def foreground_package(self) -> str | None:
         """前台包名从 dumpsys window 的 mCurrentFocus 取；桌面也是合法结果。"""
         completed = self._run(
