@@ -57,7 +57,7 @@
 
 ## 工程治理
 
-- [ ] 按允许清单逐项收缩 `tests/` 与 `scripts/` 的 41 处超限（清单在 `tests/unit/test_structure_limits.py` 的 `_D019_ENTRIES`）。
+- [ ] 按允许清单逐项收缩剩余 17 条超限：10 个超长函数 + 7 个超长模块（清单在 `tests/unit/test_structure_limits.py` 的 `_D019_ENTRIES`）。
 
 ## 技术验证
 

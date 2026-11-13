@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -43,22 +44,25 @@ def run_watchdog(data_root: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def write_files(
-    run_dir: Path,
-    *,
-    heartbeat_pid: int,
-    heartbeat_age: float,
-    lock_pid: int | None,
-    failures: list[str],
-) -> None:
+@dataclass(frozen=True, slots=True)
+class CoreStateFiles:
+    """write_files 落的三份状态文件内容：心跳读数、锁持有者与失败记录。"""
+
+    heartbeat_pid: int
+    heartbeat_age: float
+    lock_pid: int | None
+    failures: list[str]
+
+
+def write_files(run_dir: Path, state: CoreStateFiles) -> None:
     """落齐心跳、锁与看门狗状态；mtime 与失败时刻都锚定真实墙钟。"""
     run_dir.mkdir(parents=True, exist_ok=True)
     now = datetime.now(UTC)
-    stamp = time.time() - heartbeat_age
+    stamp = time.time() - state.heartbeat_age
     write_heartbeat(
         run_dir / "core.heartbeat",
         {
-            "pid": heartbeat_pid,
+            "pid": state.heartbeat_pid,
             "started_at": now.isoformat(),
             "version": "0.1.0",
             "last_tick": now.isoformat(),
@@ -66,11 +70,11 @@ def write_files(
         },
     )
     os.utime(run_dir / "core.heartbeat", (stamp, stamp))
-    if lock_pid is not None:
+    if state.lock_pid is not None:
         (run_dir / "core.lock").write_text(
             json.dumps(
                 {
-                    "pid": lock_pid,
+                    "pid": state.lock_pid,
                     "started_at": now.isoformat(),
                     "exe_path": "x",
                     "boot_id": "",
@@ -79,7 +83,9 @@ def write_files(
             encoding="utf-8",
         )
     (run_dir / "watchdog.state.json").write_text(
-        json.dumps({"pending_start": None, "failures": failures, "gave_up_pending_report": False}),
+        json.dumps(
+            {"pending_start": None, "failures": state.failures, "gave_up_pending_report": False}
+        ),
         encoding="utf-8",
     )
 
@@ -93,10 +99,9 @@ def test_alive_heartbeat_exits_zero_without_action(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     write_files(
         data_root / "run",
-        heartbeat_pid=os.getpid(),
-        heartbeat_age=5,
-        lock_pid=os.getpid(),
-        failures=[],
+        CoreStateFiles(
+            heartbeat_pid=os.getpid(), heartbeat_age=5, lock_pid=os.getpid(), failures=[]
+        ),
     )
     result = run_watchdog(data_root)
     assert result.returncode == 0
@@ -112,10 +117,9 @@ def test_three_window_failures_lead_to_give_up_without_external_start(tmp_path: 
     # 状态文件按旧版三键 schema 写入：新版看门狗仍须照常停手（向后兼容）
     write_files(
         data_root / "run",
-        heartbeat_pid=DEAD_PID,
-        heartbeat_age=5,
-        lock_pid=DEAD_PID,
-        failures=failures,
+        CoreStateFiles(
+            heartbeat_pid=DEAD_PID, heartbeat_age=5, lock_pid=DEAD_PID, failures=failures
+        ),
     )
     result = run_watchdog(data_root)
     assert result.returncode == 0

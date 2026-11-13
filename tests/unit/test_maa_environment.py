@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -51,22 +52,29 @@ class _SilentLogger:
         return None
 
 
+@dataclass(frozen=True, slots=True)
+class _Readings:
+    """真机读数预置值；缺省对应一台就绪的模拟器宿主。"""
+
+    titles: Sequence[str] = ("MuMuPlayer-12.0",)
+    adb_state: str = "device"
+    size: ScreenSize | None = None
+    package: str | None = "com.hypergryph.arknights"
+    screencap_ok: bool = True
+
+
+_DEFAULT_READINGS = _Readings()
+
+
 class _FakeHost:
     """可调的真机读数假件：四个方法都只返回预置值。"""
 
-    def __init__(
-        self,
-        titles: Sequence[str] = ("MuMuPlayer-12.0",),
-        adb_state: str = "device",
-        size: ScreenSize | None = None,
-        package: str | None = "com.hypergryph.arknights",
-        screencap_ok: bool = True,
-    ) -> None:
-        self._titles = tuple(titles)
-        self._adb_state = adb_state
-        self._size = ScreenSize(width=1280, height=720) if size is None else size
-        self._package = package
-        self._screencap_ok = screencap_ok
+    def __init__(self, readings: _Readings = _DEFAULT_READINGS) -> None:
+        self._titles = tuple(readings.titles)
+        self._adb_state = readings.adb_state
+        self._size = ScreenSize(width=1280, height=720) if readings.size is None else readings.size
+        self._package = readings.package
+        self._screencap_ok = readings.screencap_ok
 
     def window_titles(self) -> Sequence[str]:
         return self._titles
@@ -104,7 +112,7 @@ def make_context(config: Mapping[str, Any] | None = None) -> RunContext:
 
 def test_probe_reports_off_without_emulator_window() -> None:
     """窗口不存在时环境未启动，其余读数不参与判定。"""
-    provider = MaaEnvironment(host=_FakeHost(titles=("记事本",), adb_state="absent"))
+    provider = MaaEnvironment(host=_FakeHost(_Readings(titles=("记事本",), adb_state="absent")))
     probe = provider.probe(ENV, make_context())
     assert probe.state is EnvironmentState.OFF
     assert probe.observed_at == NOW
@@ -113,7 +121,7 @@ def test_probe_reports_off_without_emulator_window() -> None:
 
 def test_probe_reports_booting_when_window_exists_but_adb_absent() -> None:
     """窗口在、adb 未连接：模拟器正在启动。"""
-    provider = MaaEnvironment(host=_FakeHost(adb_state="absent"))
+    provider = MaaEnvironment(host=_FakeHost(_Readings(adb_state="absent")))
     probe = provider.probe(ENV, make_context())
     assert probe.state is EnvironmentState.BOOTING
     assert "127.0.0.1:16384" in probe.detail
@@ -121,7 +129,7 @@ def test_probe_reports_booting_when_window_exists_but_adb_absent() -> None:
 
 def test_probe_reports_degraded_when_adb_offline() -> None:
     """adb 报告 offline 时环境不可执行。"""
-    provider = MaaEnvironment(host=_FakeHost(adb_state="offline"))
+    provider = MaaEnvironment(host=_FakeHost(_Readings(adb_state="offline")))
     probe = provider.probe(ENV, make_context())
     assert probe.state is EnvironmentState.DEGRADED
     assert "offline" in probe.detail
@@ -129,7 +137,7 @@ def test_probe_reports_degraded_when_adb_offline() -> None:
 
 def test_probe_reports_degraded_when_screencap_missing() -> None:
     """adb 在线但截不到帧，按证据缺失降级，不猜。"""
-    host = _FakeHost(screencap_ok=False)
+    host = _FakeHost(_Readings(screencap_ok=False))
     probe = MaaEnvironment(host=host).probe(ENV, make_context())
     assert probe.state is EnvironmentState.DEGRADED
     assert "截图" in probe.detail
@@ -137,7 +145,7 @@ def test_probe_reports_degraded_when_screencap_missing() -> None:
 
 def test_probe_reports_degraded_when_game_not_foreground() -> None:
     """前台是桌面时不放行，detail 写明当前包名。"""
-    provider = MaaEnvironment(host=_FakeHost(package="app.lawnchair"))
+    provider = MaaEnvironment(host=_FakeHost(_Readings(package="app.lawnchair")))
     probe = provider.probe(ENV, make_context())
     assert probe.state is EnvironmentState.DEGRADED
     assert "app.lawnchair" in probe.detail
@@ -145,7 +153,7 @@ def test_probe_reports_degraded_when_game_not_foreground() -> None:
 
 def test_probe_reports_failed_on_resolution_mismatch() -> None:
     """游戏在前台但分辨率不符：停手并给人看，不自动改设置。"""
-    provider = MaaEnvironment(host=_FakeHost(size=ScreenSize(width=720, height=1280)))
+    provider = MaaEnvironment(host=_FakeHost(_Readings(size=ScreenSize(width=720, height=1280))))
     probe = provider.probe(ENV, make_context())
     assert probe.state is EnvironmentState.FAILED
     assert "720x1280" in probe.detail
@@ -170,7 +178,11 @@ def test_probe_reads_config_overrides() -> None:
         "screen_size": "1920x1080",
     }
     host = _FakeHost(
-        titles=("MuMuNxMain",), package="com.example.game", size=ScreenSize(1920, 1080)
+        _Readings(
+            titles=("MuMuNxMain",),
+            package="com.example.game",
+            size=ScreenSize(1920, 1080),
+        )
     )
     probe = MaaEnvironment(host=host).probe(ENV, make_context(config))
     assert probe.state is EnvironmentState.READY

@@ -11,6 +11,7 @@ import sqlite3
 import threading
 import time
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -174,24 +175,34 @@ def env(
         connection.close()
 
 
+@dataclass(frozen=True, slots=True)
+class _RunOverrides:
+    """_create_run 的可选字段覆盖：默认按 T0 整点、零优先级、无截止。"""
+
+    priority: int = 0
+    scheduled_at: datetime = T0
+    deadline_at: datetime | None = None
+
+
+_DEFAULT_OVERRIDES = _RunOverrides()
+
+
 def _create_run(
     runs: JobRunService,
     template_id: str,
     *,
     key: str,
-    priority: int = 0,
-    scheduled_at: datetime = T0,
-    deadline_at: datetime | None = None,
+    overrides: _RunOverrides = _DEFAULT_OVERRIDES,
 ) -> str:
     record, _ = runs.create_scheduled(
         NewRun(
             template_id=template_id,
             schedule_id=None,
-            scheduled_at=scheduled_at,
+            scheduled_at=overrides.scheduled_at,
             created_at=T0,
             idempotency_key=key,
-            priority=priority,
-            deadline_at=deadline_at,
+            priority=overrides.priority,
+            deadline_at=overrides.deadline_at,
         )
     )
     runs.enqueue(record.id)
@@ -226,7 +237,7 @@ def test_two_environments_run_concurrently_and_same_env_second_is_rejected(
     _insert_template(connection, TEMPLATE_B, ENV_B)
     log_path = tmp_path / "logs" / "core.jsonl"
     supervisor, adapter = make(log=JsonLineLogger(log_path))
-    first = _create_run(runs, TEMPLATE_A, key="env-a-1", priority=10)
+    first = _create_run(runs, TEMPLATE_A, key="env-a-1", overrides=_RunOverrides(priority=10))
     second = _create_run(runs, TEMPLATE_B, key="env-b-1")
     release_a = adapter.gate(ENV_A)
     release_b = adapter.gate(ENV_B)
@@ -342,8 +353,9 @@ def test_blocked_run_does_not_stall_deadline_and_schedule_queueing(
         runs,
         TEMPLATE_B,
         key="overdue",
-        scheduled_at=T0 + timedelta(minutes=30),
-        deadline_at=T0 + timedelta(minutes=45),
+        overrides=_RunOverrides(
+            scheduled_at=T0 + timedelta(minutes=30), deadline_at=T0 + timedelta(minutes=45)
+        ),
     )
     tick_and_settle(supervisor)
     assert runs.get(overdue).state is RunState.WAITING

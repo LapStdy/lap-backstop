@@ -148,17 +148,25 @@ def _beat_heartbeat(deploy: Deployment, *, pid: int, version: str) -> None:
     os.utime(deploy.heartbeat, (NOW.timestamp(), NOW.timestamp()))
 
 
+@dataclass(frozen=True, slots=True)
+class _ExitPlan:
+    """wait 期间的进程编排：alive 是存活集，首轮 wait 后剔除 exit_pids。"""
+
+    alive: set[int]
+    exit_pids: set[int]
+
+
 def _step_inputs(
-    clock: VirtualClock, http: StubHttp, runner: StubRunner, alive: set[int], exit_pids: set[int]
+    clock: VirtualClock, http: StubHttp, runner: StubRunner, plan: _ExitPlan
 ) -> UpgradeInputs:
-    """装配注入项：每轮等待推进虚拟时钟，并让 exit_pids 在首轮退场。"""
+    """装配注入项：每轮等待推进虚拟时钟，并让 plan 里的退场 pid 失活。"""
 
     def wait(seconds: float) -> None:
         clock.advance(timedelta(seconds=seconds))
-        alive.difference_update(exit_pids)
+        plan.alive.difference_update(plan.exit_pids)
 
     return UpgradeInputs(
-        clock=clock, http=http, runner=runner, pid_alive=alive.__contains__, wait=wait
+        clock=clock, http=http, runner=runner, pid_alive=plan.alive.__contains__, wait=wait
     )
 
 
@@ -186,7 +194,7 @@ def test_upgrade_success_drains_snapshots_switches_and_records(tmp_path: Path) -
     code = run_upgrade(
         deploy.data_root,
         deploy.version_dir("1.2.0"),
-        inputs=_step_inputs(clock, http, runner, alive, {100}),
+        inputs=_step_inputs(clock, http, runner, _ExitPlan(alive=alive, exit_pids={100})),
     )
 
     assert code == EXIT_OK
@@ -241,7 +249,7 @@ def test_upgrade_failed_health_rolls_back_database_junction_and_service(tmp_path
     alive = {100, 200}
     http = StubHttp(healthy=_healthy_at(deploy, "1.1.0"), probe=_new_version_writes(deploy))
     runner = StubRunner(alive=alive)
-    inputs = _step_inputs(clock, http, runner, alive, {100})
+    inputs = _step_inputs(clock, http, runner, _ExitPlan(alive=alive, exit_pids={100}))
 
     code = run_upgrade(deploy.data_root, deploy.version_dir("1.2.0"), inputs=inputs)
     again = run_rollback(deploy.data_root, inputs=inputs)
@@ -275,7 +283,7 @@ def test_rollback_twice_on_same_marker_restores_database_only_once(tmp_path: Pat
     alive = {100, 200}
     http = StubHttp(healthy=_healthy_at(deploy, "1.1.0"), probe=_new_version_writes(deploy))
     runner = StubRunner(alive=alive)
-    inputs = _step_inputs(clock, http, runner, alive, {100})
+    inputs = _step_inputs(clock, http, runner, _ExitPlan(alive=alive, exit_pids={100}))
     run_upgrade(deploy.data_root, deploy.version_dir("1.2.0"), inputs=inputs)
     snapshot = next((deploy.data_root / "backups").glob("pre-upgrade-1.2.0-*.sqlite"))
     write_marker(
@@ -327,7 +335,7 @@ def test_upgrade_same_version_is_noop_without_drain_or_events(tmp_path: Path) ->
     clock = VirtualClock(NOW)
     http = StubHttp()
     runner = StubRunner()
-    inputs = _step_inputs(clock, http, runner, set(), set())
+    inputs = _step_inputs(clock, http, runner, _ExitPlan(alive=set(), exit_pids=set()))
 
     code = run_upgrade(deploy.data_root, deploy.version_dir("1.1.0"), inputs=inputs)
 
@@ -342,7 +350,7 @@ def test_rollback_without_marker_is_noop_without_events(tmp_path: Path) -> None:
     deploy = _deployment(tmp_path)
     clock = VirtualClock(NOW)
     runner = StubRunner()
-    inputs = _step_inputs(clock, StubHttp(), runner, set(), set())
+    inputs = _step_inputs(clock, StubHttp(), runner, _ExitPlan(alive=set(), exit_pids=set()))
 
     code = run_rollback(deploy.data_root, inputs=inputs)
 

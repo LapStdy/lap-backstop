@@ -6,6 +6,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -206,24 +207,33 @@ def body_of(response: ApiResponse) -> dict[str, Any]:
     return response.payload
 
 
+@dataclass(frozen=True, slots=True)
+class RunOverrides:
+    """prepare_run 的 NewRun 字段覆盖：默认无调度、按 T0 整点、无截止、键 run-key。"""
+
+    schedule_id: str | None = None
+    scheduled_at: datetime = T0
+    deadline_at: datetime | None = None
+    key: str = "run-key"
+
+
+_DEFAULT_OVERRIDES = RunOverrides()
+
+
 def prepare_run(
     connection: sqlite3.Connection,
     runs: JobRunService,
-    *,
-    schedule_id: str | None = None,
-    scheduled_at: datetime = T0,
-    deadline_at: datetime | None = None,
-    key: str = "run-key",
+    overrides: RunOverrides = _DEFAULT_OVERRIDES,
 ) -> str:
     record, _ = runs.create_scheduled(
         NewRun(
             template_id=TEMPLATE_ID,
-            schedule_id=schedule_id,
-            scheduled_at=scheduled_at,
+            schedule_id=overrides.schedule_id,
+            scheduled_at=overrides.scheduled_at,
             created_at=T0,
-            idempotency_key=key,
+            idempotency_key=overrides.key,
             priority=0,
-            deadline_at=deadline_at,
+            deadline_at=overrides.deadline_at,
         )
     )
     return record.id
@@ -293,7 +303,7 @@ def test_dispatch_passes_schedule_keep_warm_to_executor(
     connection, clock, runs, data_root = env
     insert_template(connection)
     insert_schedule(connection, keep_warm_minutes=30)
-    run_id = prepare_run(connection, runs, schedule_id=SCHEDULE_ID)
+    run_id = prepare_run(connection, runs, RunOverrides(schedule_id=SCHEDULE_ID))
     runs.enqueue(run_id)
     tick_and_settle(supervisor_for(connection, clock, data_root))
     assert runs.get(run_id).state is RunState.SUCCEEDED
@@ -324,7 +334,7 @@ def test_tick_fails_overdue_run(
 ) -> None:
     connection, clock, runs, data_root = env
     insert_template(connection)
-    run_id = prepare_run(connection, runs, deadline_at=T0 + timedelta(minutes=1))
+    run_id = prepare_run(connection, runs, RunOverrides(deadline_at=T0 + timedelta(minutes=1)))
     runs.enqueue(run_id)
     supervisor = supervisor_for(connection, clock, data_root)
     clock.advance(timedelta(minutes=2))
@@ -510,8 +520,9 @@ def test_stop_during_waiting_cancels_on_next_dispatch_without_launch(
     run_id = prepare_run(
         connection,
         runs,
-        scheduled_at=T0 + timedelta(minutes=5),
-        deadline_at=T0 + timedelta(minutes=30),
+        RunOverrides(
+            scheduled_at=T0 + timedelta(minutes=5), deadline_at=T0 + timedelta(minutes=30)
+        ),
     )
     runs.enqueue(run_id)
     supervisor = _supervisor_with_script(connection, clock, data_root, adapter)

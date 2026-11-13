@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Callable, Iterator, Mapping
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -209,47 +209,65 @@ def env(
         connection.close()
 
 
+@dataclass(frozen=True, slots=True)
+class RunOverrides:
+    """prepare_run 的字段覆盖：默认按 T0 整点、无截止、锚定键与模板默认策略。"""
+
+    scheduled_at: datetime = T0
+    deadline_at: datetime | None = None
+    key: str = "schedule-1:2026-10-23T12:00:00+00:00"
+    policy: Mapping[str, Any] | None = None
+
+
+_DEFAULT_OVERRIDES = RunOverrides()
+
+
 def prepare_run(
     connection: sqlite3.Connection,
     runs: JobRunService,
     scenario: str,
-    *,
-    scheduled_at: datetime = T0,
-    deadline_at: datetime | None = None,
-    key: str = "schedule-1:2026-10-23T12:00:00+00:00",
-    policy: Mapping[str, Any] | None = None,
+    overrides: RunOverrides = _DEFAULT_OVERRIDES,
 ) -> str:
-    insert_template(connection, scenario, policy=policy)
+    insert_template(connection, scenario, policy=overrides.policy)
     record, _ = runs.create_scheduled(
         NewRun(
             template_id=TEMPLATE_ID,
             schedule_id=None,
-            scheduled_at=scheduled_at,
+            scheduled_at=overrides.scheduled_at,
             created_at=T0,
-            idempotency_key=key,
+            idempotency_key=overrides.key,
             priority=0,
-            deadline_at=deadline_at,
+            deadline_at=overrides.deadline_at,
         )
     )
     runs.enqueue(record.id)
     return record.id
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutorOptions:
+    """executor_for 的可选注入：取消令牌与日志；默认无。"""
+
+    cancel: CancelFlag | None = None
+    log: Logger | None = None
+
+
+_DEFAULT_EXECUTOR_OPTIONS = ExecutorOptions()
+
+
 def executor_for(
     connection: sqlite3.Connection,
     clock: VirtualClock,
     data_root: Path,
-    *,
-    cancel: CancelFlag | None = None,
-    log: Logger | None = None,
+    options: ExecutorOptions = _DEFAULT_EXECUTOR_OPTIONS,
 ) -> WorkerExecutor:
     return WorkerExecutor(
         connection,
         clock,
         make_registry(),
         data_root=data_root,
-        cancel=cancel,
-        log=log,
+        cancel=options.cancel,
+        log=options.log,
     )
 
 
@@ -296,10 +314,7 @@ def test_executor_waits_for_scheduled_time(
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(
-        connection,
-        runs,
-        "instant",
-        scheduled_at=T0 + timedelta(hours=1),
+        connection, runs, "instant", RunOverrides(scheduled_at=T0 + timedelta(hours=1))
     )
     executor = executor_for(connection, clock, data_root)
     waiting = executor.execute(run_id)
@@ -357,7 +372,7 @@ def test_verify_without_policy_id_blames_template(
 ) -> None:
     """历史模板策略缺 id：unknown 收尾，原因指向模板缺策略而不是缺证据。"""
     connection, clock, runs, data_root = env
-    run_id = prepare_run(connection, runs, "instant", policy={})
+    run_id = prepare_run(connection, runs, "instant", RunOverrides(policy={}))
     result = executor_for(connection, clock, data_root).execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert result.error_code == "E_CONFIG"
@@ -393,10 +408,7 @@ def test_missed_deadline_fails_before_execution(
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(
-        connection,
-        runs,
-        "instant",
-        deadline_at=T0 + timedelta(minutes=30),
+        connection, runs, "instant", RunOverrides(deadline_at=T0 + timedelta(minutes=30))
     )
     clock.advance(timedelta(hours=1))
     result = executor_for(connection, clock, data_root).execute(run_id)
@@ -411,7 +423,9 @@ def test_cancel_flag_prevents_start(
     run_id = prepare_run(connection, runs, "instant")
     flag = CancelFlag()
     flag.cancel()
-    result = executor_for(connection, clock, data_root, cancel=flag).execute(run_id)
+    result = executor_for(connection, clock, data_root, ExecutorOptions(cancel=flag)).execute(
+        run_id
+    )
     assert result.state is RunState.CANCELLED
     assert phases(connection, run_id) == {}
 

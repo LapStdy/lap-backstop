@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -35,19 +36,22 @@ def insert_template(connection: sqlite3.Connection) -> None:
     )
 
 
-def insert_schedule(
-    connection: sqlite3.Connection,
-    *,
-    next_run_at: datetime | None,
-    kind: str = "interval",
-    expr: str = "60",
-    catch_up: str = "run_once",
-    window_minutes: int = 120,
-    deadline_minutes: int = 180,
-    preheat_minutes: int = 0,
-    coalesce: int = 1,
-    enabled: int = 1,
-) -> None:
+@dataclass(frozen=True, slots=True)
+class ScheduleSeed:
+    """insert_schedule 的行字段；next_run_at 为 None 表示交给 bootstrap 计算。"""
+
+    next_run_at: datetime | None
+    kind: str = "interval"
+    expr: str = "60"
+    catch_up: str = "run_once"
+    window_minutes: int = 120
+    deadline_minutes: int = 180
+    preheat_minutes: int = 0
+    coalesce: int = 1
+    enabled: int = 1
+
+
+def insert_schedule(connection: sqlite3.Connection, seed: ScheduleSeed) -> None:
     connection.execute(
         "INSERT INTO schedules (id, name, kind, expr, at, timezone, catch_up, "
         "window_minutes, coalesce, priority, deadline_minutes, preheat_minutes, "
@@ -55,16 +59,16 @@ def insert_schedule(
         "VALUES (?, '每小时', ?, ?, NULL, 'UTC', ?, ?, ?, 0, ?, ?, 0, ?, ?, ?, ?, ?)",
         (
             SCHEDULE_ID,
-            kind,
-            expr,
-            catch_up,
-            window_minutes,
-            coalesce,
-            deadline_minutes,
-            preheat_minutes,
+            seed.kind,
+            seed.expr,
+            seed.catch_up,
+            seed.window_minutes,
+            seed.coalesce,
+            seed.deadline_minutes,
+            seed.preheat_minutes,
             TEMPLATE_ID,
-            enabled,
-            None if next_run_at is None else next_run_at.isoformat(),
+            seed.enabled,
+            None if seed.next_run_at is None else seed.next_run_at.isoformat(),
             T0.isoformat(),
             T0.isoformat(),
         ),
@@ -99,7 +103,7 @@ def test_bootstrap_computes_first_next_run(
     env: Env,
 ) -> None:
     connection, _clock, _runs, scanner = env
-    insert_schedule(connection, next_run_at=None)
+    insert_schedule(connection, ScheduleSeed(next_run_at=None))
     assert scanner.tick(T0) == ()
     assert read_next_run(connection) == T0 + timedelta(hours=1)
 
@@ -108,7 +112,7 @@ def test_tick_creates_and_enqueues_due_run(
     env: Env,
 ) -> None:
     connection, _clock, runs, scanner = env
-    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1))
+    insert_schedule(connection, ScheduleSeed(next_run_at=T0 + timedelta(hours=1)))
     created = scanner.tick(T0 + timedelta(hours=1))
     assert len(created) == 1
     record = runs.get(created[0].id)
@@ -124,8 +128,7 @@ def test_preheat_creates_run_before_scheduled_time(
     connection, _clock, _runs, scanner = env
     insert_schedule(
         connection,
-        next_run_at=T0 + timedelta(hours=1),
-        preheat_minutes=30,
+        ScheduleSeed(next_run_at=T0 + timedelta(hours=1), preheat_minutes=30),
     )
     assert scanner.tick(T0 + timedelta(minutes=20)) == ()
     created = scanner.tick(T0 + timedelta(minutes=40))
@@ -138,7 +141,7 @@ def test_catch_up_run_once_keeps_latest_missed_point(
     env: Env,
 ) -> None:
     connection, _clock, _runs, scanner = env
-    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1))
+    insert_schedule(connection, ScheduleSeed(next_run_at=T0 + timedelta(hours=1)))
     created = scanner.tick(T0 + timedelta(hours=4))
     assert len(created) == 1
     assert created[0].scheduled_at == T0 + timedelta(hours=4)
@@ -152,10 +155,12 @@ def test_catch_up_window_coalesces_missed_points(
     connection, _clock, runs, scanner = env
     insert_schedule(
         connection,
-        next_run_at=T0 + timedelta(hours=1),
-        catch_up="window",
-        window_minutes=60,
-        coalesce=1,
+        ScheduleSeed(
+            next_run_at=T0 + timedelta(hours=1),
+            catch_up="window",
+            window_minutes=60,
+            coalesce=1,
+        ),
     )
     created = scanner.tick(T0 + timedelta(hours=4))
     assert len(created) == 1
@@ -170,8 +175,7 @@ def test_catch_up_skip_creates_nothing(
     connection, _clock, _runs, scanner = env
     insert_schedule(
         connection,
-        next_run_at=T0 + timedelta(hours=1),
-        catch_up="skip",
+        ScheduleSeed(next_run_at=T0 + timedelta(hours=1), catch_up="skip"),
     )
     assert scanner.tick(T0 + timedelta(hours=4)) == ()
     assert read_next_run(connection) == T0 + timedelta(hours=5)
@@ -181,7 +185,7 @@ def test_repeated_tick_is_idempotent(
     env: Env,
 ) -> None:
     connection, _clock, _runs, scanner = env
-    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1))
+    insert_schedule(connection, ScheduleSeed(next_run_at=T0 + timedelta(hours=1)))
     first = scanner.tick(T0 + timedelta(hours=1))
     second = scanner.tick(T0 + timedelta(hours=1))
     assert len(first) == 1
@@ -192,13 +196,13 @@ def test_disabled_schedule_is_ignored(
     env: Env,
 ) -> None:
     connection, _clock, _runs, scanner = env
-    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1), enabled=0)
+    insert_schedule(connection, ScheduleSeed(next_run_at=T0 + timedelta(hours=1), enabled=0))
     assert scanner.tick(T0 + timedelta(hours=4)) == ()
 
 
 def test_schedule_row_exposes_updated_at(env: Env) -> None:
     connection, _clock, _runs, _scanner = env
-    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1))
+    insert_schedule(connection, ScheduleSeed(next_run_at=T0 + timedelta(hours=1)))
     repository = ScheduleRepository(connection)
     before = repository.get(SCHEDULE_ID)
     assert before is not None
@@ -220,7 +224,7 @@ def test_catch_up_paused_skips_missed_occurrences_without_run(
 ) -> None:
     """补跑暂停：错过的发生点整段跳过，next_run_at 照常推进，不欠账。"""
     connection, _clock, _runs, scanner = env
-    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1))
+    insert_schedule(connection, ScheduleSeed(next_run_at=T0 + timedelta(hours=1)))
     set_catch_up_paused(connection, True)
     assert scanner.tick(T0 + timedelta(hours=4)) == ()
     assert read_next_run(connection) == T0 + timedelta(hours=5)
@@ -231,7 +235,7 @@ def test_catch_up_resumes_once_pause_is_cleared(
 ) -> None:
     """暂停解除后的第一轮 tick 按既有补跑策略收敛，只补最近一次。"""
     connection, _clock, _runs, scanner = env
-    insert_schedule(connection, next_run_at=T0 + timedelta(hours=1))
+    insert_schedule(connection, ScheduleSeed(next_run_at=T0 + timedelta(hours=1)))
     set_catch_up_paused(connection, False)
     created = scanner.tick(T0 + timedelta(hours=4))
     assert len(created) == 1

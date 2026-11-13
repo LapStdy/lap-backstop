@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -46,20 +47,26 @@ def app(tmp_path: Path) -> Iterator[ApiApp]:
     yield ApiApp(database, clock=VirtualClock(NOW))
 
 
+@dataclass(frozen=True, slots=True)
+class CallOptions:
+    """call 的可选请求要素：JSON 体、查询串与附加请求头。"""
+
+    body: dict[str, Any] | None = None
+    query: dict[str, str] | None = None
+    extra_headers: dict[str, str] | None = None
+
+
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 def call(
-    app: ApiApp,
-    method: str,
-    path: str,
-    *,
-    body: dict[str, Any] | None = None,
-    query: dict[str, str] | None = None,
-    extra_headers: dict[str, str] | None = None,
+    app: ApiApp, method: str, path: str, options: CallOptions = _DEFAULT_CALL_OPTIONS
 ) -> ApiResponse:
     headers = {"authorization": f"Bearer {TOKEN}"}
-    if extra_headers is not None:
-        headers.update(extra_headers)
-    payload = b"" if body is None else json.dumps(body).encode("utf-8")
-    return app.handle(ApiRequest(method, path, query or {}, headers, payload))
+    if options.extra_headers is not None:
+        headers.update(options.extra_headers)
+    payload = b"" if options.body is None else json.dumps(options.body).encode("utf-8")
+    return app.handle(ApiRequest(method, path, options.query or {}, headers, payload))
 
 
 def error_of(response: ApiResponse) -> dict[str, str]:
@@ -94,7 +101,7 @@ def body_of(response: ApiResponse) -> dict[str, Any]:
 
 
 def created_schedule_id(app: ApiApp) -> str:
-    created = call(app, "POST", "/api/v1/schedules", body=MINIMAL)
+    created = call(app, "POST", "/api/v1/schedules", CallOptions(body=MINIMAL))
     assert created.status == 201
     return str(body_of(created)["schedule"]["id"])
 
@@ -109,7 +116,12 @@ def created_schedule_id(app: ApiApp) -> str:
     ],
 )
 def test_missing_required_field_returns_400(app: ApiApp, path: str, body: dict[str, Any]) -> None:
-    assert_error(call(app, "POST", path, body=body), 400, "E_BAD_REQUEST", fragment="缺少必填字段")
+    assert_error(
+        call(app, "POST", path, CallOptions(body=body)),
+        400,
+        "E_BAD_REQUEST",
+        fragment="缺少必填字段",
+    )
 
 
 def test_run_now_without_idempotency_key_returns_400(app: ApiApp) -> None:
@@ -140,7 +152,9 @@ def test_run_now_without_idempotency_key_returns_400(app: ApiApp) -> None:
 def test_wrong_field_type_returns_400(
     app: ApiApp, path: str, body: dict[str, Any], fragment: str
 ) -> None:
-    assert_error(call(app, "POST", path, body=body), 400, "E_BAD_REQUEST", fragment=fragment)
+    assert_error(
+        call(app, "POST", path, CallOptions(body=body)), 400, "E_BAD_REQUEST", fragment=fragment
+    )
 
 
 def test_settings_body_must_be_json_object(app: ApiApp) -> None:
@@ -174,7 +188,9 @@ def test_settings_body_must_be_json_object(app: ApiApp) -> None:
 def test_out_of_range_value_returns_400(
     app: ApiApp, body: dict[str, Any], code: str, fragment: str
 ) -> None:
-    assert_error(call(app, "POST", "/api/v1/schedules", body=body), 400, code, fragment=fragment)
+    assert_error(
+        call(app, "POST", "/api/v1/schedules", CallOptions(body=body)), 400, code, fragment=fragment
+    )
 
 
 @pytest.mark.parametrize(
@@ -188,36 +204,35 @@ def test_out_of_range_value_returns_400(
 )
 def test_out_of_range_query_returns_400(app: ApiApp, query: dict[str, str], fragment: str) -> None:
     assert_error(
-        call(app, "GET", "/api/v1/runs", query=query), 400, "E_BAD_REQUEST", fragment=fragment
+        call(app, "GET", "/api/v1/runs", CallOptions(query=query)),
+        400,
+        "E_BAD_REQUEST",
+        fragment=fragment,
     )
 
 
 @pytest.mark.parametrize(
-    ("method", "path", "body", "extra_headers"),
+    ("method", "path", "options"),
     [
-        ("GET", "/api/v1/schedules/nope", None, None),
-        ("PUT", "/api/v1/schedules/nope", MINIMAL, None),
-        ("DELETE", "/api/v1/schedules/nope", None, None),
-        ("POST", "/api/v1/schedules/nope/run", None, {"idempotency-key": "k"}),
-        ("GET", "/api/v1/job-templates/nope", None, None),
-        ("DELETE", "/api/v1/job-templates/nope", None, None),
-        ("GET", "/api/v1/runs/nope", None, None),
-        ("GET", "/api/v1/runs/nope/evidence/shot.png", None, None),
-        ("GET", "/api/v1/environments/nope", None, None),
-        ("GET", "/api/v1/plugins/nope", None, None),
-        ("GET", "/api/v1/plugins/nope/schema", None, None),
-        ("GET", "/api/v1/plugins/nope/config", None, None),
-        ("PUT", "/api/v1/plugins/nope/config", None, None),
+        ("GET", "/api/v1/schedules/nope", CallOptions()),
+        ("PUT", "/api/v1/schedules/nope", CallOptions(body=MINIMAL)),
+        ("DELETE", "/api/v1/schedules/nope", CallOptions()),
+        ("POST", "/api/v1/schedules/nope/run", CallOptions(extra_headers={"idempotency-key": "k"})),
+        ("GET", "/api/v1/job-templates/nope", CallOptions()),
+        ("DELETE", "/api/v1/job-templates/nope", CallOptions()),
+        ("GET", "/api/v1/runs/nope", CallOptions()),
+        ("GET", "/api/v1/runs/nope/evidence/shot.png", CallOptions()),
+        ("GET", "/api/v1/environments/nope", CallOptions()),
+        ("GET", "/api/v1/plugins/nope", CallOptions()),
+        ("GET", "/api/v1/plugins/nope/schema", CallOptions()),
+        ("GET", "/api/v1/plugins/nope/config", CallOptions()),
+        ("PUT", "/api/v1/plugins/nope/config", CallOptions()),
     ],
 )
 def test_unknown_resource_returns_404(
-    app: ApiApp,
-    method: str,
-    path: str,
-    body: dict[str, Any] | None,
-    extra_headers: dict[str, str] | None,
+    app: ApiApp, method: str, path: str, options: CallOptions
 ) -> None:
-    response = call(app, method, path, body=body, extra_headers=extra_headers)
+    response = call(app, method, path, options)
     assert_error(response, 404, "E_NOT_FOUND")
 
 

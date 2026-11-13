@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -50,18 +51,24 @@ def app(database: Path) -> ApiApp:
     return ApiApp(database, clock=VirtualClock(NOW))
 
 
+@dataclass(frozen=True, slots=True)
+class CallOptions:
+    """call 的可选请求要素：JSON 体、请求头与令牌；token 为 None 时不带鉴权头。"""
+
+    body: object | None = None
+    headers: dict[str, str] | None = None
+    token: str | None = TOKEN
+
+
+_DEFAULT_CALL_OPTIONS = CallOptions()
+
+
 def call(
-    app: ApiApp,
-    method: str,
-    path: str,
-    *,
-    body: object | None = None,
-    headers: dict[str, str] | None = None,
-    token: str | None = TOKEN,
+    app: ApiApp, method: str, path: str, options: CallOptions = _DEFAULT_CALL_OPTIONS
 ) -> ApiResponse:
-    merged = {"authorization": f"Bearer {token}"} if token is not None else {}
-    merged.update(headers or {})
-    raw = b"" if body is None else json.dumps(body).encode("utf-8")
+    merged = {"authorization": f"Bearer {options.token}"} if options.token is not None else {}
+    merged.update(options.headers or {})
+    raw = b"" if options.body is None else json.dumps(options.body).encode("utf-8")
     return app.handle(ApiRequest(method, path, {}, merged, raw))
 
 
@@ -110,7 +117,7 @@ def test_config_starts_empty_at_revision_zero(app: ApiApp) -> None:
 
 def test_put_saves_payload_and_bumps_revision(app: ApiApp, database: Path) -> None:
     payload = {"path": "D:/MAA", "unknown": {"keep": True}}
-    response = call(app, "PUT", config_path(), body=payload)
+    response = call(app, "PUT", config_path(), CallOptions(body=payload))
     assert response.status == 200
     assert body_of(response) == {"config": payload, "revision": 1}
     assert response.etag is not None
@@ -126,8 +133,8 @@ def test_put_saves_payload_and_bumps_revision(app: ApiApp, database: Path) -> No
 
 
 def test_second_put_records_change_diff(app: ApiApp, database: Path) -> None:
-    call(app, "PUT", config_path(), body={"path": "D:/MAA"})
-    response = call(app, "PUT", config_path(), body={"path": "D:/MAA2"})
+    call(app, "PUT", config_path(), CallOptions(body={"path": "D:/MAA"}))
+    response = call(app, "PUT", config_path(), CallOptions(body={"path": "D:/MAA2"}))
     assert body_of(response) == {"config": {"path": "D:/MAA2"}, "revision": 2}
     assert revisions(database)[1] == (
         PLUGIN_ID,
@@ -138,9 +145,12 @@ def test_second_put_records_change_diff(app: ApiApp, database: Path) -> None:
 
 
 def test_put_with_stale_if_match_is_conflict(app: ApiApp) -> None:
-    call(app, "PUT", config_path(), body={"path": "D:/MAA"})
+    call(app, "PUT", config_path(), CallOptions(body={"path": "D:/MAA"}))
     response = call(
-        app, "PUT", config_path(), body={"path": "D:/other"}, headers={"if-match": '"stale"'}
+        app,
+        "PUT",
+        config_path(),
+        CallOptions(body={"path": "D:/other"}, headers={"if-match": '"stale"'}),
     )
     assert response.status == 409
     assert body_of(response)["error"]["code"] == "E_CONFLICT"
@@ -153,21 +163,23 @@ def test_put_with_matching_if_match_succeeds(app: ApiApp) -> None:
         app,
         "PUT",
         config_path(),
-        body={"path": "D:/MAA3"},
-        headers={"if-match": current.etag},
+        CallOptions(
+            body={"path": "D:/MAA3"},
+            headers={"if-match": current.etag},
+        ),
     )
     assert response.status == 200
     assert body_of(response) == {"config": {"path": "D:/MAA3"}, "revision": 1}
 
 
 def test_put_rejects_non_object_body(app: ApiApp) -> None:
-    response = call(app, "PUT", config_path(), body=["not", "object"])
+    response = call(app, "PUT", config_path(), CallOptions(body=["not", "object"]))
     assert response.status == 400
     assert body_of(response)["error"]["code"] == "E_BAD_REQUEST"
 
 
 def test_put_of_unknown_plugin_is_not_found(app: ApiApp) -> None:
-    response = call(app, "PUT", config_path("missing"), body={})
+    response = call(app, "PUT", config_path("missing"), CallOptions(body={}))
     assert response.status == 404
     assert body_of(response)["error"]["code"] == "E_NOT_FOUND"
 
@@ -181,7 +193,7 @@ def test_put_of_unknown_plugin_is_not_found(app: ApiApp) -> None:
     ],
 )
 def test_endpoints_require_token(app: ApiApp, method: str, path: str, body: object) -> None:
-    response = call(app, method, path, body=body, token=None)
+    response = call(app, method, path, CallOptions(body=body, token=None))
     assert response.status == 401
 
 
