@@ -1,0 +1,4035 @@
+{
+  "frame_width": 1280,
+  "frame_height": 720,
+  "coverage_pad": 18,
+  "frames": [
+    {
+      "name": "MuMu-20261108-210426-035",
+      "batch": "20261109-theme-matrix",
+      "theme": "festival",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210426-035/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210426-035/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210426-035/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210426-035/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210426-035/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 1.0,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5485084654662725,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 1.0,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3403072033898305,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 1.0,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.43395303326810175,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 1.0,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999997615814209,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210433-099",
+      "batch": "20261109-theme-matrix",
+      "theme": "announcement",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210433-099/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210433-099/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210433-099/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210433-099/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210433-099/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.3489393889904022,
+            "appearance_hit": false,
+            "offset": [
+              1,
+              -1
+            ],
+            "position_score": 0.05885514646600376,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5615902543067932,
+            "appearance_hit": false,
+            "offset": [
+              9,
+              -13
+            ],
+            "position_score": 0.3188559322033898,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.2632559835910797,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              13
+            ],
+            "position_score": 0.23923679060665362,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.21940463781356812,
+            "appearance_hit": false,
+            "offset": [
+              -16,
+              12
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.24376943707466125,
+            "appearance_hit": false,
+            "offset": [
+              2,
+              -17
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210441-462",
+      "batch": "20261109-theme-matrix",
+      "theme": "festival",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210441-462/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210441-462/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210441-462/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210441-462/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210441-462/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9998149275779724,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5667831228164472,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.999943733215332,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3403072033898305,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.998766303062439,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.43224070450097846,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999622702598572,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999995827674866,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210503-625",
+      "batch": "20261109-theme-matrix",
+      "theme": "depot",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210503-625/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210503-625/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210503-625/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210503-625/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210503-625/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.28831467032432556,
+            "appearance_hit": false,
+            "offset": [
+              4,
+              0
+            ],
+            "position_score": 0.07981725342649826,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5357520580291748,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              18
+            ],
+            "position_score": 0.1104343220338983,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.41945016384124756,
+            "appearance_hit": false,
+            "offset": [
+              9,
+              18
+            ],
+            "position_score": 0.2590508806262231,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.20969612896442413,
+            "appearance_hit": false,
+            "offset": [
+              11,
+              7
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.2774071991443634,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              14
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210509-227",
+      "batch": "20261109-theme-matrix",
+      "theme": "infrast-overview",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210509-227/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210509-227/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210509-227/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210509-227/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210509-227/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.23948372900485992,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              -13
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.7167098522186279,
+            "appearance_hit": false,
+            "offset": [
+              -5,
+              9
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.23162180185317993,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              2
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.08478878438472748,
+            "appearance_hit": false,
+            "offset": [
+              15,
+              15
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210518-148",
+      "batch": "20261109-theme-matrix",
+      "theme": "infrast",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210518-148/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210518-148/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210518-148/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210518-148/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210518-148/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.2881894111633301,
+            "appearance_hit": false,
+            "offset": [
+              4,
+              0
+            ],
+            "position_score": 0.22574576726686374,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5416616201400757,
+            "appearance_hit": false,
+            "offset": [
+              -10,
+              18
+            ],
+            "position_score": 0.15254237288135594,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.4091005325317383,
+            "appearance_hit": false,
+            "offset": [
+              9,
+              18
+            ],
+            "position_score": 0.27128180039138944,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.35484379529953003,
+            "appearance_hit": false,
+            "offset": [
+              10,
+              6
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.24026836454868317,
+            "appearance_hit": false,
+            "offset": [
+              7,
+              -15
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210522-341",
+      "batch": "20261109-theme-matrix",
+      "theme": "infrast",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210522-341/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210522-341/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210522-341/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210522-341/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210522-341/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.2881894111633301,
+            "appearance_hit": false,
+            "offset": [
+              4,
+              0
+            ],
+            "position_score": 0.22574576726686374,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5416616201400757,
+            "appearance_hit": false,
+            "offset": [
+              -10,
+              18
+            ],
+            "position_score": 0.15254237288135594,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.4091005325317383,
+            "appearance_hit": false,
+            "offset": [
+              9,
+              18
+            ],
+            "position_score": 0.27128180039138944,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.1136128157377243,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              16
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.24026836454868317,
+            "appearance_hit": false,
+            "offset": [
+              7,
+              -15
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210533-576",
+      "batch": "20261109-theme-matrix",
+      "theme": "event",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210533-576/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210533-576/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210533-576/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210533-576/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210533-576/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.28831568360328674,
+            "appearance_hit": false,
+            "offset": [
+              4,
+              0
+            ],
+            "position_score": 0.052942757323300185,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.05697261914610863,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              7
+            ],
+            "position_score": 0.00026483050847457627,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.3098297119140625,
+            "appearance_hit": false,
+            "offset": [
+              -16,
+              25
+            ],
+            "position_score": 0.18126223091976518,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.2769584357738495,
+            "appearance_hit": false,
+            "offset": [
+              2,
+              6
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210559-481",
+      "batch": "20261109-theme-matrix",
+      "theme": "ink",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210559-481/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210559-481/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210559-481/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210559-481/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210559-481/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9964330196380615,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3972050524052674,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9994839429855347,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3413665254237288,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9841362833976746,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.410958904109589,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9942683577537537,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999997615814209,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210618-652",
+      "batch": "20261109-theme-matrix",
+      "theme": "dark",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210618-652/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210618-652/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210618-652/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210618-652/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210618-652/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 11,
+        "appearance_hits": 4,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9964330196380615,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3972050524052674,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9994834065437317,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3405720338983051,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9659759402275085,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.37989236790606656,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.7075476050376892,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.9999997615814209,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210622-248",
+      "batch": "20261109-theme-matrix",
+      "theme": "dark",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210622-248/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210622-248/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210622-248/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210622-248/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210622-248/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9964330196380615,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3972050524052674,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9994807839393616,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3403072033898305,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9659733176231384,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3803816046966732,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9943931102752686,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999997615814209,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210624-923",
+      "batch": "20261109-theme-matrix",
+      "theme": "dark",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210624-923/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210624-923/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210624-923/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210624-923/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210624-923/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9964330196380615,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3972050524052674,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9995360970497131,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3403072033898305,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9659733176231384,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3803816046966732,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9943968653678894,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999997615814209,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210654-373",
+      "batch": "20261109-theme-matrix",
+      "theme": "red",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210654-373/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210654-373/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210654-373/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210654-373/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210654-373/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9952963590621948,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3168503090567052,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9977002143859863,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3498411016949153,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9542246460914612,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              7
+            ],
+            "position_score": 0.4809197651663405,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.946803867816925,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999997615814209,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210656-395",
+      "batch": "20261109-theme-matrix",
+      "theme": "red",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210656-395/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210656-395/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210656-395/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210656-395/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210656-395/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9976444840431213,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3281375974200484,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9976523518562317,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3493114406779661,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9509266018867493,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              7
+            ],
+            "position_score": 0.4332191780821918,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9466744661331177,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999995827674866,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261108-210657-987",
+      "batch": "20261109-theme-matrix",
+      "theme": "red",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261108-210657-987/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261108-210657-987/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261108-210657-987/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261108-210657-987/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261108-210657-987/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9953478574752808,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.2926632625638269,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9976643919944763,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3498411016949153,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9571152925491333,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              7
+            ],
+            "position_score": 0.49681996086105673,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9466744661331177,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999997615814209,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "主界面",
+      "batch": "20261109-theme-matrix",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/主界面/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/主界面/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/主界面/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/主界面/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/主界面/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.999457597732544,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5474334856221446,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.999114990234375,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3532838983050847,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9944180250167847,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.35689823874755383,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9660226702690125,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9993265271186829,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "000",
+      "batch": "20261108-main",
+      "theme": "login-00",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/000/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/000/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/000/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/000/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/000/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.08027136325836182,
+            "appearance_hit": false,
+            "offset": [
+              10,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5917671918869019,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.26146450638771057,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              16
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.16751110553741455,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -18
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "001",
+      "batch": "20261108-main",
+      "theme": "login-01",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/001/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/001/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/001/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/001/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/001/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.08027136325836182,
+            "appearance_hit": false,
+            "offset": [
+              10,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5917671918869019,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.26146450638771057,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              16
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.16750405728816986,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -18
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "002",
+      "batch": "20261108-main",
+      "theme": "login-02",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/002/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/002/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/002/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/002/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/002/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.08027136325836182,
+            "appearance_hit": false,
+            "offset": [
+              10,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5917671918869019,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.26147201657295227,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              16
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.16750405728816986,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -18
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "003",
+      "batch": "20261108-main",
+      "theme": "login-03",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/003/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/003/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/003/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/003/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/003/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.08027136325836182,
+            "appearance_hit": false,
+            "offset": [
+              10,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5917671918869019,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.26147201657295227,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              16
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.16750405728816986,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -18
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "004",
+      "batch": "20261108-main",
+      "theme": "login-04",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/004/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/004/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/004/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/004/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/004/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.08027136325836182,
+            "appearance_hit": false,
+            "offset": [
+              10,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5917671918869019,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.26147201657295227,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              16
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.16750405728816986,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -18
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "005",
+      "batch": "20261108-main",
+      "theme": "login-05",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/005/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/005/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/005/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/005/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/005/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.08027136325836182,
+            "appearance_hit": false,
+            "offset": [
+              10,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5917671918869019,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.26147201657295227,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              16
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.16750405728816986,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -18
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "006",
+      "batch": "20261108-main",
+      "theme": "login-06",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/006/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/006/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/006/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/006/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/006/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.08027136325836182,
+            "appearance_hit": false,
+            "offset": [
+              10,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.5917671918869019,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              18
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.26147201657295227,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              16
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.16750405728816986,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -18
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "007",
+      "batch": "20261108-main",
+      "theme": "login-07",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/007/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/007/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/007/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/007/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/007/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.3422824740409851,
+            "appearance_hit": false,
+            "offset": [
+              -15,
+              8
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.65666663646698,
+            "appearance_hit": false,
+            "offset": [
+              -2,
+              -14
+            ],
+            "position_score": 0.003972457627118644,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.21160989999771118,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              14
+            ],
+            "position_score": 0.03498043052837573,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.19941085577011108,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -14
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "008",
+      "batch": "20261108-main",
+      "theme": "login-08",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/008/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/008/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/008/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/008/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/008/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.3422824740409851,
+            "appearance_hit": false,
+            "offset": [
+              -15,
+              8
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.65666663646698,
+            "appearance_hit": false,
+            "offset": [
+              -2,
+              -14
+            ],
+            "position_score": 0.003972457627118644,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.21160989999771118,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              14
+            ],
+            "position_score": 0.03498043052837573,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.19941085577011108,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -14
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "009",
+      "batch": "20261108-main",
+      "theme": "login-09",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/009/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/009/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/009/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/009/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/009/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.3422824740409851,
+            "appearance_hit": false,
+            "offset": [
+              -15,
+              8
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.65666663646698,
+            "appearance_hit": false,
+            "offset": [
+              -2,
+              -14
+            ],
+            "position_score": 0.003972457627118644,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.21160989999771118,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              14
+            ],
+            "position_score": 0.03498043052837573,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.19941085577011108,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -14
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "010",
+      "batch": "20261108-main",
+      "theme": "login-10",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/010/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/010/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/010/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/010/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/010/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.3422824740409851,
+            "appearance_hit": false,
+            "offset": [
+              -15,
+              8
+            ],
+            "position_score": 0.0,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.65666663646698,
+            "appearance_hit": false,
+            "offset": [
+              -2,
+              -14
+            ],
+            "position_score": 0.003972457627118644,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.21160989999771118,
+            "appearance_hit": false,
+            "offset": [
+              -18,
+              14
+            ],
+            "position_score": 0.03498043052837573,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.0,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.19941085577011108,
+            "appearance_hit": false,
+            "offset": [
+              18,
+              -14
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "011",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/011/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/011/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/011/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/011/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/011/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9998157620429993,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5667831228164472,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9996880888938904,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3416313559322034,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.998766303062439,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.43224070450097846,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999622702598572,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9993265271186829,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "012",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/012/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/012/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/012/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/012/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/012/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.999935507774353,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.554420854608976,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9996445178985596,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3413665254237288,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9987679123878479,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.43224070450097846,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999606609344482,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9993262887001038,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "013",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/013/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/013/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/013/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/013/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/013/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9998149275779724,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5667831228164472,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9999814629554749,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3411016949152542,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9991846084594727,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.43224070450097846,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999606609344482,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999988079071045,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "014",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/014/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/014/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/014/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/014/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/014/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9994770288467407,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5756517065305026,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9999814629554749,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3411016949152542,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9992988705635071,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.4361545988258317,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999606609344482,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9993292093276978,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "015",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/015/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/015/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/015/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/015/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/015/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9998149275779724,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5667831228164472,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.999883234500885,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3384533898305085,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9978048205375671,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.4288160469667319,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.999975860118866,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9993321299552917,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "016",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/016/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/016/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/016/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/016/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/016/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9998330473899841,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5592582639075517,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9993860125541687,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3400423728813559,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9978576302528381,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.42710371819960863,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9931048154830933,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999986290931702,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "017",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/017/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/017/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/017/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/017/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/017/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9998151063919067,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5675893576995431,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9999814629554749,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.341896186440678,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9965616464614868,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3960371819960861,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999622702598572,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9993267059326172,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "018",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/018/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/018/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/018/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/018/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/018/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9993636608123779,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5751142166084386,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9999808073043823,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3411016949152542,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9986807703971863,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.42759295499021527,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999622702598572,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999567270278931,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "019",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/019/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/019/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/019/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/019/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/019/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9999808669090271,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5495834453104004,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9999568462371826,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3387182203389831,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9987650513648987,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.43052837573385516,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999606609344482,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999206066131592,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "020",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/020/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/020/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/020/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/020/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/020/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9998942017555237,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.554420854608976,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9998599290847778,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3373940677966102,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9987105131149292,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.41340508806262233,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9984005689620972,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9993265271186829,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    },
+    {
+      "name": "021",
+      "batch": "20261108-main",
+      "theme": "default",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/021/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/021/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/021/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/021/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/021/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9998149275779724,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5667831228164472,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9999788403511047,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3411016949152542,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9988874793052673,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.4288160469667319,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999606609344482,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999997615814209,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
+    }
+  ]
+}
