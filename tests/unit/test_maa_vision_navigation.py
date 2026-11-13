@@ -30,6 +30,7 @@ _FRAME = Frame(
     captured_at=NOW,
     sha256="fake-digest",
     source=FrameOrigin.ADB,
+    png=b"fake-png-bytes",
 )
 _HOME = ScreenReading(state=NavPageState.HOME, total_score=11, appearance_hits=4)
 _OTHER = ScreenReading(state=NavPageState.OTHER, total_score=0, appearance_hits=0)
