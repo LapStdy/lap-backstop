@@ -7,6 +7,7 @@ Supervisor 只保留 tick 的推进顺序与调度决策；无运行归属的环
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,15 @@ from core.worker.executor import CancelFlag
 from storage.repositories.environments import EnvironmentRow
 
 
+@dataclass(frozen=True, slots=True)
+class SupervisionIo:
+    """无归属环境动作的对外依赖：工作目录根、结构化日志与全局事件出口。"""
+
+    data_root: Path
+    log: Logger
+    emit_global: Callable[[str, Mapping[str, Any]], None]
+
+
 class EnvironmentSupervision:
     """无运行归属的环境动作：启动探测、保温到期关闭与手动预热/复位。"""
 
@@ -33,16 +43,14 @@ class EnvironmentSupervision:
         registry: PluginRegistry,
         clock: Clock,
         *,
-        data_root: Path,
-        log: Logger,
-        emit_global: Callable[[str, Mapping[str, Any]], None],
+        io: SupervisionIo,
     ) -> None:
         self._environments = environments
         self._registry = registry
         self._clock = clock
-        self._data_root = data_root
-        self._log = log
-        self._emit_global = emit_global
+        self._data_root = io.data_root
+        self._log = io.log
+        self._emit_global = io.emit_global
 
     def prepare(self, environment_id: str) -> PhaseResult:
         """手动预热：与 tick 调度无关，不建运行、不改运行状态（docs/09 预热）。
@@ -170,4 +178,4 @@ def _reject_evidence(kind: str, path: Path, summary: str) -> str:
     raise ValueError("无运行归属的内核动作不接收证据")
 
 
-__all__ = ["EnvironmentSupervision"]
+__all__ = ["EnvironmentSupervision", "SupervisionIo"]

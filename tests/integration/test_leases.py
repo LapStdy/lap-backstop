@@ -18,7 +18,7 @@ from core.resources.errors import ResourceBusyError, ResourceNotFoundError
 from core.resources.service import DEFAULT_TTL, LeaseService
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
-from storage.repositories.resources import ResourceRepository
+from storage.repositories.resources import ResourceRepository, ResourceSpec
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 TEMPLATE_ID = "template-1"
@@ -81,7 +81,7 @@ def test_acquire_environment_lease(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, LeaseService, ResourceRepository],
 ) -> None:
     connection, _clock, runs, leases, resources = env
-    resources.ensure("env-res", resource_type="environment", name="模拟器")
+    resources.ensure("env-res", ResourceSpec(resource_type="environment", name="模拟器"))
     run_id = make_run(runs, "run-1")
     acquired = leases.acquire(run_id, ("env-res",))
     assert len(acquired) == 1
@@ -97,7 +97,9 @@ def test_environment_capacity_is_always_one(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, LeaseService, ResourceRepository],
 ) -> None:
     _connection, _clock, runs, leases, resources = env
-    resources.ensure("env-res", resource_type="environment", name="模拟器", capacity=5)
+    resources.ensure(
+        "env-res", ResourceSpec(resource_type="environment", name="模拟器", capacity=5)
+    )
     row = resources.get("env-res")
     assert row is not None
     assert row.capacity == 1
@@ -113,7 +115,7 @@ def test_custom_resource_allows_declared_capacity(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, LeaseService, ResourceRepository],
 ) -> None:
     _connection, _clock, runs, leases, resources = env
-    resources.ensure("gpu", resource_type="gpu", name="显卡", capacity=2)
+    resources.ensure("gpu", ResourceSpec(resource_type="gpu", name="显卡", capacity=2))
     first = make_run(runs, "run-1")
     second = make_run(runs, "run-2")
     third = make_run(runs, "run-3")
@@ -127,8 +129,8 @@ def test_acquire_sorts_resource_ids(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, LeaseService, ResourceRepository],
 ) -> None:
     _connection, _clock, runs, leases, resources = env
-    resources.ensure("res-b", resource_type="custom", name="B")
-    resources.ensure("res-a", resource_type="custom", name="A")
+    resources.ensure("res-b", ResourceSpec(resource_type="custom", name="B"))
+    resources.ensure("res-a", ResourceSpec(resource_type="custom", name="A"))
     run_id = make_run(runs, "run-1")
     acquired = leases.acquire(run_id, ("res-b", "res-a"))
     assert [lease.resource_id for lease in acquired] == ["res-a", "res-b"]
@@ -138,7 +140,7 @@ def test_renew_extends_expiry_and_writes_event(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, LeaseService, ResourceRepository],
 ) -> None:
     connection, clock, runs, leases, resources = env
-    resources.ensure("env-res", resource_type="environment", name="模拟器")
+    resources.ensure("env-res", ResourceSpec(resource_type="environment", name="模拟器"))
     run_id = make_run(runs, "run-1")
     leases.acquire(run_id, ("env-res",))
     clock.advance(timedelta(minutes=5))
@@ -153,7 +155,7 @@ def test_release_frees_the_resource(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, LeaseService, ResourceRepository],
 ) -> None:
     connection, _clock, runs, leases, resources = env
-    resources.ensure("env-res", resource_type="environment", name="模拟器")
+    resources.ensure("env-res", ResourceSpec(resource_type="environment", name="模拟器"))
     run_id = make_run(runs, "run-1")
     leases.acquire(run_id, ("env-res",))
     released = leases.release(run_id, reason="cleanup")
@@ -173,7 +175,7 @@ def test_expire_reclaims_leases_and_writes_core_event(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, LeaseService, ResourceRepository],
 ) -> None:
     connection, clock, runs, leases, resources = env
-    resources.ensure("env-res", resource_type="environment", name="模拟器")
+    resources.ensure("env-res", ResourceSpec(resource_type="environment", name="模拟器"))
     run_id = make_run(runs, "run-1")
     leases.acquire(run_id, ("env-res",))
     clock.advance(DEFAULT_TTL + timedelta(seconds=1))
@@ -192,7 +194,7 @@ def test_resource_can_be_reacquired_after_release(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, LeaseService, ResourceRepository],
 ) -> None:
     _connection, _clock, runs, leases, resources = env
-    resources.ensure("env-res", resource_type="environment", name="模拟器")
+    resources.ensure("env-res", ResourceSpec(resource_type="environment", name="模拟器"))
     first = make_run(runs, "run-1")
     second = make_run(runs, "run-2")
     leases.acquire(first, ("env-res",))
@@ -208,7 +210,7 @@ def test_unknown_resource_and_run_are_reported(
     run_id = make_run(runs, "run-1")
     with pytest.raises(ResourceNotFoundError):
         leases.acquire(run_id, ("missing",))
-    resources.ensure("res-a", resource_type="custom", name="A")
+    resources.ensure("res-a", ResourceSpec(resource_type="custom", name="A"))
     with pytest.raises(RunNotFoundError):
         leases.acquire("missing-run", ("res-a",))
 

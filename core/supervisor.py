@@ -33,8 +33,8 @@ from core.resources.errors import ResourceBusyError
 from core.resources.service import LeaseService
 from core.scheduler.scan import ScheduleScanner
 from core.supervisor_disk import DiskWatermark
-from core.supervisor_environments import EnvironmentSupervision
-from core.supervisor_leases import LeaseSupervision
+from core.supervisor_environments import EnvironmentSupervision, SupervisionIo
+from core.supervisor_leases import LeaseSupervision, LeaseSupervisionDeps
 from core.supervisor_recovery import StartupRecovery, retry_due, scheduled_due
 from core.supervisor_routing import (
     ROUTE_WINDOW,
@@ -105,9 +105,7 @@ class Supervisor:
         self._last_mono: float | None = None
         self._disk_watermark = DiskWatermark(self._disk_free, self._log, self._emit_global)
         self._lease_watch = LeaseSupervision(
-            self._runs,
-            self._leases,
-            self._templates,
+            LeaseSupervisionDeps(self._runs, self._leases, self._templates),
             clock,
             log=self._log,
         )
@@ -116,9 +114,7 @@ class Supervisor:
             EnvironmentService(connection, clock),
             registry,
             clock,
-            data_root=data_root,
-            log=self._log,
-            emit_global=self._emit_global,
+            io=SupervisionIo(data_root=data_root, log=self._log, emit_global=self._emit_global),
         )
         self._route_announcer = RouteAnnouncer(
             self._log, self._emit_global, self._registry.degradation_reason

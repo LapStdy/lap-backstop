@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from core.clock import VirtualClock
-from core.notify.service import NotifyService
+from core.notify.service import NotifyOptions, NotifyService
 from storage import migrate, open_database
 from tests.notify_support import ENABLED, NOW, StubChannel, insert_template
 
@@ -44,9 +44,11 @@ def service_factory(
             connection,
             VirtualClock(NOW),
             data_root=Path("data"),
-            settings_reader=lambda: dict(ENABLED) if settings is None else settings,
-            channel_factory=lambda config: stub,
-            wait=waits.append if waits is not None else (lambda seconds: None),
+            options=NotifyOptions(
+                settings_reader=lambda: dict(ENABLED) if settings is None else settings,
+                channel_factory=lambda config: stub,
+                wait=waits.append if waits is not None else (lambda seconds: None),
+            ),
         )
         created.append(service)
         return service

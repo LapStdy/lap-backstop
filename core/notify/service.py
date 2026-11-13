@@ -17,6 +17,7 @@ import json
 import sqlite3
 import threading
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
@@ -65,6 +66,19 @@ def _payload_of(raw: object) -> Mapping[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+@dataclass(frozen=True, slots=True)
+class NotifyOptions:
+    """通知服务的可选注入：日志与三条测试缝（settings 快照、渠道构造、退避等待）。
+
+    缺省即生产口径：整表读取 settings、构造真实 HTTP 渠道、退避走停机事件等待。
+    """
+
+    log: Logger | None = None
+    settings_reader: Callable[[], Mapping[str, Any]] | None = None
+    channel_factory: Callable[[NotifyConfig], Notifier] | None = None
+    wait: Callable[[float], None] | None = None
+
+
 class NotifyService:
     """事件尾随与投递编排；拥有投递工作线程，poll 与 close 由 serve 驱动。"""
 
@@ -74,35 +88,29 @@ class NotifyService:
         clock: Clock,
         *,
         data_root: Path,
-        log: Logger | None = None,
-        settings_reader: Callable[[], Mapping[str, Any]] | None = None,
-        channel_factory: Callable[[NotifyConfig], Notifier] | None = None,
-        wait: Callable[[float], None] | None = None,
+        options: NotifyOptions | None = None,
     ) -> None:
         """创建服务并拉起投递线程；事件游标从当前末尾起算，不重推历史。
-
-        构造参数超过上限 4 属评审已说明的例外：clock/data_root/log 是内核
-        注入的三件套，settings_reader/channel_factory/wait 是三条测试缝，
-        全部按关键字调用，语义互不重叠。
 
         Args:
             connection: 内核单写连接；事件尾随与结果落库共用。
             clock: 事件落库的时间来源。
             data_root: 数据根目录，用于投递上下文路径。
-            log: 结构化日志；不落渠道密钥。
-            settings_reader: settings 快照读取器；默认整表读取。
-            channel_factory: 渠道构造的注入点；测试用它替换真实 HTTP 渠道。
-            wait: 退避等待的注入点；默认用停机事件等待（可提前打断）。
+            options: 可选注入（日志、settings 快照、渠道构造、退避等待）；
+                缺省按生产口径解析。日志不落渠道密钥。
         """
+        resolved = NotifyOptions() if options is None else options
         self._connection = connection
         self._clock = clock
         self._data_root = data_root
-        self._log: Logger = NullLogger() if log is None else log
+        self._log: Logger = NullLogger() if resolved.log is None else resolved.log
         self._settings_reader = (
-            settings_reader if settings_reader is not None else (lambda: all_settings(connection))
+            resolved.settings_reader
+            if resolved.settings_reader is not None
+            else (lambda: all_settings(connection))
         )
         self._build_channel: Callable[[NotifyConfig], Notifier] = (
-            channel_factory if channel_factory is not None else build_channel
+            resolved.channel_factory if resolved.channel_factory is not None else build_channel
         )
         self._events = EventLog(connection)
         self._notifications = NotificationFactory(connection)
@@ -113,7 +121,7 @@ class NotifyService:
         self._channel: Notifier | None = None
         self._invalid_reported = False
         self._notified_runs: set[str] = set()
-        self._worker = DeliveryWorker(self._snapshot, stop=self._stop, wait=wait)
+        self._worker = DeliveryWorker(self._snapshot, stop=self._stop, wait=resolved.wait)
         self._global_seq = _max_global_seq(connection)
         self._run_rowid = _max_run_rowid(connection)
         self._worker.start()
@@ -360,4 +368,4 @@ def _max_run_rowid(connection: sqlite3.Connection) -> int:
     return int(row[0])
 
 
-__all__ = ["NotifyService"]
+__all__ = ["NotifyOptions", "NotifyService"]

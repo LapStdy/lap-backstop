@@ -23,28 +23,30 @@ class ResourceRow:
     detail: Mapping[str, object]
 
 
+@dataclass(frozen=True, slots=True)
+class ResourceSpec:
+    """资源的注册内容：类型、名称、容量与补充说明。"""
+
+    resource_type: str
+    name: str
+    capacity: int = 1
+    detail: Mapping[str, object] | None = None
+
+
 class ResourceRepository:
     """resources 表的读写。"""
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self._connection = connection
 
-    def ensure(
-        self,
-        resource_id: str,
-        *,
-        resource_type: str,
-        name: str,
-        capacity: int = 1,
-        detail: Mapping[str, object] | None = None,
-    ) -> ResourceRow:
+    def ensure(self, resource_id: str, spec: ResourceSpec) -> ResourceRow:
         """注册资源；已存在时原样返回。
 
         environment 类型的容量固定为 1，其余类型容量必须为正数。
         """
-        if resource_type not in RESOURCE_TYPES:
-            raise ValueError(f"未知资源类型：{resource_type!r}")
-        effective = 1 if resource_type == "environment" else capacity
+        if spec.resource_type not in RESOURCE_TYPES:
+            raise ValueError(f"未知资源类型：{spec.resource_type!r}")
+        effective = 1 if spec.resource_type == "environment" else spec.capacity
         if effective < 1:
             raise ValueError("资源容量必须为正整数")
         if self.get(resource_id) is None:
@@ -52,10 +54,10 @@ class ResourceRepository:
                 "INSERT INTO resources (id, type, name, capacity, detail) VALUES (?, ?, ?, ?, ?)",
                 (
                     resource_id,
-                    resource_type,
-                    name,
+                    spec.resource_type,
+                    spec.name,
                     effective,
-                    dump_json(detail or {}),
+                    dump_json(spec.detail or {}),
                 ),
             )
         return self._require(resource_id)
@@ -90,4 +92,4 @@ def _row_to_record(row: sqlite3.Row) -> ResourceRow:
     )
 
 
-__all__ = ["RESOURCE_TYPES", "ResourceRepository", "ResourceRow"]
+__all__ = ["RESOURCE_TYPES", "ResourceRepository", "ResourceRow", "ResourceSpec"]

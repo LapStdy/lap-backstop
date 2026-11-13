@@ -47,8 +47,8 @@ from core.environments.actions import EnvironmentActions
 from core.events.maintenance import GlobalEventsPruner
 from core.hostops import heartbeat, instance, tailscale, tasks, timesync
 from core.hostops.doctor import DATABASE_FILENAME, RegistryGet, registry_get
-from core.hostops.environment_actions import EnvironmentActionService
-from core.hostops.retention import RetentionRunner
+from core.hostops.environment_actions import ActionOptions, EnvironmentActionService
+from core.hostops.retention import RetentionOptions, RetentionRunner
 from core.hostops.serve_events import (
     AUTOLOGON_CHECKED_EVENT,
     TASKS_REGISTERED_EVENT,
@@ -61,7 +61,7 @@ from core.hostops.serve_events import (
 )
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
-from core.notify.service import NotifyService
+from core.notify.service import NotifyOptions, NotifyService
 from core.notify.sweep import sweep_pending_notifications
 from core.plugins.rpc_host import RpcPluginHost, installed_plugin_ids
 from core.supervisor import Supervisor
@@ -359,7 +359,12 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
         sweep_pending_notifications(connection, options.clock, log=options.log)
         # 通知游标在启动扫描与启动事件落库之前定桩：崩溃收尾（运行置 unknown）与
         # 看门狗停手补报都要进通知，重启不能漏报。
-        notify = NotifyService(connection, options.clock, data_root=data_root, log=options.log)
+        notify = NotifyService(
+            connection,
+            options.clock,
+            data_root=data_root,
+            options=NotifyOptions(log=options.log),
+        )
         plugins_root = _plugins_root(data_root, options)
         plugin_host = RpcPluginHost(
             plugins_root, installed_plugin_ids(plugins_root), log=options.log
@@ -386,7 +391,12 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             at=setup_at,
         )
         # 环境动作在请求线程自开连接：supervisor 的连接只归 tick 线程。
-        actions = EnvironmentActionService(database, options.clock, registry, log=options.log)
+        actions = EnvironmentActionService(
+            database,
+            options.clock,
+            registry,
+            options=ActionOptions(log=options.log),
+        )
         api_server, exit_code = _start_api(
             connection,
             options,
@@ -410,7 +420,10 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             notify=notify,
             pruner=GlobalEventsPruner(connection, options.clock, log=options.log),
             retention=RetentionRunner(
-                connection, options.clock, data_root=data_root, log=options.log
+                connection,
+                options.clock,
+                data_root=data_root,
+                options=RetentionOptions(log=options.log),
             ),
         )
         return loop.run()

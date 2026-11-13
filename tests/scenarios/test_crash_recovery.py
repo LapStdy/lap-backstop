@@ -20,7 +20,7 @@ from core.worker.executor import WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
-from storage.repositories.resources import ResourceRepository
+from storage.repositories.resources import ResourceRepository, ResourceSpec
 from tests.supervisor_support import tick_and_settle
 
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
@@ -252,7 +252,9 @@ def test_startup_marks_orphan_executing_run_unknown_and_releases_lease(
     connection, clock, runs, data_root = env
     run_id = prepare_run(runs)
     runs.transition(run_id, RunState.PREPARING)
-    ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+    ResourceRepository(connection).ensure(
+        ENV_ID, ResourceSpec(resource_type="environment", name=ENV_ID)
+    )
     LeaseService(connection, clock).acquire(run_id, (ENV_ID,))
     runs.transition(run_id, RunState.EXECUTING)
 

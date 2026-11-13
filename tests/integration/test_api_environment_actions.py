@@ -12,7 +12,7 @@ from typing import Any
 import pytest
 
 from contracts import EnvironmentRef, EnvironmentState, RunContext
-from core.api.app import ApiApp
+from core.api.app import ApiApp, ApiDeps
 from core.api.store import TOKEN_KEY, put_settings
 from core.api.wire import ApiRequest, ApiResponse
 from core.clock import VirtualClock
@@ -55,7 +55,7 @@ def _database(tmp_path: Path) -> Path:
 
 
 def _app(database: Path, actions: EnvironmentActions | None) -> ApiApp:
-    return ApiApp(database, clock=VirtualClock(NOW), environment_actions=actions)
+    return ApiApp(database, clock=VirtualClock(NOW), deps=ApiDeps(environment_actions=actions))
 
 
 @pytest.fixture

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from contracts import (
     ScriptObservation,
     ScriptState,
 )
-from core.api.app import ApiApp
+from core.api.app import ApiApp, ApiDeps
 from core.api.store import TOKEN_KEY, put_settings
 from core.api.wire import ApiRequest
 from core.clock import VirtualClock
@@ -32,7 +33,7 @@ from core.worker.executor import WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
-from storage.repositories.resources import ResourceRepository
+from storage.repositories.resources import ResourceRepository, ResourceSpec
 from tests.integration.test_serve_api import TOKEN, configure, serve_options
 from tests.supervisor_support import tick_and_settle
 
@@ -173,7 +174,9 @@ def _waiting_run_with_lease(data_root: Path) -> str:
         run_id = _create_run(runs, scheduled_at=T0 + timedelta(hours=1), key="shutdown-idle")
         runs.enqueue(run_id)
         runs.transition(run_id, RunState.PREPARING)
-        ResourceRepository(connection).ensure(ENV_ID, resource_type="environment", name=ENV_ID)
+        ResourceRepository(connection).ensure(
+            ENV_ID, ResourceSpec(resource_type="environment", name=ENV_ID)
+        )
         LeaseService(connection, clock).acquire(run_id, (ENV_ID,))
         runs.transition(run_id, RunState.WAITING)
         return run_id
@@ -206,6 +209,11 @@ def test_shutdown_without_active_run_exits_zero_and_keeps_waiting_run(tmp_path: 
     assert state is not None and str(state[0]) == "waiting"
 
 
+def _drain_app(database: Path, requester: Callable[[], int]) -> ApiApp:
+    """排水端点用例的应用件：排水请求只置位停机事件。"""
+    return ApiApp(database, clock=VirtualClock(T0), deps=ApiDeps(drain_requester=requester))
+
+
 def test_drain_endpoint_sets_stop_event_and_due_run_stays_queued(tmp_path: Path) -> None:
     """排水端点置位的停机事件与 SIGINT 同源：不接新作业，在跑的到边界收尾。"""
     connection = open_database(tmp_path / "state.db")
@@ -221,7 +229,7 @@ def test_drain_endpoint_sets_stop_event_and_due_run_stays_queued(tmp_path: Path)
             stop.set()
             return 0
 
-        app = ApiApp(tmp_path / "state.db", clock=VirtualClock(T0), drain_requester=request)
+        app = _drain_app(tmp_path / "state.db", request)
         response = app.handle(
             ApiRequest(
                 method="POST",

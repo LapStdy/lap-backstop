@@ -39,6 +39,7 @@ from core.hostops.releases import (
 )
 from core.hostops.upgrade_state import (
     UpgradeError,
+    UpgradeFailure,
     UpgradeIdentity,
     UpgradeMarker,
     clear_marker,
@@ -132,8 +133,7 @@ def run_rollback(data_root: Path, *, inputs: UpgradeInputs | None = None) -> int
     record_failed(
         app.database,
         _identity_of(marker),
-        detail=outcome.detail,
-        is_healthy=outcome.is_healthy,
+        UpgradeFailure(detail=outcome.detail, is_healthy=outcome.is_healthy),
         at=active.clock.utc_now(),
     )
     print(f"回滚完成：{outcome.detail}")
@@ -181,8 +181,7 @@ def _abort_before_switch(
     record_failed(
         app.database,
         UpgradeIdentity(plan.target_version, plan.previous_version),
-        detail=detail,
-        is_healthy=is_healthy,
+        UpgradeFailure(detail=detail, is_healthy=is_healthy),
         at=inputs.clock.utc_now(),
     )
     print(f"升级失败：{detail}", file=sys.stderr)
@@ -198,8 +197,7 @@ def _settle_failed_upgrade(
     record_failed(
         app.database,
         _identity_of(marker),
-        detail=outcome.detail,
-        is_healthy=outcome.is_healthy,
+        UpgradeFailure(detail=outcome.detail, is_healthy=outcome.is_healthy),
         at=inputs.clock.utc_now(),
     )
     print(f"升级失败：{outcome.detail}", file=sys.stderr)

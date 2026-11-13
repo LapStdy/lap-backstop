@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from contracts import Clock, ContractError, ErrorCode, Logger, parse_event_id
-from core.api.app import API_PREFIX, EVENTS_CAPABILITY, ApiApp
+from core.api.app import API_PREFIX, EVENTS_CAPABILITY, ApiApp, ApiDeps
 from core.api.hostops_api import DrainRequester
 from core.api.runs_api import RunStopper
 from core.api.store import ensure_server_id
@@ -166,10 +166,12 @@ def _build_api_app(connection: sqlite3.Connection, active: ApiOptions) -> ApiApp
         database,
         clock=active.clock,
         log=active.log,
-        task_runner=active.task_runner,
-        environment_actions=active.environment_actions,
-        run_stopper=active.run_stopper,
-        drain_requester=active.drain_requester,
+        deps=ApiDeps(
+            task_runner=active.task_runner,
+            environment_actions=active.environment_actions,
+            run_stopper=active.run_stopper,
+            drain_requester=active.drain_requester,
+        ),
     )
 
 
