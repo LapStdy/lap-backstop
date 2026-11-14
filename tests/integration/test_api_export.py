@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import sqlite3
 import zipfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
@@ -45,57 +46,83 @@ RUN_SUMMARY_FIELDS = frozenset(
 )
 
 
+def _seed_settings(connection: sqlite3.Connection) -> None:
+    """写导出口径的设置行：凭据键都在库里，由导出负责过滤。"""
+    put_settings(
+        connection,
+        {
+            TOKEN_KEY: TOKEN,
+            "notify.token": NOTIFY_TOKEN,
+            "notify.url": NOTIFY_URL,
+            "notify.heartbeat_url": HEARTBEAT_URL,
+            "api.host": "127.0.0.1",
+        },
+        at=NOW,
+    )
+
+
+def _seed_plugin(connection: sqlite3.Connection) -> None:
+    """导出条目 plugins.json 的一行：maa 6.20.1，启用。"""
+    connection.execute(
+        "INSERT INTO plugins (id, name, version, api_version, capabilities, "
+        "config_schema, error_map, requirements, enabled, installed_at) VALUES "
+        "('maa', 'MAA', '6.20.1', 1, '[]', '{}', '{}', '{}', 1, ?)",
+        (NOW.isoformat(),),
+    )
+
+
+def _seed_template(connection: sqlite3.Connection) -> None:
+    """导出条目 job-templates.json 的一行：日常，挂在 maa 与 env-1 上。"""
+    connection.execute(
+        "INSERT INTO job_templates (id, name, plugin_id, environment_id, "
+        "config_schema_version, verification_policy, recovery_policy, enabled, "
+        "created_at, updated_at) VALUES (?, '日常', 'maa', 'env-1', '1', '{}', "
+        "'{}', 1, ?, ?)",
+        ("template-1", NOW.isoformat(), NOW.isoformat()),
+    )
+
+
+def _seed_schedule(connection: sqlite3.Connection) -> None:
+    """导出条目 schedules.json 的一行：每晨 cron，挂在 template-1 上。"""
+    connection.execute(
+        "INSERT INTO schedules (id, name, kind, expr, at, timezone, catch_up, "
+        "window_minutes, coalesce, priority, deadline_minutes, preheat_minutes, "
+        "keep_warm_minutes, job_template_id, enabled, next_run_at, created_at, "
+        "updated_at) VALUES (?, '每晨', 'cron', '0 8 * * *', NULL, "
+        "'Asia/Shanghai', 'run_once', 10, 1, 0, 60, 15, 0, 'template-1', 1, "
+        "NULL, ?, ?)",
+        ("schedule-1", NOW.isoformat(), NOW.isoformat()),
+    )
+
+
+def _seed_run(connection: sqlite3.Connection) -> None:
+    """导出条目 runs.json 的一行：run-1，succeeded，带幂等键。"""
+    connection.execute(
+        "INSERT INTO job_runs (id, template_id, schedule_id, scheduled_at, "
+        "created_at, idempotency_key, state, attempt, priority, deadline_at, "
+        "started_at, finished_at, verdict_id, error_code, detail) VALUES "
+        "('run-1', 'template-1', 'schedule-1', ?, ?, 'seed-export-1', "
+        "'succeeded', 1, 0, NULL, ?, ?, NULL, NULL, '{}')",
+        (
+            NOW.isoformat(),
+            NOW.isoformat(),
+            NOW.isoformat(),
+            NOW.isoformat(),
+        ),
+    )
+
+
 @pytest.fixture
 def database(tmp_path: Path) -> Iterator[Path]:
+    """导出种子库：migrate 后五张表各一行，覆盖全部导出条目。"""
     connection = open_database(tmp_path / "state.db")
     try:
         migrate(connection)
-        put_settings(
-            connection,
-            {
-                TOKEN_KEY: TOKEN,
-                "notify.token": NOTIFY_TOKEN,
-                "notify.url": NOTIFY_URL,
-                "notify.heartbeat_url": HEARTBEAT_URL,
-                "api.host": "127.0.0.1",
-            },
-            at=NOW,
-        )
-        connection.execute(
-            "INSERT INTO plugins (id, name, version, api_version, capabilities, "
-            "config_schema, error_map, requirements, enabled, installed_at) VALUES "
-            "('maa', 'MAA', '6.20.1', 1, '[]', '{}', '{}', '{}', 1, ?)",
-            (NOW.isoformat(),),
-        )
-        connection.execute(
-            "INSERT INTO job_templates (id, name, plugin_id, environment_id, "
-            "config_schema_version, verification_policy, recovery_policy, enabled, "
-            "created_at, updated_at) VALUES (?, '日常', 'maa', 'env-1', '1', '{}', "
-            "'{}', 1, ?, ?)",
-            ("template-1", NOW.isoformat(), NOW.isoformat()),
-        )
-        connection.execute(
-            "INSERT INTO schedules (id, name, kind, expr, at, timezone, catch_up, "
-            "window_minutes, coalesce, priority, deadline_minutes, preheat_minutes, "
-            "keep_warm_minutes, job_template_id, enabled, next_run_at, created_at, "
-            "updated_at) VALUES (?, '每晨', 'cron', '0 8 * * *', NULL, "
-            "'Asia/Shanghai', 'run_once', 10, 1, 0, 60, 15, 0, 'template-1', 1, "
-            "NULL, ?, ?)",
-            ("schedule-1", NOW.isoformat(), NOW.isoformat()),
-        )
-        connection.execute(
-            "INSERT INTO job_runs (id, template_id, schedule_id, scheduled_at, "
-            "created_at, idempotency_key, state, attempt, priority, deadline_at, "
-            "started_at, finished_at, verdict_id, error_code, detail) VALUES "
-            "('run-1', 'template-1', 'schedule-1', ?, ?, 'seed-export-1', "
-            "'succeeded', 1, 0, NULL, ?, ?, NULL, NULL, '{}')",
-            (
-                NOW.isoformat(),
-                NOW.isoformat(),
-                NOW.isoformat(),
-                NOW.isoformat(),
-            ),
-        )
+        _seed_settings(connection)
+        _seed_plugin(connection)
+        _seed_template(connection)
+        _seed_schedule(connection)
+        _seed_run(connection)
     finally:
         connection.close()
     yield tmp_path / "state.db"
