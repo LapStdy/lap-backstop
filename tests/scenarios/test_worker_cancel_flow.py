@@ -27,12 +27,12 @@ from core.jobs.run_service import JobRunService
 from core.plugins.errors import WorkerCancelledError
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
-from core.worker.executor import CancelFlag, WorkerExecutor
+from core.worker.executor import CancelFlag, ExecutorOptions, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage.repositories.leases import LeaseRow
 from tests.scenarios.worker_lifecycle_support import (
     ENV_ID,
-    ExecutorOptions,
+    ExecutorStubOptions,
     _RaisingVerifier,
     _registry_with,
     executor_for,
@@ -98,7 +98,7 @@ def test_cancel_flag_prevents_start(
     run_id = prepare_run(connection, runs, "instant")
     flag = CancelFlag()
     flag.cancel()
-    result = executor_for(connection, clock, data_root, ExecutorOptions(cancel=flag)).execute(
+    result = executor_for(connection, clock, data_root, ExecutorStubOptions(cancel=flag)).execute(
         run_id
     )
     assert result.state is RunState.CANCELLED
@@ -218,11 +218,7 @@ def test_cancel_during_cleanup_records_cancelled_after_one_cleanup(
         )
     )
     result = WorkerExecutor(
-        connection,
-        clock,
-        registry,
-        data_root=data_root,
-        cancel=flag,
+        connection, clock, registry, ExecutorOptions(data_root=data_root, cancel=flag)
     ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert result.finished_at is not None
@@ -253,7 +249,7 @@ def test_cancel_during_verify_cleans_once_and_ends_cancelled(
         connection,
         clock,
         _registry_with(environment=provider, verifier=verifier),
-        data_root=data_root,
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert provider.calls.count("cleanup") == 1
@@ -279,8 +275,7 @@ def test_cancel_during_execution_cleans_once_and_ends_cancelled(
             environment=provider,
             script=_CancellingScriptAdapter(request_cancel),
         ),
-        data_root=data_root,
-        cancel=flag,
+        ExecutorOptions(data_root=data_root, cancel=flag),
     ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert provider.calls.count("cleanup") == 1

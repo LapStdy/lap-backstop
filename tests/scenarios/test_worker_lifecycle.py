@@ -30,7 +30,7 @@ from core.plugins.errors import (
 )
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
-from core.worker.executor import WorkerExecutor
+from core.worker.executor import ExecutorOptions, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage.repositories.events import EventLog
 from storage.repositories.run_phases import RunPhaseRepository
@@ -177,7 +177,9 @@ def test_verify_with_missing_evidence_blames_evidence(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_MissingEvidenceVerifier())
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert result.error_code == "E_VERIFY_NO_EVIDENCE"
     assert unknown_reason(connection, run_id) == "verify_no_evidence"
@@ -221,7 +223,7 @@ def test_verifier_without_evidence_ends_unknown(
             verifier=_NoEvidenceVerifier(),
         )
     )
-    executor = WorkerExecutor(connection, clock, registry, data_root=data_root)
+    executor = WorkerExecutor(connection, clock, registry, ExecutorOptions(data_root=data_root))
     result = executor.execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert result.error_code == "E_VERIFY_NO_EVIDENCE"
@@ -259,7 +261,9 @@ def test_unfinished_script_ends_with_deadline_not_hung(
             verifier=FakeVerifier(),
         )
     )
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_DEADLINE"
     execute_phase = next(
@@ -275,7 +279,9 @@ def test_worker_timeout_ends_with_deadline(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerTimeoutError("调用超时")))
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_DEADLINE"
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
@@ -287,7 +293,9 @@ def test_worker_cancel_ends_run_cancelled(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerCancelledError("已叫停")))
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
 
@@ -298,7 +306,9 @@ def test_worker_crash_keeps_plugin_crash_code(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerCrashError("进程退出")))
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.RECOVERING
     assert result.error_code == "E_PLUGIN_CRASH"
 
@@ -309,6 +319,8 @@ def test_worker_call_error_keeps_plugin_code(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerCallError("插件方法抛异常")))
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_PLUGIN"

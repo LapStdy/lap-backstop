@@ -22,7 +22,7 @@ from core.plugins.errors import (
     WorkerTimeoutError,
 )
 from core.plugins.registry import PluginCapabilities, PluginRegistry
-from core.worker.executor import CancelFlag, WorkerExecutor
+from core.worker.executor import CancelFlag, ExecutorOptions, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
@@ -126,29 +126,27 @@ def prepare_run(
 
 
 @dataclass(frozen=True, slots=True)
-class ExecutorOptions:
+class ExecutorStubOptions:
     """executor_for 的可选注入：取消令牌与日志；默认无。"""
 
     cancel: CancelFlag | None = None
     log: Logger | None = None
 
 
-_DEFAULT_EXECUTOR_OPTIONS = ExecutorOptions()
+_DEFAULT_EXECUTOR_OPTIONS = ExecutorStubOptions()
 
 
 def executor_for(
     connection: sqlite3.Connection,
     clock: VirtualClock,
     data_root: Path,
-    options: ExecutorOptions = _DEFAULT_EXECUTOR_OPTIONS,
+    options: ExecutorStubOptions = _DEFAULT_EXECUTOR_OPTIONS,
 ) -> WorkerExecutor:
     return WorkerExecutor(
         connection,
         clock,
         make_registry(),
-        data_root=data_root,
-        cancel=options.cancel,
-        log=options.log,
+        ExecutorOptions(data_root=data_root, cancel=options.cancel, log=options.log),
     )
 
 

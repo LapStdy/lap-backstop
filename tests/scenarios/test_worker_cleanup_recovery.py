@@ -14,7 +14,7 @@ from core.clock import VirtualClock
 from core.jobs.run_service import JobRunService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
-from core.worker.executor import WorkerExecutor
+from core.worker.executor import ExecutorOptions, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from tests.scenarios.worker_lifecycle_support import (
     TEMPLATE_ID,
@@ -88,9 +88,9 @@ def test_cleanup_failure_logs_warning_and_recovery_continues(
         )
     )
     logger = _RecordingLogger()
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root, log=logger).execute(
-        run_id
-    )
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root, log=logger)
+    ).execute(run_id)
     assert result.state is RunState.RECOVERING
     assert result.error_code == "E_SCRIPT_TASK_FAILED"
     assert any(
@@ -107,7 +107,10 @@ def test_run_succeeds_with_single_cleanup_call(
     run_id = prepare_run(connection, runs, "instant")
     provider = FakeEnvironmentProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.SUCCEEDED
     assert provider.calls.count("cleanup") == 1
@@ -121,7 +124,10 @@ def test_cleanup_failure_fails_run_with_single_cleanup_call(
     run_id = prepare_run(connection, runs, "instant")
     provider = _FailedResultCleanupProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_ENV_UNREACHABLE"
@@ -138,7 +144,10 @@ def test_cleanup_exception_ends_failed_with_single_cleanup_call(
     set_recovery_policy(connection, {"max_attempts": 1})
     provider = _FailingCleanupProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_RECOVERY_EXHAUSTED"
@@ -155,7 +164,10 @@ def test_recovery_exhaustion_fails_run_with_single_cleanup_call(
     set_recovery_policy(connection, {"max_attempts": 1})
     provider = FakeEnvironmentProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_RECOVERY_EXHAUSTED"
@@ -171,7 +183,10 @@ def test_cleanup_exception_aborts_with_plugin_crash_when_budget_remains(
     run_id = prepare_run(connection, runs, "instant")
     provider = _FailingCleanupProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_PLUGIN_CRASH"
@@ -187,7 +202,10 @@ def test_recovery_retry_cleans_once_per_attempt(
     run_id = prepare_run(connection, runs, "fail")
     provider = FakeEnvironmentProvider()
     executor = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     )
     first = executor.execute(run_id)
     assert first.state is RunState.RECOVERING
