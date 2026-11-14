@@ -13,8 +13,10 @@ from pathlib import Path
 from typing import Any
 
 from contracts import (
+    ApplyResult,
     CancelToken,
     Clock,
+    ConfigProjection,
     EnvironmentRef,
     EventType,
     EvidenceKind,
@@ -291,7 +293,7 @@ class WorkerExecutor:
         return None
 
     def _run_script(self, scope: RunScope) -> JobRunRecord | None:
-        """执行阶段：到点后启动脚本，把观察结果交给阶段结论收口。"""
+        """执行阶段：到点后先投影下发目标配置，再启动脚本并收口观察结果。"""
         if self._cancel.is_cancelled():
             return self._cancel_run(scope, started=True)
         now = self._clock.utc_now()
@@ -299,6 +301,9 @@ class WorkerExecutor:
             return scope.run
         if scope.run.deadline_at is not None and now >= scope.run.deadline_at:
             return self._recover(scope, "E_DEADLINE", "deadline")
+        settled = self._project_config(scope)
+        if settled is not None:
+            return settled
         scope.run = self._runs.transition(scope.run.id, RunState.EXECUTING)
         self._environments.mark_busy(scope.call)
         phase = self._phases.start(scope.run.id, PhaseName.EXECUTE, attempt=scope.run.attempt)
@@ -313,6 +318,78 @@ class WorkerExecutor:
                 return self._drain(scope.run)
             return self._recover(scope, "E_DEADLINE", "deadline")
         return self._settle_execute(scope, phase, observation)
+
+    def _project_config(self, scope: RunScope) -> JobRunRecord | None:
+        """开跑前按插件配置构造整份目标并下发；返回 None 表示继续开跑。
+
+        没有投影能力的插件或开关关闭时跳过；通道异常与 ok=false 走同一收口，
+        不把异常抛给 supervisor。
+        """
+        projection = self._registry.get(scope.template.plugin_id).config_projection
+        if projection is None or _projection_disabled(scope.context.config):
+            return None
+        try:
+            target = projection.desired(scope.context, scope.context.config)
+            result = projection.apply(scope.context, target)
+        except PluginError as error:  # 通道超时与取消同属一族，错误码随通道走
+            return self._projection_failed(scope, projection, error.code, None)
+        if result.ok:
+            self._emit_config_applied(scope, result)
+            return None
+        return self._projection_failed(
+            scope, projection, result.error_code or "E_CONFIG", _revision_in(result.meta)
+        )
+
+    def _projection_failed(
+        self,
+        scope: RunScope,
+        projection: ConfigProjection,
+        error_code: str,
+        revision: str | None,
+    ) -> JobRunRecord:
+        """投影失败收口：有合法修订先回滚一次并记事件，再交现有恢复策略处置。
+
+        收口错误码始终取本次 apply 的码：回滚调用再遇通道异常时转成失败回执，
+        不让回滚的码覆盖 apply 的码。
+        """
+        if revision is not None:
+            rolled = _rollback_once(projection, scope.context, revision)
+            self._log.warn(
+                {
+                    "event": "executor.config_projection_failed",
+                    "run_id": scope.run_id,
+                    "error_code": error_code,
+                    "revision": revision,
+                    "rolled_back": rolled.ok,
+                }
+            )
+            self._events.append_run(
+                scope.run_id,
+                EventType.CONFIG_ROLLED_BACK,
+                {
+                    "run_id": scope.run_id,
+                    "revision": revision,
+                    "ok": rolled.ok,
+                    "error_code": rolled.error_code,
+                },
+                at=self._clock.utc_now(),
+            )
+        return self._recover(scope, error_code, "config_projection")
+
+    def _emit_config_applied(self, scope: RunScope, result: ApplyResult) -> None:
+        """apply 成功记 config.applied；修订与哈希取插件回执，未写盘时为空。"""
+        self._events.append_run(
+            scope.run_id,
+            EventType.CONFIG_APPLIED,
+            {
+                "run_id": scope.run_id,
+                "plugin_id": scope.template.plugin_id,
+                "revision": result.meta.get("revision"),
+                "sha256": result.meta.get("sha256"),
+                "changed": bool(result.meta.get("changed")),
+            },
+            at=self._clock.utc_now(),
+        )
 
     def _settle_execute(
         self,
@@ -662,6 +739,30 @@ class WorkerExecutor:
 
 
 __all__ = ["CancelFlag", "RunScope", "WorkerExecutor"]
+
+
+def _projection_disabled(config: Mapping[str, Any]) -> bool:
+    """插件配置的 config_projection.enabled 为 false 时投影关闭；缺省开启。"""
+    settings = config.get("config_projection")
+    return isinstance(settings, Mapping) and settings.get("enabled") is False
+
+
+def _rollback_once(
+    projection: ConfigProjection,
+    ctx: RunContext,
+    revision: str,
+) -> ApplyResult:
+    """回滚一次；通道异常转成失败回执，收口错误码仍由调用方按 apply 的码定。"""
+    try:
+        return projection.rollback(ctx, revision)
+    except PluginError as error:
+        return ApplyResult(ok=False, error_code=error.code, detail=f"回滚调用失败：{error}")
+
+
+def _revision_in(meta: Mapping[str, Any]) -> str | None:
+    """apply 回执里的修订号；非空字符串才算合法，插件私有格式由插件自校。"""
+    revision = meta.get("revision")
+    return revision if isinstance(revision, str) and revision else None
 
 
 def _retry_at(detail: Mapping[str, Any]) -> datetime | None:

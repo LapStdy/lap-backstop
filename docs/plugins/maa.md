@@ -143,6 +143,8 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 
 任务项只需要 `$type`、`Name`、`IsEnable`，其余字段由 MAA 按默认值补全。列表字段（`StagePlan`、`RoomList`）必须写 JSON 数组，类型写错会导致整份配置解析失败。
 
+开跑前执行器先调用 `desired` 按插件配置构造整份目标：`profile` 定 `Current` 与配置段名（留空按 MAA 首次运行的配置名 `Default`），`tasks` 依序映射成段内 `TaskQueue`（`type`→`$type`、`name`→`Name`、`enabled`→`IsEnable`，`params` 并入任务项，同名键以参数为准）。整份目标不含平台接管值；文件里与这份目标无关的键随写入不再保留。
+
 写入规则：
 
 - MAA 运行时会用内存配置覆盖文件，写入前必须先退出 MAA；检测到 MAA 在跑时拒绝写入并返回 `E_CONFIG_LOCKED`（原因码 `maa.config_locked`）。
@@ -152,7 +154,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 - 现行文件的 `Gui.PostActions` 含 `ExitArknights` 或 `ExitEmulator` 时按平台值重写，`meta.conflicts` 记 `E_CONFIG_CONFLICT`（原因码 `maa.post_actions_conflict`），不阻断本次写入。
 - 普通字段的差异默认以脚本侧为主，导入平台；配置项 `config_projection.strategy` 可取 `script_first` 或 `platform_first`。
 
-`diff` 返回逐字段差异；`apply` 返回修订号、备份路径与写入后的配置哈希（`meta.revision`、`meta.backup`、`meta.sha256`、`meta.conflicts`），现行文件已与期望一致时不写盘（`meta.changed=false`）；`rollback` 按修订号取回备份并读回校验。日常副本与测试副本不能同时运行，它们连同一个模拟器与同一个账号。
+`desired` 只构造目标、不读写文件。`diff` 返回逐字段差异；`apply` 返回修订号、备份路径与写入后的配置哈希（`meta.revision`、`meta.backup`、`meta.sha256`、`meta.conflicts`），现行文件已与期望一致时不写盘（`meta.changed=false`）；`rollback` 按修订号取回备份并读回校验。`apply` 失败（含通道异常）时执行器按 `meta.revision` 回滚一次并写 `config.rolled_back`，运行交恢复策略收口，脚本不启动。日常副本与测试副本不能同时运行，它们连同一个模拟器与同一个账号。
 
 ## 参数 schema
 
@@ -169,7 +171,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | `mumu_boot_timeout_s` | integer | 180 | 模拟器启动到 adb 可连的上限 |
 | `game_launch_timeout_s` | integer | 60 | 游戏启动到前台的时限 |
 | `page_gate` | boolean | `true` | 主界面门控：prepare 拉起游戏后截帧判定主界面，连续两帧确认才放行 |
-| `profile` | string | `Current` 指向的配置名 | 使用的 MAA 配置 |
+| `profile` | string | `Default` | 使用的 MAA 配置名，即整份目标的 `Current` |
 | `tasks` | array | 日常队列 | 每项含 `type`、`name`、`enabled`、`params` |
 | `launch_timeout_s` | integer | 180 | 启动到资源加载完成的上限 |
 | `wake_timeout_s` | integer | 90 | 开始唤醒到主界面的上限 |

@@ -1,5 +1,8 @@
 """MAA 配置投影能力（docs/plugins/maa.md 配置投影节，协议见 docs/05）。
 
+``desired`` 按插件配置（``profile``、``tasks``）构造整份目标：只含 ``Current``、
+配置段与 ``TaskQueue``，不含平台接管值。
+
 ``diff`` 是纯比较：对象字段递归展开，数组按整体值比较，按键名排序保证输出确定。
 
 ``apply`` 把期望配置作为整份目标写进 ``gui.new.json``，其中两处平台接管值写死为
@@ -32,6 +35,7 @@ from plugins.maa.config_host import ConfigStore, WindowsConfigStore
 DEFAULT_MAA_DIR = "H:/MAA"
 CONFIG_REL = Path("config") / "gui.new.json"
 DEFAULT_BACKUP_KEEP = 20
+DEFAULT_PROFILE_NAME = "Default"
 MAA_IMAGE_NAME = "MAA.exe"
 
 _POST_ACTIONS_FIELD = "Gui.PostActions"
@@ -71,6 +75,14 @@ class MaaConfigProjection:
 
     def __init__(self, store: ConfigStore | None = None) -> None:
         self._store = store
+
+    def desired(self, ctx: RunContext, config: Mapping[str, Any]) -> Mapping[str, Any]:
+        """按插件配置构造整份目标：Current、配置段与任务队列；不含平台接管值。"""
+        profile = _desired_profile(config)
+        return {
+            "Current": profile,
+            "Configurations": {profile: {"TaskQueue": _task_queue(config)}},
+        }
 
     def diff(
         self,
@@ -200,6 +212,40 @@ def _profile_name(config: Mapping[str, Any], root: Mapping[str, Any]) -> str:
     if isinstance(current, str) and current:
         return current
     raise _Rejected("E_CONFIG", "现行配置没有 Current，无法确定要写的配置段")
+
+
+def _desired_profile(config: Mapping[str, Any]) -> str:
+    """插件配置的 profile 去空白后非空时用之；留空按 MAA 首次运行的配置名。"""
+    value = config.get("profile")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return DEFAULT_PROFILE_NAME
+
+
+def _task_queue(config: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """插件任务队列映射成 MAA 任务项；条目顺序与插件配置一致。"""
+    tasks = config.get("tasks")
+    if not isinstance(tasks, list):
+        return []
+    mapped = (_maa_task(item) for item in tasks)
+    return [item for item in mapped if item is not None]
+
+
+def _maa_task(task: object) -> dict[str, Any] | None:
+    """单个任务项映射成 MAA 任务：$type、Name、IsEnable 加任务参数，同名键参数优先。"""
+    if not isinstance(task, Mapping) or not isinstance(task.get("type"), str):
+        return None
+    item: dict[str, Any] = {"$type": task["type"], "Name": "", "IsEnable": True}
+    name = task.get("name")
+    if isinstance(name, str):
+        item["Name"] = name
+    enabled = task.get("enabled")
+    if isinstance(enabled, bool):
+        item["IsEnable"] = enabled
+    params = task.get("params")
+    if isinstance(params, Mapping):
+        item.update(params)
+    return item
 
 
 def _platform_target(
