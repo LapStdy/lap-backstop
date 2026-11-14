@@ -11,18 +11,14 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
-import signal
 import sqlite3
-import subprocess
-import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from types import FrameType
 from typing import Any
 
-from contracts import Clock, EventType, Logger, RunState
+from contracts import EventType, Logger, RunState
 from core.__main__ import (
     EXIT_DISK_LOW,
     EXIT_ERROR,
@@ -42,11 +38,10 @@ from core.api.server import (
 )
 from core.api.store import all_settings, bearer_token, ensure_token
 from core.api.version import executable_version
-from core.clock import SystemClock
 from core.environments.actions import EnvironmentActions
 from core.events.maintenance import GlobalEventsPruner
-from core.hostops import heartbeat, instance, tailscale, tasks, timesync
-from core.hostops.doctor import DATABASE_FILENAME, RegistryGet, registry_get
+from core.hostops import heartbeat, instance, tailscale
+from core.hostops.doctor import DATABASE_FILENAME
 from core.hostops.environment_actions import ActionOptions, EnvironmentActionService
 from core.hostops.retention import RetentionOptions, RetentionRunner
 from core.hostops.serve_events import (
@@ -59,8 +54,8 @@ from core.hostops.serve_events import (
     _record_plugin_events,
     _startup_clock_events,
 )
+from core.hostops.serve_options import TICK_INTERVAL_SECONDS, ServeOptions, install_stop_handlers
 from core.jobs.run_service import JobRunService
-from core.logging import NullLogger
 from core.notify.service import NotifyOptions, NotifyService
 from core.notify.sweep import sweep_pending_notifications
 from core.plugins.rpc_host import RpcPluginHost, installed_plugin_ids
@@ -69,7 +64,6 @@ from storage import BackupError, MigrationError, migrate, open_database
 from storage.defaults import default
 from storage.repositories.job_runs import JobRunRecord
 
-TICK_INTERVAL_SECONDS = 1.0
 # 停机与循环退出时等待执行线程的上限：等待有界，超时按下次启动回收（docs/08）；
 # 不做成配置键，把收尾时限留在代码里。
 _EXECUTOR_JOIN_SECONDS = 60.0
@@ -83,49 +77,6 @@ _HEARTBEAT_INTERVAL = timedelta(seconds=int(default("host", "heartbeat_interval_
 _ACTIVE_RUN_STATES = frozenset(
     {RunState.PREPARING, RunState.WAITING, RunState.EXECUTING, RunState.VERIFYING}
 )
-
-
-@dataclass(frozen=True, slots=True)
-class ServeOptions:
-    """serve 的注入项：时钟、日志、停机事件与循环旋钮；生产路径全用默认值。"""
-
-    clock: Clock = field(default_factory=SystemClock)
-    log: Logger = field(default_factory=NullLogger)
-    stop: threading.Event = field(default_factory=threading.Event)
-    max_ticks: int | None = None
-    tick_interval_seconds: float = TICK_INTERVAL_SECONDS
-    register_tasks: bool = True
-    # 校时真的改宿主时钟：进程内测试关掉这个开关，避免 pytest 动系统时间（docs/08）。
-    run_timesync: bool = True
-    # 插件根缺省与 data 同级（docs/08 路径布局）；测试指向只含 fake 的临时目录。
-    plugins_root: Path | None = None
-    task_runner: tasks.Runner = field(default_factory=lambda: subprocess.run)
-    # 校时命令的执行器（docs/08 时钟与 NTP）；测试替换为假件，不碰真实 w32tm。
-    timesync_runner: timesync.Runner = field(default_factory=lambda: subprocess.run)
-    registry_get: RegistryGet = field(default_factory=lambda: registry_get)
-    tailscale_runner: tailscale.Runner = field(default_factory=lambda: tailscale.default_runner)
-    # 磁盘可用字节数的注入点：用例固定一个稳定值，门禁便不看宿主机余量；
-    # None 时由 Supervisor 自算数据根所在卷的真实值，生产行为不变。
-    disk_free: Callable[[], int | None] | None = None
-    on_api_listening: Callable[[str, int], None] | None = None
-
-
-def install_stop_handlers() -> threading.Event:
-    """注册停机信号并返回停机事件；事件置位后 tick 循环在当前轮结束处退出。
-
-    Returns:
-        停机事件；测试可直接注入自己的事件而不装信号处理器。
-    """
-    stop = threading.Event()
-
-    def request_stop(signum: int, frame: FrameType | None) -> None:
-        stop.set()
-
-    for name in ("SIGBREAK", "SIGINT", "SIGTERM"):
-        number = getattr(signal, name, None)
-        if number is not None:
-            signal.signal(number, request_stop)
-    return stop
 
 
 @dataclass(frozen=True, slots=True)
