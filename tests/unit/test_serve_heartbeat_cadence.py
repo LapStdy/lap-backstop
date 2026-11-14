@@ -11,7 +11,7 @@ from typing import cast
 import pytest
 
 from core.clock import VirtualClock
-from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeOptions
+from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeLoopParts, ServeOptions
 from core.jobs.run_service import JobRunService
 from core.supervisor import Supervisor
 from storage import migrate, open_database
@@ -58,10 +58,12 @@ def make_loop(
 ) -> tuple[ServeLoop, _RecordingWriter]:
     writer = _RecordingWriter()
     loop = ServeLoop(
-        cast(Supervisor, _StubSupervisor()),
-        JobRunService(connection, clock),
-        cast(HeartbeatWriter, writer),
-        ServeOptions(clock=clock),
+        ServeLoopParts(
+            cast(Supervisor, _StubSupervisor()),
+            JobRunService(connection, clock),
+            cast(HeartbeatWriter, writer),
+            ServeOptions(clock=clock),
+        )
     )
     return loop, writer
 
