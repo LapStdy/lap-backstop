@@ -35,17 +35,17 @@ from contracts import (
 from core.environments.service import EnvironmentCall, EnvironmentService
 from core.events.evidence import EvidenceDraft, EvidenceService
 from core.events.verdicts import VerdictError, VerdictService
-from core.jobs.errors import IllegalRunTransitionError, RunNotFoundError
+from core.jobs.errors import IllegalRunTransitionError
 from core.jobs.phases import PhaseTracker
-from core.jobs.run_service import SHUTDOWN_REASON, JobRunService
+from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
 from core.plugins import rpc
 from core.plugins.errors import PluginError, WorkerCancelledError, WorkerTimeoutError
 from core.plugins.registry import PluginRegistry
 from core.recovery.policy import RecoveryPolicy
 from core.resources.service import LeaseService
+from core.worker.executor_settlement import RunSettlement
 from core.worker.run_scope import CancelFlag, RunScope
-from core.worker.script_run import ScriptRun
 from storage.defaults import default
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
@@ -149,6 +149,7 @@ class WorkerExecutor:
         self._evidence = services.evidence
         self._verdicts = services.verdicts
         self._events = services.events
+        self._settlement = RunSettlement(services, cancel, shutdown)
 
     def execute(self, run_id: str) -> JobRunRecord:
         """推进一步：恢复等待、准备、执行、验证、清理，直到终态或等待时机。
@@ -167,13 +168,13 @@ class WorkerExecutor:
         run = self._runs.get(run_id)
         if run.state is RunState.RECOVERING:
             # 停机不推进：恢复等待不再入队，留给下次启动扫描按持久状态处置。
-            if self._drain_requested():
-                return self._drain(run)
+            if self._settlement.drain_requested():
+                return self._settlement.drain(run)
             run = self.resume(run_id)
         if run.state not in (RunState.QUEUED, RunState.WAITING):
             return run
-        if self._drain_requested():
-            return self._drain(run)
+        if self._settlement.drain_requested():
+            return self._settlement.drain(run)
         template = self._templates.get(run.template_id)
         if template is None:
             return self._fail_missing_template(run)
@@ -181,7 +182,7 @@ class WorkerExecutor:
         if self._cancel.is_cancelled():
             return self._cancel_run(scope, started=False)
         if self._shutdown():
-            return self._drain(scope.run)
+            return self._settlement.drain(scope.run)
         if scope.run.state is RunState.QUEUED:
             claimed = self._claim_queued(scope)
             if claimed is not None:
@@ -212,10 +213,6 @@ class WorkerExecutor:
             )
             return self._recover(scope, "E_PLUGIN_CRASH", str(error))
 
-    def _drain_requested(self) -> bool:
-        """停机已请求且用户取消没有同时置位：取消优先于停机（ADR 0007）。"""
-        return self._shutdown() and not self._cancel.is_cancelled()
-
     def _advance(self, scope: RunScope) -> JobRunRecord:
         """按阶段推进；阶段之间是取消与停机的检查点（ADR 0007）。
 
@@ -230,7 +227,7 @@ class WorkerExecutor:
             if self._cancel.is_cancelled():
                 continue
             if self._shutdown():
-                return self._drain(scope.run)
+                return self._settlement.drain(scope.run)
         return self._runs.get(scope.run_id)
 
     def _advance_or_drain(self, scope: RunScope) -> JobRunRecord:
@@ -244,43 +241,9 @@ class WorkerExecutor:
         try:
             return self._advance(scope)
         except Exception:
-            if self._drain_requested():
-                return self._drain(scope.run)
+            if self._settlement.drain_requested():
+                return self._settlement.drain(scope.run)
             raise
-
-    def _drain(self, run: JobRunRecord) -> JobRunRecord:
-        """停机收尾：写一条 run.interrupted，不改状态、不动租约。
-
-        进行中的运行由下次启动扫描置 unknown 并回收孤儿租约，等待中的运行继续持租约、
-        重启后接着跑；强杀 worker 与阶段收尾也不在这里做，执行器同步运行，停机后由
-        进程退出结束 worker（docs/09 租约、docs/08 停机与阶段边界）。重复信号幂等：
-        已有停机收尾事件的运行不再写第二条。
-        """
-        try:
-            if not self._has_shutdown_interrupt(run.id):
-                self._events.append_run(
-                    run.id,
-                    EventType.RUN_INTERRUPTED,
-                    {"run_id": run.id, "reason": SHUTDOWN_REASON},
-                    at=self._clock.utc_now(),
-                )
-        except sqlite3.Error as error:
-            # 事件写不进时仍要保留停机的状态承诺：不改状态，只留日志给排障。
-            self._log.error(
-                {"event": "executor.drain_event_failed", "run_id": run.id, "error": str(error)}
-            )
-        try:
-            return self._runs.get(run.id)
-        except (RunNotFoundError, sqlite3.Error):
-            return run
-
-    def _has_shutdown_interrupt(self, run_id: str) -> bool:
-        """该运行是否已有停机收尾的 run.interrupted：与用户取消靠 reason 区分。"""
-        return any(
-            event.type == EventType.RUN_INTERRUPTED.value
-            and event.payload.get("reason") == SHUTDOWN_REASON
-            for event in self._events.events_for_run(run_id)
-        )
 
     def _begin(self, run: JobRunRecord, template: JobTemplateRow) -> RunScope:
         """组装一次执行用的插件、环境引用与运行上下文。"""
@@ -327,7 +290,7 @@ class WorkerExecutor:
             current = self._runs.get(scope.run_id)
             if current.state is RunState.CANCELLED and self._runs.cancel_requested(scope.run_id):
                 return self._cancel_run(scope, started=False)
-            self._safe_release(scope.run_id, reason="dequeue_conflict")
+            self._settlement.safe_release(scope.run_id, reason="dequeue_conflict")
             raise
         return None
 
@@ -362,15 +325,15 @@ class WorkerExecutor:
         scope.run = self._runs.transition(scope.run.id, RunState.EXECUTING)
         self._environments.mark_busy(scope.call)
         phase = self._phases.start(scope.run.id, PhaseName.EXECUTE, attempt=scope.run.attempt)
-        runner = self._script_lifecycle(scope)
+        runner = self._settlement.script_runner(scope)
         handle = runner.launch(scope)
         observation = runner.wait(scope, handle)
         if observation is None:
             self._phases.finish(phase, state=PhaseState.TIMED_OUT, detail="deadline")
-            self._stop_script(scope)
+            self._settlement.stop_script(scope)
             # 阶段行已收好：停机在阶段边界排水，不再走恢复（docs/08）。
-            if self._drain_requested():
-                return self._drain(scope.run)
+            if self._settlement.drain_requested():
+                return self._settlement.drain(scope.run)
             return self._recover(scope, "E_DEADLINE", "deadline")
         return self._settle_execute(scope, phase, observation)
 
@@ -476,13 +439,13 @@ class WorkerExecutor:
             detail="cancelled" if cancelled else observation.state.value,
         )
         if cancelled:
-            self._stop_script(scope, graceful=True)
+            self._settlement.stop_script(scope, graceful=True)
             return self._cancel_run(scope, started=True)
         if hung:
-            self._stop_script(scope)
+            self._settlement.stop_script(scope)
         # 阶段行已收好：停机在阶段边界排水，不进恢复与下一阶段（docs/08）。
-        if self._drain_requested():
-            return self._drain(scope.run)
+        if self._settlement.drain_requested():
+            return self._settlement.drain(scope.run)
         if script_failed:
             return self._recover(scope, "E_SCRIPT_TASK_FAILED", "script")
         return None
@@ -512,7 +475,7 @@ class WorkerExecutor:
         """清理阶段：停脚本、清环境、释放租约，再按结论落终态。"""
         scope.run = self._runs.transition(scope.run.id, RunState.CLEANING)
         phase = self._phases.start(scope.run.id, PhaseName.CLEANUP, attempt=scope.run.attempt)
-        self._stop_script(scope)
+        self._settlement.stop_script(scope)
         # provider 清理不是纯操作：同一尝试只调用一次，置位放在调用前，清理抛异常
         # 后收尾路径也不再重复调用（docs/09）。
         scope.has_called_cleanup = True
@@ -618,10 +581,10 @@ class WorkerExecutor:
         )
         if not applied:
             return self._abort_recovery(scope, error_code, exhausted=False)
-        self._stop_script(scope)
+        self._settlement.stop_script(scope)
         if decision.action is not RecoveryAction.RESET_ENVIRONMENT:
-            self._safe_cleanup(scope, reason="recovering")
-        self._safe_release(scope.run_id, reason="recovering")
+            self._settlement.safe_cleanup(scope, reason="recovering")
+        self._settlement.safe_release(scope.run_id, reason="recovering")
         retry_at = now + timedelta(seconds=decision.delay_seconds)
         return self._runs.mark_recovering(
             scope.run_id,
@@ -638,9 +601,9 @@ class WorkerExecutor:
 
     def _abort_recovery(self, scope: RunScope, error_code: str, *, exhausted: bool) -> JobRunRecord:
         """停手：停脚本、按需清理、释放租约，把运行记成 failed。"""
-        self._stop_script(scope)
-        self._safe_cleanup(scope, reason="recovery")
-        self._safe_release(scope.run_id, reason="recovery")
+        self._settlement.stop_script(scope)
+        self._settlement.safe_cleanup(scope, reason="recovery")
+        self._settlement.safe_release(scope.run_id, reason="recovery")
         self._hop_to_cleaning(scope.run_id, reason="recovery")
         result = "exhausted" if exhausted else "aborted"
         code = "E_RECOVERY_EXHAUSTED" if exhausted else error_code
@@ -678,17 +641,17 @@ class WorkerExecutor:
     def _cancel_run(self, scope: RunScope, *, started: bool) -> JobRunRecord:
         """取消运行；已开始的先停脚本、按需清理，再记 cancelled。"""
         if started:
-            self._stop_script(scope)
-            self._safe_cleanup(scope, reason="cancelled")
-        self._safe_release(scope.run_id, reason="cancelled")
+            self._settlement.stop_script(scope)
+            self._settlement.safe_cleanup(scope, reason="cancelled")
+        self._settlement.safe_release(scope.run_id, reason="cancelled")
         self._hop_to_cleaning(scope.run_id, reason="cancelled")
         return self._runs.transition(scope.run_id, RunState.CANCELLED, reason="cancelled")
 
     def _fail(self, scope: RunScope, error_code: str, reason: str) -> JobRunRecord:
         """收尾失败：停脚本、按需清理、释放租约，把运行记成 failed。"""
-        self._stop_script(scope)
-        self._safe_cleanup(scope, reason=reason)
-        self._safe_release(scope.run_id, reason=reason)
+        self._settlement.stop_script(scope)
+        self._settlement.safe_cleanup(scope, reason=reason)
+        self._settlement.safe_release(scope.run_id, reason=reason)
         self._hop_to_cleaning(scope.run_id, reason=reason)
         return self._runs.transition(
             scope.run_id,
@@ -696,52 +659,6 @@ class WorkerExecutor:
             reason=reason,
             error_code=error_code,
         )
-
-    def _script_lifecycle(self, scope: RunScope) -> ScriptRun:
-        """按运行范围组装脚本生命周期对象：它只持有引用，构造无副作用。"""
-        return ScriptRun(scope.script, self._clock, self._cancel, self._log)
-
-    def _stop_script(self, scope: RunScope, *, graceful: bool = False) -> None:
-        """停止脚本并清空句柄；取消时先 graceful，插件没接受再 force。失败只记 WARN。"""
-        self._script_lifecycle(scope).stop(scope, graceful=graceful)
-
-    def _safe_cleanup(self, scope: RunScope, *, reason: str) -> None:
-        """清理环境；本尝试已调用过 provider 清理就跳过，失败只记 WARN。
-
-        provider 清理不是纯操作，重复执行可能影响复用的环境（docs/09）；跳过与
-        失败都不改变已经确定的结局。
-        """
-        if scope.has_called_cleanup:
-            return
-        try:
-            self._environments.cleanup(scope.call, keep_warm=False, warm_minutes=0)
-        except Exception as error:
-            self._log.warn(
-                {
-                    "event": "executor.cleanup_failed",
-                    "run_id": scope.run_id,
-                    "reason": reason,
-                    "error": str(error),
-                }
-            )
-
-    def _safe_release(self, run_id: str, *, reason: str) -> None:
-        """释放租约；失败只记 WARN，过期租约由回收扫描兜底。
-
-        重复调用安全：release 只处理仍活跃的租约，二次调用查不到活跃租约、
-        不写事件（docs/09）。
-        """
-        try:
-            self._leases.release(run_id, reason=reason)
-        except Exception as error:
-            self._log.warn(
-                {
-                    "event": "executor.lease_release_failed",
-                    "run_id": run_id,
-                    "reason": reason,
-                    "error": str(error),
-                }
-            )
 
     def _build_context(self, run: JobRunRecord, template: JobTemplateRow) -> RunContext:
         work_dir = self._data_root / "work" / run.id
