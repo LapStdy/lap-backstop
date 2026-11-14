@@ -117,8 +117,6 @@ class WorkerExecutor:
         cancel = CancelFlag() if options.cancel is None else options.cancel
         shutdown = _never_shutdown if options.shutdown is None else options.shutdown
         services = ExecutorServices.build(connection, clock, options.data_root, log)
-        self._registry = registry
-        self._data_root = options.data_root
         self._keep_warm_minutes = options.keep_warm_minutes
         self._log = log
         self._cancel: CancelToken = cancel
@@ -127,12 +125,9 @@ class WorkerExecutor:
         self._runs = services.runs
         self._templates = services.templates
         self._environments = services.environments
-        self._resources = services.resources
         self._leases = services.leases
         self._phases = services.phases
-        self._evidence = services.evidence
         self._verdicts = services.verdicts
-        self._events = services.events
         self._settlement = RunSettlement(services, cancel, shutdown)
         self._projector = ConfigProjector(registry, services, self._settlement)
         self._scopes = RunScopeFactory(services, registry, options.data_root, cancel)
