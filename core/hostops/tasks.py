@@ -275,19 +275,21 @@ def _failure_reason(completed: subprocess.CompletedProcess[bytes]) -> str:
 def startup_actions(data_root: Path) -> dict[str, TaskAction]:
     r"""按运行形态取注册动作：打包件指向自身 exe，源码直跑指向当前解释器。
 
-    打包件就位前（app\current 布局），源码形态用于开发联调；两种形态的任务
-    动作只有这一处定义（docs/08 独立看门狗一节：启动参数与环境只有一处定义）。
+    两种形态都把数据根显式写进动作：exe 落在哪一卷不再决定运行数据写哪一卷
+    （docs/08「路径布局」）。打包件就位前（app\current 布局），源码形态用于
+    开发联调；两种形态的任务动作只有这一处定义（docs/08 独立看门狗一节：
+    启动参数与环境只有一处定义）。
     """
+    root = str(data_root.resolve())
     if getattr(sys, "frozen", False):
         executable = sys.executable
         return {
-            TASK_CORE: TaskAction(executable, "serve"),
-            TASK_WATCHDOG: TaskAction(executable, "watchdog check"),
-            TASK_BACKUP: TaskAction(executable, "backup"),
-            TASK_EVIDENCE_MIRROR: TaskAction(executable, "evidence-mirror"),
+            TASK_CORE: TaskAction(executable, f"serve --data-root {root}"),
+            TASK_WATCHDOG: TaskAction(executable, f"watchdog check --data-root {root}"),
+            TASK_BACKUP: TaskAction(executable, f"backup --data-root {root}"),
+            TASK_EVIDENCE_MIRROR: TaskAction(executable, f"evidence-mirror --data-root {root}"),
         }
     python = sys.executable
-    root = str(data_root.resolve())
     return {
         TASK_CORE: TaskAction(python, f"-m core serve --data-root {root}"),
         TASK_WATCHDOG: TaskAction(python, f"-m core watchdog check --data-root {root}"),

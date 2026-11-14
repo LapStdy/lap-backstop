@@ -175,16 +175,16 @@ def test_startup_actions_cover_frozen_and_source_modes(
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", "C:\\app\\current\\lap-backstop.exe")
     frozen = tasks.startup_actions(tmp_path)
+    # 打包形态同样把数据根写进动作：数据落哪一卷不由 exe 位置决定
     assert frozen[tasks.TASK_CORE] == tasks.TaskAction(
-        "C:\\app\\current\\lap-backstop.exe", "serve"
+        "C:\\app\\current\\lap-backstop.exe", f"serve --data-root {root}"
     )
-    assert frozen[tasks.TASK_WATCHDOG].arguments == "watchdog check"
-    # 打包形态：backup 指向自身 exe
+    assert frozen[tasks.TASK_WATCHDOG].arguments == f"watchdog check --data-root {root}"
     assert frozen[tasks.TASK_BACKUP] == tasks.TaskAction(
-        "C:\\app\\current\\lap-backstop.exe", "backup"
+        "C:\\app\\current\\lap-backstop.exe", f"backup --data-root {root}"
     )
     assert frozen[tasks.TASK_EVIDENCE_MIRROR] == tasks.TaskAction(
-        "C:\\app\\current\\lap-backstop.exe", "evidence-mirror"
+        "C:\\app\\current\\lap-backstop.exe", f"evidence-mirror --data-root {root}"
     )
 
 

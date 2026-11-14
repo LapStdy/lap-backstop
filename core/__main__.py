@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import functools
+import os
 import sqlite3
 import subprocess
 import sys
@@ -27,10 +28,22 @@ EXIT_DISK_LOW = 5
 
 # 打包件位于 app\releases\<version>\lap-backstop.exe，数据根在其上三级的 data\。
 _FROZEN_ROOT_DEPTH = 3
+DATA_ROOT_ENV_VAR = "LAP_BACKSTOP_DATA_ROOT"
 
 
 def resolve_data_root() -> Path:
-    """数据根目录：源码运行取仓库内的 data\，打包运行取 exe 上三级的 data\。"""
+    """数据根的默认值：决定运行数据写在哪一卷，可由部署环境钉死。
+
+    优先级：显式 ``--data-root`` > ``LAP_BACKSTOP_DATA_ROOT`` > 源码取仓库内
+    ``data\\`` / 打包取 exe 上三级的 ``data\\``。环境变量只收绝对路径：相对路径
+    随工作目录漂移，静默回退会把运行数据写到别的卷（docs/08「路径布局」）。
+    """
+    override = os.environ.get(DATA_ROOT_ENV_VAR)
+    if override is not None:
+        candidate = Path(override)
+        if not candidate.is_absolute():
+            raise ValueError(f"{DATA_ROOT_ENV_VAR} 必须是绝对路径，当前为 {override!r}")
+        return candidate
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parents[_FROZEN_ROOT_DEPTH] / "data"
     return Path(__file__).resolve().parents[1] / "data"
@@ -49,25 +62,11 @@ def main(argv: list[str] | None = None) -> int:
         from core.plugins.worker import main as worker_main
 
         return worker_main(tokens[1:])
-    arguments = _build_parser().parse_args(tokens)
+    arguments = _parse_arguments(tokens)
+    if arguments is None:
+        return EXIT_ERROR
     if arguments.command == "serve":
-        from core.hostops.serve import ServeOptions, install_stop_handlers, run_serve
-        from core.logging import DailyRotatingJsonLineLogger
-
-        data_root = Path(arguments.data_root)
-        options = ServeOptions(
-            log=DailyRotatingJsonLineLogger(data_root / "logs"),
-            stop=install_stop_handlers(),
-            register_tasks=not arguments.no_register_tasks,
-            run_timesync=not arguments.no_timesync,
-        )
-        code = run_serve(data_root, options)
-        if code != EXIT_OK:
-            print(
-                f"serve 退出码 {code}，运行日志见 {data_root / 'logs'} 目录",
-                file=sys.stderr,
-            )
-        return code
+        return _run_serve_command(arguments)
     if arguments.command == "watchdog":
         return _run_watchdog_check(Path(arguments.data_root))
     if arguments.command == "doctor":
@@ -91,6 +90,36 @@ def main(argv: list[str] | None = None) -> int:
     registration = register_registered_tasks(data_root, registered_at=SystemClock().utc_now())
     print(registration.detail)
     return EXIT_OK if registration.ok else EXIT_ERROR
+
+
+def _parse_arguments(tokens: list[str]) -> argparse.Namespace | None:
+    """解析子命令；数据根环境变量不合法时报错误并返回 None（退出码 1）。"""
+    try:
+        return _build_parser().parse_args(tokens)
+    except ValueError as error:
+        print(f"启动参数无效：{error}", file=sys.stderr)
+        return None
+
+
+def _run_serve_command(arguments: argparse.Namespace) -> int:
+    """常驻核心子命令：装配日志、停机处理与计划任务注册开关后进入 serve。"""
+    from core.hostops.serve import ServeOptions, install_stop_handlers, run_serve
+    from core.logging import DailyRotatingJsonLineLogger
+
+    data_root = Path(arguments.data_root)
+    options = ServeOptions(
+        log=DailyRotatingJsonLineLogger(data_root / "logs"),
+        stop=install_stop_handlers(),
+        register_tasks=not arguments.no_register_tasks,
+        run_timesync=not arguments.no_timesync,
+    )
+    code = run_serve(data_root, options)
+    if code != EXIT_OK:
+        print(
+            f"serve 退出码 {code}，运行日志见 {data_root / 'logs'} 目录",
+            file=sys.stderr,
+        )
+    return code
 
 
 def _run_watchdog_check(data_root: Path) -> int:
