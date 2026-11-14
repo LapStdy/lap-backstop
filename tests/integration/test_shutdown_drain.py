@@ -29,7 +29,7 @@ from core.jobs.run_service import JobRunService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
 from core.supervisor import Supervisor
-from core.worker.executor import WorkerExecutor
+from core.worker.executor import ExecutorOptions, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
@@ -384,8 +384,7 @@ def test_repeated_shutdown_signal_writes_single_interrupt(tmp_path: Path) -> Non
             connection,
             clock,
             registry,
-            data_root=tmp_path,
-            shutdown=stop.is_set,
+            ExecutorOptions(data_root=tmp_path, shutdown=stop.is_set),
         )
         executor.execute(run_id)
         executor.execute(run_id)

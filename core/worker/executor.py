@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -62,6 +63,62 @@ Emit = Callable[[str, Mapping[str, Any]], None]
 RecordEvidence = Callable[[str, Path, str], str]
 
 
+@dataclass(frozen=True, slots=True)
+class ExecutorOptions:
+    """执行器的注入点：数据根、日志出口、保温窗口、取消标记与停机信号。"""
+
+    data_root: Path
+    log: Logger | None = None
+    keep_warm_minutes: int = 0
+    cancel: CancelToken | None = None
+    shutdown: Callable[[], bool] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutorServices:
+    """执行器协作件共享的服务句柄：全部建立在同一条连接与同一时钟上。"""
+
+    runs: JobRunService
+    templates: JobTemplateRepository
+    phases: PhaseTracker
+    environments: EnvironmentService
+    resources: ResourceRepository
+    leases: LeaseService
+    evidence: EvidenceService
+    verdicts: VerdictService
+    events: EventLog
+    clock: Clock
+    log: Logger
+
+    @classmethod
+    def build(
+        cls,
+        connection: sqlite3.Connection,
+        clock: Clock,
+        data_root: Path,
+        log: Logger,
+    ) -> ExecutorServices:
+        """在同一条连接上装配全部服务；证据目录落在数据根下。"""
+        return cls(
+            runs=JobRunService(connection, clock),
+            templates=JobTemplateRepository(connection),
+            phases=PhaseTracker(connection, clock),
+            environments=EnvironmentService(connection, clock),
+            resources=ResourceRepository(connection),
+            leases=LeaseService(connection, clock),
+            evidence=EvidenceService(connection, data_root / "evidence", clock),
+            verdicts=VerdictService(connection, clock),
+            events=EventLog(connection),
+            clock=clock,
+            log=log,
+        )
+
+
+def _never_shutdown() -> bool:
+    """未注入停机信号时的缺省信号：永不请求停机。"""
+    return False
+
+
 class WorkerExecutor:
     """一次 JobRun 的四阶段执行。"""
 
@@ -70,30 +127,28 @@ class WorkerExecutor:
         connection: sqlite3.Connection,
         clock: Clock,
         registry: PluginRegistry,
-        *,
-        data_root: Path,
-        log: Logger | None = None,
-        keep_warm_minutes: int = 0,
-        cancel: CancelToken | None = None,
-        shutdown: Callable[[], bool] | None = None,
+        options: ExecutorOptions,
     ) -> None:
-        self._connection = connection
-        self._clock = clock
+        log = NullLogger() if options.log is None else options.log
+        cancel = CancelFlag() if options.cancel is None else options.cancel
+        shutdown = _never_shutdown if options.shutdown is None else options.shutdown
+        services = ExecutorServices.build(connection, clock, options.data_root, log)
         self._registry = registry
-        self._data_root = data_root
-        self._keep_warm_minutes = keep_warm_minutes
-        self._cancel: CancelToken = CancelFlag() if cancel is None else cancel
-        self._shutdown: Callable[[], bool] = (lambda: False) if shutdown is None else shutdown
-        self._log: Logger = NullLogger() if log is None else log
-        self._runs = JobRunService(connection, clock)
-        self._templates = JobTemplateRepository(connection)
-        self._environments = EnvironmentService(connection, clock)
-        self._resources = ResourceRepository(connection)
-        self._leases = LeaseService(connection, clock)
-        self._phases = PhaseTracker(connection, clock)
-        self._evidence = EvidenceService(connection, data_root / "evidence", clock)
-        self._verdicts = VerdictService(connection, clock)
-        self._events = EventLog(connection)
+        self._data_root = options.data_root
+        self._keep_warm_minutes = options.keep_warm_minutes
+        self._log = log
+        self._cancel: CancelToken = cancel
+        self._shutdown: Callable[[], bool] = shutdown
+        self._clock = clock
+        self._runs = services.runs
+        self._templates = services.templates
+        self._environments = services.environments
+        self._resources = services.resources
+        self._leases = services.leases
+        self._phases = services.phases
+        self._evidence = services.evidence
+        self._verdicts = services.verdicts
+        self._events = services.events
 
     def execute(self, run_id: str) -> JobRunRecord:
         """推进一步：恢复等待、准备、执行、验证、清理，直到终态或等待时机。
@@ -738,7 +793,7 @@ class WorkerExecutor:
         return record
 
 
-__all__ = ["CancelFlag", "RunScope", "WorkerExecutor"]
+__all__ = ["CancelFlag", "ExecutorOptions", "RunScope", "WorkerExecutor"]
 
 
 def _projection_disabled(config: Mapping[str, Any]) -> bool:
