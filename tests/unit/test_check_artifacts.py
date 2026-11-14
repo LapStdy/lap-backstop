@@ -16,6 +16,9 @@ _SCRIPT_PATH = _REPO_ROOT / "scripts" / "check_artifacts.py"
 
 
 def _load_checker() -> Any:
+    # 被测脚本按文件路径加载时 scripts 目录不会自动进 sys.path；补上它，
+    # 导入解析才与「python scripts/check_artifacts.py」的运行方式等价。
+    sys.path.insert(0, str(_SCRIPT_PATH.parent))
     spec = importlib.util.spec_from_file_location("check_artifacts_under_test", _SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
