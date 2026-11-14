@@ -57,7 +57,7 @@
 
 ## 工程治理
 
-- [ ] 按允许清单逐项收缩剩余 17 条超限：10 个超长函数 + 7 个超长模块（清单在 `tests/unit/test_structure_limits.py` 的 `_D019_ENTRIES`）。
+- [ ] 按允许清单逐项收缩剩余 14 条超限：8 个超长函数 + 6 个超长模块（`scripts` 三项已由卡79-SC 达标；清单在 `tests/unit/test_structure_limits.py` 的 `_D019_ENTRIES`）。
 - [ ] 清宿主 C: 余量并给测试换临时卷（`D-021`）：数据根已可钉盘（`--data-root` / `LAP_BACKSTOP_DATA_ROOT`），但 C: 只剩 1.8 GiB、贴着 2 GiB 建运行守护线，且 pytest 临时根仍在 `%TEMP%`；未清出余量前平台在这台机器上调度不出运行。
 
 ## 技术验证
