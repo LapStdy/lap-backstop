@@ -1,18 +1,20 @@
-"""worker 执行器的结局收口：停机排水、脚本停止与安全清理释放。
+"""worker 执行器的结局收口：恢复决策、取消、失败与停机排水的落库。
 
-执行器只做阶段编排与检查点；结局动作（写 run.interrupted、停脚本、按需清理、
-释放租约）归本模块。收口动作失败只记日志，不改已经确定的结局（docs/08 停机
-与阶段边界、docs/09 尝试与恢复）。
+执行器只做阶段编排与检查点；结局动作（恢复决策、取消、失败终态、写
+run.interrupted、停脚本、按需清理、释放租约）归本模块。收口动作失败只记日志，
+不改已经确定的结局（docs/08 停机与阶段边界、docs/09 尝试与恢复）。
 """
 
 from __future__ import annotations
 
 import sqlite3
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
-from contracts import CancelToken, EventType
+from contracts import CancelToken, EventType, RecoveryAction, RunState
 from core.jobs.errors import RunNotFoundError
 from core.jobs.run_service import SHUTDOWN_REASON
+from core.recovery.policy import RecoveryPolicy
 from core.worker.run_scope import RunScope
 from core.worker.script_run import ScriptRun
 from storage.repositories.job_runs import JobRunRecord
@@ -24,7 +26,7 @@ if TYPE_CHECKING:
 
 
 class RunSettlement:
-    """运行结局的收口：停机排水、脚本停止、按需清理与租约释放。"""
+    """运行结局的收口：恢复决策、取消、失败终态、停机排水与收尾机械。"""
 
     def __init__(
         self,
@@ -124,6 +126,141 @@ class RunSettlement:
                     "error": str(error),
                 }
             )
+
+    def fail_missing_template(self, run: JobRunRecord) -> JobRunRecord:
+        """模板缺失是配置错误：直接记失败，不让运行卡在排队里等一个不会来的模板。"""
+        self._log.error(
+            {
+                "event": "executor.template_missing",
+                "run_id": run.id,
+                "template_id": run.template_id,
+                "error_code": "E_CONFIG",
+            }
+        )
+        self._hop_to_cleaning(run.id, reason="template_missing")
+        return self._runs.transition(
+            run.id,
+            RunState.FAILED,
+            reason="template_missing",
+            error_code="E_CONFIG",
+        )
+
+    def recover(self, scope: RunScope, error_code: str, reason: str) -> JobRunRecord:
+        """按模板策略决定恢复动作；退避等待由 resume 按 retry_at 控制。"""
+        try:
+            policy = RecoveryPolicy.from_mapping(scope.template.recovery_policy)
+        except ValueError:
+            return self.fail(scope, "E_CONFIG", reason)
+        run = self._runs.get(scope.run_id)
+        decision = policy.decide(error_code=error_code, attempt=run.attempt)
+        now = self._clock.utc_now()
+        self._events.append_run(
+            scope.run_id,
+            EventType.RECOVERY_STARTED,
+            {
+                "run_id": scope.run_id,
+                "action": decision.action.value,
+                "attempt": decision.next_attempt,
+            },
+            at=now,
+        )
+        if (
+            decision.exhausted
+            or decision.action is RecoveryAction.ABORT
+            or run.state is RunState.CLEANING
+        ):
+            return self._abort_recovery(scope, error_code, exhausted=decision.exhausted)
+        applied = self._apply_action(scope, decision.action)
+        self._events.append_run(
+            scope.run_id,
+            EventType.RECOVERY_FINISHED,
+            {
+                "run_id": scope.run_id,
+                "action": decision.action.value,
+                "result": "ok" if applied else "failed",
+            },
+            at=now,
+        )
+        if not applied:
+            return self._abort_recovery(scope, error_code, exhausted=False)
+        self.stop_script(scope)
+        if decision.action is not RecoveryAction.RESET_ENVIRONMENT:
+            self.safe_cleanup(scope, reason="recovering")
+        self.safe_release(scope.run_id, reason="recovering")
+        retry_at = now + timedelta(seconds=decision.delay_seconds)
+        return self._runs.mark_recovering(
+            scope.run_id,
+            next_attempt=decision.next_attempt,
+            retry_at=retry_at,
+            error_code=error_code,
+        )
+
+    def _hop_to_cleaning(self, run_id: str, *, reason: str) -> None:
+        """执行或验证中的运行落终态前先经过 cleaning（docs/02 迁移表）。"""
+        current = self._runs.get(run_id)
+        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
+            self._runs.transition(run_id, RunState.CLEANING, reason=reason)
+
+    def _abort_recovery(self, scope: RunScope, error_code: str, *, exhausted: bool) -> JobRunRecord:
+        """停手：停脚本、按需清理、释放租约，把运行记成 failed。"""
+        self.stop_script(scope)
+        self.safe_cleanup(scope, reason="recovery")
+        self.safe_release(scope.run_id, reason="recovery")
+        self._hop_to_cleaning(scope.run_id, reason="recovery")
+        result = "exhausted" if exhausted else "aborted"
+        code = "E_RECOVERY_EXHAUSTED" if exhausted else error_code
+        finished = self._runs.transition(
+            scope.run_id,
+            RunState.FAILED,
+            reason=result,
+            error_code=code,
+        )
+        self._events.append_run(
+            scope.run_id,
+            EventType.RECOVERY_FINISHED,
+            {
+                "run_id": scope.run_id,
+                "action": RecoveryAction.ABORT.value,
+                "result": result,
+            },
+            at=self._clock.utc_now(),
+        )
+        return finished
+
+    def _apply_action(self, scope: RunScope, action: RecoveryAction) -> bool:
+        """执行恢复动作；插件异常只算动作失败，由调用方转停手。"""
+        try:
+            if action is RecoveryAction.RESET_ENVIRONMENT:
+                return self._environments.reset(scope.call).ok
+            if action is RecoveryAction.RESTART_SCRIPT:
+                if scope.handle is None:
+                    return True
+                return scope.script.recover(scope.handle, scope.context, action).ok
+            return True
+        except Exception:
+            return False
+
+    def cancel_run(self, scope: RunScope, *, started: bool) -> JobRunRecord:
+        """取消运行；已开始的先停脚本、按需清理，再记 cancelled。"""
+        if started:
+            self.stop_script(scope)
+            self.safe_cleanup(scope, reason="cancelled")
+        self.safe_release(scope.run_id, reason="cancelled")
+        self._hop_to_cleaning(scope.run_id, reason="cancelled")
+        return self._runs.transition(scope.run_id, RunState.CANCELLED, reason="cancelled")
+
+    def fail(self, scope: RunScope, error_code: str, reason: str) -> JobRunRecord:
+        """收尾失败：停脚本、按需清理、释放租约，把运行记成 failed。"""
+        self.stop_script(scope)
+        self.safe_cleanup(scope, reason=reason)
+        self.safe_release(scope.run_id, reason=reason)
+        self._hop_to_cleaning(scope.run_id, reason=reason)
+        return self._runs.transition(
+            scope.run_id,
+            RunState.FAILED,
+            reason=reason,
+            error_code=error_code,
+        )
 
 
 __all__ = ["RunSettlement"]

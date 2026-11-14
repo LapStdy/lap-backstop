@@ -24,7 +24,6 @@ from contracts import (
     Logger,
     PhaseName,
     PhaseState,
-    RecoveryAction,
     RunContext,
     RunState,
     ScriptObservation,
@@ -42,7 +41,6 @@ from core.logging import NullLogger
 from core.plugins import rpc
 from core.plugins.errors import PluginError, WorkerCancelledError, WorkerTimeoutError
 from core.plugins.registry import PluginRegistry
-from core.recovery.policy import RecoveryPolicy
 from core.resources.service import LeaseService
 from core.worker.executor_settlement import RunSettlement
 from core.worker.run_scope import CancelFlag, RunScope
@@ -177,10 +175,10 @@ class WorkerExecutor:
             return self._settlement.drain(run)
         template = self._templates.get(run.template_id)
         if template is None:
-            return self._fail_missing_template(run)
+            return self._settlement.fail_missing_template(run)
         scope = self._begin(run, template)
         if self._cancel.is_cancelled():
-            return self._cancel_run(scope, started=False)
+            return self._settlement.cancel_run(scope, started=False)
         if self._shutdown():
             return self._settlement.drain(scope.run)
         if scope.run.state is RunState.QUEUED:
@@ -191,12 +189,12 @@ class WorkerExecutor:
             return self._advance_or_drain(scope)
         except WorkerCancelledError:
             self._log.info({"event": "executor.worker_cancelled", "run_id": scope.run_id})
-            return self._cancel_run(scope, started=True)
+            return self._settlement.cancel_run(scope, started=True)
         except WorkerTimeoutError as error:
             self._log.warn(
                 {"event": "executor.worker_timeout", "run_id": scope.run_id, "error": str(error)}
             )
-            return self._recover(scope, "E_DEADLINE", "worker_timeout")
+            return self._settlement.recover(scope, "E_DEADLINE", "worker_timeout")
         except PluginError as error:
             self._log.error(
                 {
@@ -206,12 +204,12 @@ class WorkerExecutor:
                     "error": str(error),
                 }
             )
-            return self._recover(scope, error.code, str(error))
+            return self._settlement.recover(scope, error.code, str(error))
         except Exception as error:  # 插件异常不能拖垮内核：按崩溃收尾
             self._log.error(
                 {"event": "executor.error", "run_id": scope.run_id, "error": str(error)}
             )
-            return self._recover(scope, "E_PLUGIN_CRASH", str(error))
+            return self._settlement.recover(scope, "E_PLUGIN_CRASH", str(error))
 
     def _advance(self, scope: RunScope) -> JobRunRecord:
         """按阶段推进；阶段之间是取消与停机的检查点（ADR 0007）。
@@ -289,7 +287,7 @@ class WorkerExecutor:
         except IllegalRunTransitionError:
             current = self._runs.get(scope.run_id)
             if current.state is RunState.CANCELLED and self._runs.cancel_requested(scope.run_id):
-                return self._cancel_run(scope, started=False)
+                return self._settlement.cancel_run(scope, started=False)
             self._settlement.safe_release(scope.run_id, reason="dequeue_conflict")
             raise
         return None
@@ -306,19 +304,21 @@ class WorkerExecutor:
             detail=prepared.detail,
         )
         if not prepared.ok:
-            return self._recover(scope, prepared.error_code or "E_ENV_WAKE_TIMEOUT", "prepare")
+            return self._settlement.recover(
+                scope, prepared.error_code or "E_ENV_WAKE_TIMEOUT", "prepare"
+            )
         scope.run = self._runs.transition(scope.run.id, RunState.WAITING)
         return None
 
     def _run_script(self, scope: RunScope) -> JobRunRecord | None:
         """执行阶段：到点后先投影下发目标配置，再启动脚本并收口观察结果。"""
         if self._cancel.is_cancelled():
-            return self._cancel_run(scope, started=True)
+            return self._settlement.cancel_run(scope, started=True)
         now = self._clock.utc_now()
         if scope.run.scheduled_at is not None and now < scope.run.scheduled_at:
             return scope.run
         if scope.run.deadline_at is not None and now >= scope.run.deadline_at:
-            return self._recover(scope, "E_DEADLINE", "deadline")
+            return self._settlement.recover(scope, "E_DEADLINE", "deadline")
         settled = self._project_config(scope)
         if settled is not None:
             return settled
@@ -334,7 +334,7 @@ class WorkerExecutor:
             # 阶段行已收好：停机在阶段边界排水，不再走恢复（docs/08）。
             if self._settlement.drain_requested():
                 return self._settlement.drain(scope.run)
-            return self._recover(scope, "E_DEADLINE", "deadline")
+            return self._settlement.recover(scope, "E_DEADLINE", "deadline")
         return self._settle_execute(scope, phase, observation)
 
     def _project_config(self, scope: RunScope) -> JobRunRecord | None:
@@ -392,7 +392,7 @@ class WorkerExecutor:
                 },
                 at=self._clock.utc_now(),
             )
-        return self._recover(scope, error_code, "config_projection")
+        return self._settlement.recover(scope, error_code, "config_projection")
 
     def _emit_config_applied(self, scope: RunScope, result: ApplyResult) -> None:
         """apply 成功记 config.applied；修订与哈希取插件回执，未写盘时为空。"""
@@ -440,14 +440,14 @@ class WorkerExecutor:
         )
         if cancelled:
             self._settlement.stop_script(scope, graceful=True)
-            return self._cancel_run(scope, started=True)
+            return self._settlement.cancel_run(scope, started=True)
         if hung:
             self._settlement.stop_script(scope)
         # 阶段行已收好：停机在阶段边界排水，不进恢复与下一阶段（docs/08）。
         if self._settlement.drain_requested():
             return self._settlement.drain(scope.run)
         if script_failed:
-            return self._recover(scope, "E_SCRIPT_TASK_FAILED", "script")
+            return self._settlement.recover(scope, "E_SCRIPT_TASK_FAILED", "script")
         return None
 
     def _verify(self, scope: RunScope) -> JobRunRecord | None:
@@ -499,7 +499,9 @@ class WorkerExecutor:
                 reason="cancelled",
             )
         if not cleaned.ok:
-            return self._fail(scope, cleaned.error_code or "E_ENV_UNREACHABLE", "cleanup")
+            return self._settlement.fail(
+                scope, cleaned.error_code or "E_ENV_UNREACHABLE", "cleanup"
+            )
         failure = scope.verify_failure
         if failure is not None:
             return self._runs.transition(
@@ -524,141 +526,6 @@ class WorkerExecutor:
         if retry_at is not None and self._clock.utc_now() < retry_at:
             return run
         return self._runs.transition(run_id, RunState.QUEUED, reason="recovery")
-
-    def _fail_missing_template(self, run: JobRunRecord) -> JobRunRecord:
-        """模板缺失是配置错误：直接记失败，不让运行卡在排队里等一个不会来的模板。"""
-        self._log.error(
-            {
-                "event": "executor.template_missing",
-                "run_id": run.id,
-                "template_id": run.template_id,
-                "error_code": "E_CONFIG",
-            }
-        )
-        self._hop_to_cleaning(run.id, reason="template_missing")
-        return self._runs.transition(
-            run.id,
-            RunState.FAILED,
-            reason="template_missing",
-            error_code="E_CONFIG",
-        )
-
-    def _recover(self, scope: RunScope, error_code: str, reason: str) -> JobRunRecord:
-        """按模板策略决定恢复动作；退避等待由 resume 按 retry_at 控制。"""
-        try:
-            policy = RecoveryPolicy.from_mapping(scope.template.recovery_policy)
-        except ValueError:
-            return self._fail(scope, "E_CONFIG", reason)
-        run = self._runs.get(scope.run_id)
-        decision = policy.decide(error_code=error_code, attempt=run.attempt)
-        now = self._clock.utc_now()
-        self._events.append_run(
-            scope.run_id,
-            EventType.RECOVERY_STARTED,
-            {
-                "run_id": scope.run_id,
-                "action": decision.action.value,
-                "attempt": decision.next_attempt,
-            },
-            at=now,
-        )
-        if (
-            decision.exhausted
-            or decision.action is RecoveryAction.ABORT
-            or run.state is RunState.CLEANING
-        ):
-            return self._abort_recovery(scope, error_code, exhausted=decision.exhausted)
-        applied = self._apply_action(scope, decision.action)
-        self._events.append_run(
-            scope.run_id,
-            EventType.RECOVERY_FINISHED,
-            {
-                "run_id": scope.run_id,
-                "action": decision.action.value,
-                "result": "ok" if applied else "failed",
-            },
-            at=now,
-        )
-        if not applied:
-            return self._abort_recovery(scope, error_code, exhausted=False)
-        self._settlement.stop_script(scope)
-        if decision.action is not RecoveryAction.RESET_ENVIRONMENT:
-            self._settlement.safe_cleanup(scope, reason="recovering")
-        self._settlement.safe_release(scope.run_id, reason="recovering")
-        retry_at = now + timedelta(seconds=decision.delay_seconds)
-        return self._runs.mark_recovering(
-            scope.run_id,
-            next_attempt=decision.next_attempt,
-            retry_at=retry_at,
-            error_code=error_code,
-        )
-
-    def _hop_to_cleaning(self, run_id: str, *, reason: str) -> None:
-        """执行或验证中的运行落终态前先经过 cleaning（docs/02 迁移表）。"""
-        current = self._runs.get(run_id)
-        if current.state in (RunState.EXECUTING, RunState.VERIFYING):
-            self._runs.transition(run_id, RunState.CLEANING, reason=reason)
-
-    def _abort_recovery(self, scope: RunScope, error_code: str, *, exhausted: bool) -> JobRunRecord:
-        """停手：停脚本、按需清理、释放租约，把运行记成 failed。"""
-        self._settlement.stop_script(scope)
-        self._settlement.safe_cleanup(scope, reason="recovery")
-        self._settlement.safe_release(scope.run_id, reason="recovery")
-        self._hop_to_cleaning(scope.run_id, reason="recovery")
-        result = "exhausted" if exhausted else "aborted"
-        code = "E_RECOVERY_EXHAUSTED" if exhausted else error_code
-        finished = self._runs.transition(
-            scope.run_id,
-            RunState.FAILED,
-            reason=result,
-            error_code=code,
-        )
-        self._events.append_run(
-            scope.run_id,
-            EventType.RECOVERY_FINISHED,
-            {
-                "run_id": scope.run_id,
-                "action": RecoveryAction.ABORT.value,
-                "result": result,
-            },
-            at=self._clock.utc_now(),
-        )
-        return finished
-
-    def _apply_action(self, scope: RunScope, action: RecoveryAction) -> bool:
-        """执行恢复动作；插件异常只算动作失败，由调用方转停手。"""
-        try:
-            if action is RecoveryAction.RESET_ENVIRONMENT:
-                return self._environments.reset(scope.call).ok
-            if action is RecoveryAction.RESTART_SCRIPT:
-                if scope.handle is None:
-                    return True
-                return scope.script.recover(scope.handle, scope.context, action).ok
-            return True
-        except Exception:
-            return False
-
-    def _cancel_run(self, scope: RunScope, *, started: bool) -> JobRunRecord:
-        """取消运行；已开始的先停脚本、按需清理，再记 cancelled。"""
-        if started:
-            self._settlement.stop_script(scope)
-            self._settlement.safe_cleanup(scope, reason="cancelled")
-        self._settlement.safe_release(scope.run_id, reason="cancelled")
-        self._hop_to_cleaning(scope.run_id, reason="cancelled")
-        return self._runs.transition(scope.run_id, RunState.CANCELLED, reason="cancelled")
-
-    def _fail(self, scope: RunScope, error_code: str, reason: str) -> JobRunRecord:
-        """收尾失败：停脚本、按需清理、释放租约，把运行记成 failed。"""
-        self._settlement.stop_script(scope)
-        self._settlement.safe_cleanup(scope, reason=reason)
-        self._settlement.safe_release(scope.run_id, reason=reason)
-        self._hop_to_cleaning(scope.run_id, reason=reason)
-        return self._runs.transition(
-            scope.run_id,
-            RunState.FAILED,
-            reason=reason,
-            error_code=error_code,
-        )
 
     def _build_context(self, run: JobRunRecord, template: JobTemplateRow) -> RunContext:
         work_dir = self._data_root / "work" / run.id
