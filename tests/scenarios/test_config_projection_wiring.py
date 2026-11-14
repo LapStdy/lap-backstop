@@ -23,6 +23,7 @@ from contracts import (
 )
 from core.clock import VirtualClock
 from core.jobs.run_service import JobRunService
+from core.plugins.errors import PluginError
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.worker.executor import WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
@@ -152,17 +153,19 @@ def make_executor(
 
 
 class RecordingProjection:
-    """按时间线记录调用的假投影：apply 按构造的回答，可抛通道异常。"""
+    """按时间线记录调用的假投影：apply 与 rollback 按构造的回答，可抛通道异常。"""
 
     def __init__(
         self,
         timeline: list[str],
         result: ApplyResult | None = None,
         error: Exception | None = None,
+        rollback_error: Exception | None = None,
     ) -> None:
         self.timeline = timeline
         self.result = result if result is not None else _applied_result()
         self.error = error
+        self.rollback_error = rollback_error
         self.rolled_back: list[str] = []
 
     def desired(self, ctx: RunContext, config: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -178,9 +181,11 @@ class RecordingProjection:
         return self.result
 
     def rollback(self, ctx: RunContext, revision: str) -> ApplyResult:
-        """记录回滚的修订号并返回成功。"""
+        """记录回滚的修订号并按构造返回或抛通道异常。"""
         self.timeline.append("rollback")
         self.rolled_back.append(revision)
+        if self.rollback_error is not None:
+            raise self.rollback_error
         return ApplyResult(ok=True, detail=f"已恢复到修订 {revision}")
 
     def diff(
@@ -315,6 +320,35 @@ def test_apply_failure_rolls_back_and_skips_launch(
     assert "launch" not in projection.timeline
 
 
+def test_rollback_channel_error_keeps_apply_error_code(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """收口补充：回滚再抛通道异常时记失败回执，运行错误码仍是 apply 的码。"""
+    connection, clock, runs, data_root = env
+    insert_template(connection, "instant")
+    run_id = prepare_run(connection, runs)
+    timeline: list[str] = []
+    projection = RecordingProjection(
+        timeline,
+        result=ApplyResult(ok=False, error_code="E_CONFIG_LOCKED", meta={"revision": REVISION}),
+        rollback_error=PluginError("回滚通道故障"),
+    )
+    executor = make_executor(
+        connection,
+        clock,
+        data_root,
+        ExecutorStubs(script=RecordingScript(timeline), projection=projection),
+    )
+    result = executor.execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_CONFIG_LOCKED"
+    assert timeline == ["desired", "apply", "rollback"]
+    rolled = events_of_type(connection, run_id, "config.rolled_back")
+    assert len(rolled) == 1
+    assert rolled[0]["payload"]["ok"] is False
+    assert rolled[0]["payload"]["error_code"] == "E_PLUGIN"
+
+
 def test_apply_failure_without_revision_skips_rollback(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
@@ -339,3 +373,57 @@ def test_apply_failure_without_revision_skips_rollback(
     assert timeline == ["desired", "apply"]
     assert projection.rolled_back == []
     assert events_of_type(connection, run_id, "config.rolled_back") == []
+
+
+def test_disabled_projection_skips_all_calls(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """现状 3：开关关闭时不调 desired 与 apply，不写 config.*，脚本照常 launch。"""
+    connection, clock, runs, data_root = env
+    insert_template(
+        connection,
+        "instant",
+        config={"scenario": "instant", "config_projection": {"enabled": False}},
+    )
+    run_id = prepare_run(connection, runs)
+    timeline: list[str] = []
+    executor = make_executor(
+        connection,
+        clock,
+        data_root,
+        ExecutorStubs(script=RecordingScript(timeline), projection=RecordingProjection(timeline)),
+    )
+    result = executor.execute(run_id)
+    assert result.state is RunState.SUCCEEDED
+    assert timeline == ["launch"]
+    types = [event["type"] for event in run_events(connection, run_id)]
+    assert types == BASELINE_EVENT_SEQUENCE
+    assert all(not event_type.startswith("config.") for event_type in types)
+
+
+def test_projection_channel_error_emits_no_applied_event(
+    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+) -> None:
+    """现状 5：通道异常走 ok=false 同一收口，不写 config.applied，租约已释放。"""
+    connection, clock, runs, data_root = env
+    insert_template(connection, "instant")
+    run_id = prepare_run(connection, runs)
+    timeline: list[str] = []
+    projection = RecordingProjection(timeline, error=PluginError("配置通道故障"))
+    executor = make_executor(
+        connection,
+        clock,
+        data_root,
+        ExecutorStubs(script=RecordingScript(timeline), projection=projection),
+    )
+    result = executor.execute(run_id)
+    assert result.state is RunState.FAILED
+    assert result.error_code == "E_PLUGIN"
+    assert timeline == ["desired", "apply"]
+    assert events_of_type(connection, run_id, "config.applied") == []
+    assert events_of_type(connection, run_id, "config.rolled_back") == []
+    leases = connection.execute(
+        "SELECT COUNT(*) FROM resource_leases WHERE run_id = ? AND state != 'released'",
+        (run_id,),
+    ).fetchone()
+    assert leases is not None and int(leases[0]) == 0
