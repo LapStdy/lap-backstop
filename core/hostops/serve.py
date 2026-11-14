@@ -12,13 +12,13 @@ import contextlib
 import errno
 import os
 import sqlite3
+import threading
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from contracts import EventType, Logger, RunState
+from contracts import Clock, EventType, Logger
 from core.__main__ import (
     EXIT_DISK_LOW,
     EXIT_ERROR,
@@ -54,6 +54,7 @@ from core.hostops.serve_events import (
     _record_plugin_events,
     _startup_clock_events,
 )
+from core.hostops.serve_loop import HeartbeatWriter, _active_run, _active_runs
 from core.hostops.serve_options import TICK_INTERVAL_SECONDS, ServeOptions, install_stop_handlers
 from core.jobs.run_service import JobRunService
 from core.notify.service import NotifyOptions, NotifyService
@@ -62,7 +63,6 @@ from core.plugins.rpc_host import RpcPluginHost, installed_plugin_ids
 from core.supervisor import Supervisor
 from storage import BackupError, MigrationError, migrate, open_database
 from storage.defaults import default
-from storage.repositories.job_runs import JobRunRecord
 
 # 停机与循环退出时等待执行线程的上限：等待有界，超时按下次启动回收（docs/08）；
 # 不做成配置键，把收尾时限留在代码里。
@@ -74,36 +74,6 @@ PORT_CONFLICT_EVENT = "core.port_conflict"
 API_HOST_KEY = "api.host"
 API_PORT_KEY = "api.port"
 _HEARTBEAT_INTERVAL = timedelta(seconds=int(default("host", "heartbeat_interval_seconds")))
-_ACTIVE_RUN_STATES = frozenset(
-    {RunState.PREPARING, RunState.WAITING, RunState.EXECUTING, RunState.VERIFYING}
-)
-
-
-@dataclass(frozen=True, slots=True)
-class HeartbeatWriter:
-    """心跳写入件：进程身份与目标路径固定，每次写取当前时刻与在途运行。"""
-
-    path: Path
-    started_at: datetime
-    pid: int
-    version: str
-
-    def write(self, *, last_tick_at: datetime, active_run: str | None) -> None:
-        """原子写一次心跳。
-
-        Raises:
-            OSError: 目录不可写或替换失败；由调用方决定重试。
-        """
-        heartbeat.write_heartbeat(
-            self.path,
-            {
-                "pid": self.pid,
-                "started_at": self.started_at.isoformat(),
-                "version": self.version,
-                "last_tick": last_tick_at.isoformat(),
-                "active_run": active_run,
-            },
-        )
 
 
 class ServeLoop:
@@ -213,17 +183,6 @@ class ServeLoop:
             self._options.log.error({"event": "serve.heartbeat_write_failed", "error": str(error)})
             return
         self._last_heartbeat_at = now_mono
-
-
-def _active_runs(runs: JobRunService) -> list[JobRunRecord]:
-    """在途运行清单：准备、等待、执行、验证都算。"""
-    return [run for run in runs.non_terminal() if run.state in _ACTIVE_RUN_STATES]
-
-
-def _active_run(runs: JobRunService) -> str | None:
-    """当前在途运行的 id；没有则 None。"""
-    active = _active_runs(runs)
-    return active[0].id if active else None
 
 
 def _drain_requester(stop: threading.Event, database: Path, clock: Clock) -> DrainRequester:
