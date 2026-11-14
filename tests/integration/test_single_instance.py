@@ -11,7 +11,7 @@ from pathlib import Path
 
 from core.hostops import instance
 from core.hostops.heartbeat import HEARTBEAT_FILENAME
-from tests.integration.test_serve_shell import (
+from tests.integration.serve_shell_support import (
     REPO_ROOT,
     WAIT_SECONDS,
     spawn_serve,
