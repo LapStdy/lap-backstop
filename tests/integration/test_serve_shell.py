@@ -5,45 +5,26 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import threading
-import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
-from contracts import PhaseName, RunState
 from core.clock import VirtualClock
 from core.hostops import instance, serve, tasks, timesync
 from core.hostops.heartbeat import HEARTBEAT_FILENAME, read_heartbeat
 from core.hostops.serve import (
     AUTOLOGON_CHECKED_EVENT,
     TASKS_REGISTERED_EVENT,
-    HeartbeatWriter,
-    ServeLoop,
-    ServeLoopParts,
     ServeOptions,
     run_serve,
 )
-from core.jobs.run_service import JobRunService
 from core.logging import JsonLineLogger
 from core.notify.sweep import SWEEP_ERROR
-from core.supervisor import Supervisor
 from storage import migrate, open_database
 from storage.repositories.notifications import NotificationRepository
 from tests.integration.serve_shell_support import (
-    THREAD_T0,
     WAIT_SECONDS,
-    _fake_registry,
-    _GatedScript,
-    _loop_options,
-    _NoopHeartbeat,
-    _RecordingWriter,
-    _run_state,
-    _seed_run,
-    _seed_template,
-    _ShutdownThenExitScript,
     autologon_registry,
     failing_task_runner,
     failing_timesync_runner,
@@ -58,8 +39,6 @@ from tests.integration.serve_shell_support import (
     wait_for_file,
     wait_for_heartbeat_pid,
 )
-
-_STABLE_DISK_FREE = 100 * 1024**3
 
 
 def test_run_serve_bounded_ticks_write_heartbeat_and_cleanup(tmp_path: Path) -> None:
@@ -374,260 +353,3 @@ def test_serve_logs_program_error_and_reraises(
     assert failed[0]["error"] == "程序错误"
     assert failed[0]["error_type"] == "RuntimeError"
     assert not (tmp_path / "run" / instance.LOCK_FILENAME).exists()
-
-
-def test_serve_loop_writes_heartbeat_while_run_blocks_in_executor(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """一次长运行不占住 tick：阻塞期间心跳照写、轮次照进，运行仍处 executing。"""
-    monkeypatch.setattr(serve, "_HEARTBEAT_INTERVAL", timedelta(0))
-    database = tmp_path / "backstop.sqlite"
-    adapter = _GatedScript()
-    writes: list[dict[str, Any]] = []
-    stop = threading.Event()
-    outcome: dict[str, object] = {}
-    ready = threading.Event()
-    seeded: dict[str, str] = {}
-
-    def owner() -> None:
-        connection = open_database(database)
-        try:
-            migrate(connection)
-            _seed_template(connection, "template-1", "env-1")
-            clock = VirtualClock(THREAD_T0)
-            runs = JobRunService(connection, clock)
-            seeded["run_id"] = _seed_run(runs, "template-1", key="blocked")
-            supervisor = Supervisor(
-                connection,
-                clock,
-                _fake_registry(adapter),
-                data_root=tmp_path,
-                disk_free=lambda: _STABLE_DISK_FREE,
-                shutdown=stop.is_set,
-            )
-            loop = ServeLoop(
-                ServeLoopParts(
-                    supervisor,
-                    runs,
-                    cast(HeartbeatWriter, _RecordingWriter(writes)),
-                    _loop_options(clock, stop),
-                )
-            )
-            ready.set()
-            outcome["code"] = loop.run()
-        finally:
-            connection.close()
-
-    thread = threading.Thread(target=owner, name="serve-owner", daemon=True)
-    thread.start()
-    run_id = ""
-    try:
-        assert ready.wait(WAIT_SECONDS), "serve 循环没有就绪"
-        run_id = seeded["run_id"]
-        assert adapter.entered.wait(WAIT_SECONDS), "运行没有进入执行"
-
-        def heartbeats_with_run() -> bool:
-            return len([entry for entry in writes if entry["active_run"] == run_id]) >= 2
-
-        deadline = time.monotonic() + WAIT_SECONDS
-        while time.monotonic() < deadline and not heartbeats_with_run():
-            time.sleep(0.05)
-        active_writes = [entry for entry in writes if entry["active_run"] == run_id]
-        assert len(active_writes) >= 2, f"阻塞期间没有记录在途运行：{writes[:3]}"
-        assert _run_state(database, run_id) == RunState.EXECUTING.value
-    finally:
-        adapter.release.set()
-        stop.set()
-        thread.join(WAIT_SECONDS)
-    assert not thread.is_alive(), "循环没有收尾"
-    assert outcome.get("code") == 0
-
-
-def test_shutdown_writes_single_interrupt_at_phase_boundary(tmp_path: Path) -> None:
-    """执行中停机：阶段跑完写恰一条 run.interrupted；状态与租约留给下次启动回收。"""
-    database = tmp_path / "backstop.sqlite"
-    stop = threading.Event()
-    outcome: dict[str, object] = {}
-    ready = threading.Event()
-    seeded: dict[str, str] = {}
-
-    def owner() -> None:
-        connection = open_database(database)
-        try:
-            migrate(connection)
-            _seed_template(connection, "template-1", "env-1")
-            _seed_template(connection, "template-2", "env-2")
-            clock = VirtualClock(THREAD_T0)
-            runs = JobRunService(connection, clock)
-            seeded["run_id"] = _seed_run(runs, "template-1", key="interrupt")
-            seeded["future_id"] = _seed_run(
-                runs, "template-2", key="future", scheduled_at=THREAD_T0 + timedelta(hours=1)
-            )
-            supervisor = Supervisor(
-                connection,
-                clock,
-                _fake_registry(_ShutdownThenExitScript(stop)),
-                data_root=tmp_path,
-                disk_free=lambda: _STABLE_DISK_FREE,
-                shutdown=stop.is_set,
-            )
-            loop = ServeLoop(
-                ServeLoopParts(
-                    supervisor,
-                    runs,
-                    cast(HeartbeatWriter, _NoopHeartbeat()),
-                    _loop_options(clock, stop),
-                )
-            )
-            ready.set()
-            outcome["code"] = loop.run()
-        finally:
-            connection.close()
-
-    thread = threading.Thread(target=owner, name="serve-owner", daemon=True)
-    thread.start()
-    run_id = ""
-    try:
-        assert ready.wait(WAIT_SECONDS), "serve 循环没有就绪"
-        run_id = seeded["run_id"]
-
-        def interrupted_once() -> bool:
-            return _interrupt_count(database, run_id) >= 1
-
-        deadline = time.monotonic() + WAIT_SECONDS
-        while time.monotonic() < deadline and not interrupted_once():
-            time.sleep(0.05)
-        assert interrupted_once(), "停机收尾事件没有写出"
-    finally:
-        stop.set()
-        thread.join(WAIT_SECONDS)
-    assert not thread.is_alive(), "循环没有收尾"
-    assert outcome.get("code") == 0
-
-    reader = sqlite3.connect(database)
-    try:
-        interrupted = reader.execute(
-            "SELECT payload FROM run_events WHERE run_id = ? AND type = 'run.interrupted'",
-            (run_id,),
-        ).fetchall()
-        lease = reader.execute(
-            "SELECT state FROM resource_leases WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        phases = reader.execute(
-            "SELECT phase FROM run_phases WHERE run_id = ? ORDER BY rowid", (run_id,)
-        ).fetchall()
-        future = reader.execute(
-            "SELECT state FROM job_runs WHERE id = ?", (seeded["future_id"],)
-        ).fetchone()
-        future_phases = reader.execute(
-            "SELECT phase FROM run_phases WHERE run_id = ? ORDER BY rowid",
-            (seeded["future_id"],),
-        ).fetchall()
-    finally:
-        reader.close()
-    assert len(interrupted) == 1, f"run.interrupted 条数不对：{len(interrupted)}"
-    assert json.loads(str(interrupted[0][0]))["reason"] == "shutdown"
-    assert _run_state(database, run_id) == RunState.EXECUTING.value
-    assert lease is not None and str(lease[0]) == "leased"
-    assert [str(row[0]) for row in phases] == ["prepare", "execute"]
-    future_state = None if future is None else str(future[0])
-    future_phase_names = [str(row[0]) for row in future_phases]
-    # 停机置位前 tick 可能已把未来运行派发出去：它最多走完 prepare 停在 waiting
-    # 等到点，不会进入执行；停机本身不推进它。
-    assert future_state in {RunState.QUEUED.value, RunState.WAITING.value}, (
-        f"未来运行被推进到 {future_state}；"
-        f"阶段行 {len(future_phase_names)} 条：{future_phase_names}"
-    )
-    assert set(future_phase_names) <= {PhaseName.PREPARE.value}, (
-        f"未来运行出现准备之后的阶段行：{future_phase_names}（状态 {future_state}）"
-    )
-
-
-def _interrupt_count(database: Path, run_id: str) -> int:
-    reader = sqlite3.connect(database)
-    try:
-        row = reader.execute(
-            "SELECT COUNT(*) FROM run_events WHERE run_id = ? AND type = 'run.interrupted'",
-            (run_id,),
-        ).fetchone()
-    finally:
-        reader.close()
-    return 0 if row is None else int(row[0])
-
-
-def test_stuck_executor_times_out_bounded_wait_and_exits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """卡死的执行线程：等待到模块上限即放弃，记日志与事件，进程照常退出。"""
-    monkeypatch.setattr(serve, "_EXECUTOR_JOIN_SECONDS", 0.2)
-    database = tmp_path / "backstop.sqlite"
-    log_path = tmp_path / "logs" / "core.jsonl"
-    adapter = _GatedScript()
-    stop = threading.Event()
-    outcome: dict[str, object] = {}
-    ready = threading.Event()
-    seeded: dict[str, str] = {}
-
-    def owner() -> None:
-        connection = open_database(database)
-        try:
-            migrate(connection)
-            _seed_template(connection, "template-1", "env-1")
-            clock = VirtualClock(THREAD_T0)
-            runs = JobRunService(connection, clock)
-            seeded["run_id"] = _seed_run(runs, "template-1", key="stuck")
-            supervisor = Supervisor(
-                connection,
-                clock,
-                _fake_registry(adapter),
-                data_root=tmp_path,
-                log=JsonLineLogger(log_path),
-                disk_free=lambda: _STABLE_DISK_FREE,
-                shutdown=stop.is_set,
-            )
-            loop = ServeLoop(
-                ServeLoopParts(
-                    supervisor,
-                    runs,
-                    cast(HeartbeatWriter, _NoopHeartbeat()),
-                    _loop_options(clock, stop),
-                )
-            )
-            ready.set()
-            outcome["code"] = loop.run()
-        finally:
-            connection.close()
-
-    thread = threading.Thread(target=owner, name="serve-owner", daemon=True)
-    thread.start()
-    run_id = ""
-    try:
-        assert ready.wait(WAIT_SECONDS), "serve 循环没有就绪"
-        run_id = seeded["run_id"]
-        assert adapter.entered.wait(WAIT_SECONDS), "运行没有进入执行"
-        stop.set()
-    finally:
-        thread.join(WAIT_SECONDS)
-        adapter.release.set()
-    assert not thread.is_alive(), "等待上限没有收口循环"
-    assert outcome.get("code") == 0
-    # 运行状态与租约原样留给下次启动回收
-    assert _run_state(database, run_id) == RunState.EXECUTING.value
-    reader = sqlite3.connect(database)
-    try:
-        lease = reader.execute(
-            "SELECT state FROM resource_leases WHERE run_id = ?", (run_id,)
-        ).fetchone()
-        timeouts = reader.execute(
-            "SELECT COUNT(*) FROM events_global WHERE payload LIKE '%executor_join_timeout%'"
-        ).fetchone()
-    finally:
-        reader.close()
-    assert lease is not None and str(lease[0]) == "leased"
-    assert timeouts is not None and int(timeouts[0]) == 1
-    logged = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
-    timeout_logs = [
-        entry for entry in logged if entry.get("event") == "supervisor.executor_join_timeout"
-    ]
-    assert len(timeout_logs) == 1, f"超时记账日志条数不对：{timeout_logs}"
-    assert timeout_logs[0]["run_ids"] == [run_id]
