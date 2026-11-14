@@ -8,25 +8,156 @@ serve 进程级的杀树场景见 test_serve_shutdown_force_abort.py。
 
 from __future__ import annotations
 
+import json
+import sqlite3
+import threading
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
+from contracts import RunContext, ScriptHandle, ScriptObservation
 from core.clock import VirtualClock
+from core.jobs.run_service import JobRunService
 from core.logging import JsonLineLogger
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.supervisor import Supervisor
 from core.supervisor_shutdown import SHUTDOWN_FORCE_ABORT_EVENT
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
+from storage.repositories.job_runs import NewRun
 from tests.integration.test_serve_shutdown_force_abort import (
     _JOIN_TIMEOUT_EVENT,
-    _STABLE_DISK_FREE,
     GRACE_SECONDS,
     JOIN_SECONDS,
     T0,
-    _global_payloads,
-    _log_entries,
-    _stuck_supervisor,
+    WAIT_SECONDS,
 )
+from tests.supervisor_support import JOIN_TIMEOUT_SECONDS
+
+_STABLE_DISK_FREE = 100 * 1024**3
+
+
+class _GatedScript(FakeScriptAdapter):
+    """observe 停在门上直到测试放行；进入事件供主线程确定性同步。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
+        self.entered.set()
+        assert self.release.wait(timeout=WAIT_SECONDS * 2), "测试没有放行执行器"
+        return super().observe(handle, ctx)
+
+
+@dataclass(slots=True)
+class _StuckSupervisor:
+    """带卡死执行线程的 supervisor 脚手架：连接、停机事件、运行 id 与放行门都在这里。"""
+
+    supervisor: Supervisor
+    connection: sqlite3.Connection
+    stop: threading.Event
+    run_id: str
+    adapter: _GatedScript
+
+    def settle(self) -> None:
+        """放行执行器并等线程收尾，测试失败时也不泄漏线程。"""
+        self.stop.set()
+        self.adapter.release.set()
+        self.supervisor.join_executors(JOIN_TIMEOUT_SECONDS)
+
+
+def _seed_stuck_run(connection: sqlite3.Connection) -> str:
+    """种一条指向 fake 插件的排队运行，返回运行 id。"""
+    connection.execute(
+        "INSERT INTO job_templates (id, name, plugin_id, environment_id, config, "
+        "config_schema_version, verification_policy, recovery_policy, enabled, "
+        "created_at, updated_at) VALUES (?, '日常', 'fake', 'env-1', ?, '1', ?, '{}', 1, ?, ?)",
+        (
+            "template-1",
+            json.dumps({"scenario": "instant"}),
+            json.dumps(
+                {
+                    "id": "fake-policy",
+                    "verifier_plugin_id": "fake",
+                    "required_evidence": ["log"],
+                    "params": {},
+                }
+            ),
+            T0.isoformat(),
+            T0.isoformat(),
+        ),
+    )
+    runs = JobRunService(connection, VirtualClock(T0))
+    record, _ = runs.create_scheduled(
+        NewRun(
+            template_id="template-1",
+            schedule_id=None,
+            scheduled_at=T0,
+            created_at=T0,
+            idempotency_key="stuck",
+            priority=0,
+            deadline_at=None,
+        )
+    )
+    runs.enqueue(record.id)
+    return record.id
+
+
+def _stuck_supervisor(
+    tmp_path: Path,
+    *,
+    shutdown: Any,
+    abort_workers: Any,
+    log: JsonLineLogger | None = None,
+) -> _StuckSupervisor:
+    """造一个执行线程卡在 observe 上的 supervisor；停机在进入执行后才置位。
+
+    shutdown 传 None 时内部接同一个事件：派发时停机未置位，置位后才算停机收尾。
+    """
+    stop = threading.Event()
+    connection = open_database(tmp_path / "state.db")
+    migrate(connection)
+    run_id = _seed_stuck_run(connection)
+    registry = PluginRegistry()
+    adapter = _GatedScript()
+    registry.register(
+        PluginCapabilities(
+            plugin_id="fake",
+            environment=FakeEnvironmentProvider(),
+            script=adapter,
+            verifier=FakeVerifier(),
+        )
+    )
+    supervisor = Supervisor(
+        connection,
+        VirtualClock(T0),
+        registry,
+        data_root=tmp_path,
+        log=log,
+        disk_free=lambda: _STABLE_DISK_FREE,
+        shutdown=(lambda: stop.is_set()) if shutdown is None else shutdown,
+        abort_workers=abort_workers,
+    )
+    supervisor.tick()
+    assert adapter.entered.wait(WAIT_SECONDS), "运行没有进入执行"
+    stop.set()
+    return _StuckSupervisor(supervisor, connection, stop, run_id, adapter)
+
+
+def _global_payloads(connection: sqlite3.Connection) -> list[dict[str, Any]]:
+    """读全局事件载荷，按写入顺序。"""
+    rows = connection.execute("SELECT payload FROM events_global ORDER BY seq").fetchall()
+    return [dict(json.loads(str(row[0]))) for row in rows]
+
+
+def _log_entries(log_path: Path) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in log_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def test_force_abort_records_event_and_targets_stuck_plugin(tmp_path: Path) -> None:
