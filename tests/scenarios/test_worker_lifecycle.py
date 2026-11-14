@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Callable, Iterator, Mapping
-from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from collections.abc import Callable, Mapping
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -16,7 +16,6 @@ from contracts import (
     EnvironmentRef,
     EnvironmentState,
     EventType,
-    Logger,
     PhaseResult,
     PhaseState,
     RunContext,
@@ -39,60 +38,24 @@ from core.plugins.errors import (
 )
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
-from core.worker.executor import CancelFlag, ExecutorOptions, WorkerExecutor
+from core.worker.executor import CancelFlag, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
-from storage import migrate, open_database
 from storage.repositories.events import EventLog
-from storage.repositories.job_runs import NewRun
 from storage.repositories.leases import LeaseRow
 from storage.repositories.run_phases import RunPhaseRepository
 from storage.repositories.verdicts import VerdictRepository
-
-T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
-TEMPLATE_ID = "template-1"
-ENV_ID = "env-1"
-
-
-DEFAULT_POLICY: Mapping[str, Any] = {
-    "id": "fake-policy",
-    "verifier_plugin_id": "fake",
-    "required_evidence": ["log"],
-    "params": {},
-}
-
-
-def insert_template(
-    connection: sqlite3.Connection,
-    scenario: str,
-    *,
-    policy: Mapping[str, Any] | None = None,
-) -> None:
-    connection.execute(
-        "INSERT INTO job_templates (id, name, plugin_id, environment_id, config, "
-        "config_schema_version, verification_policy, recovery_policy, enabled, "
-        "created_at, updated_at) VALUES (?, '日常', 'fake', ?, ?, '1', ?, '{}', 1, ?, ?)",
-        (
-            TEMPLATE_ID,
-            ENV_ID,
-            json.dumps({"scenario": scenario}),
-            json.dumps(DEFAULT_POLICY if policy is None else policy),
-            T0.isoformat(),
-            T0.isoformat(),
-        ),
-    )
-
-
-def make_registry() -> PluginRegistry:
-    registry = PluginRegistry()
-    registry.register(
-        PluginCapabilities(
-            plugin_id="fake",
-            environment=FakeEnvironmentProvider(),
-            script=FakeScriptAdapter(),
-            verifier=FakeVerifier(),
-        )
-    )
-    return registry
+from tests.scenarios.worker_lifecycle_support import (
+    ENV_ID,
+    T0,
+    TEMPLATE_ID,
+    ExecutorOptions,
+    RunOverrides,
+    _RaisingVerifier,
+    _registry_with,
+    executor_for,
+    phases,
+    prepare_run,
+)
 
 
 class _RecordingLogger:
@@ -194,81 +157,6 @@ class _RacingLeaseService(LeaseService):
         return leases
 
 
-@pytest.fixture
-def env(
-    tmp_path: Path,
-) -> Iterator[tuple[sqlite3.Connection, VirtualClock, JobRunService, Path]]:
-    connection = open_database(tmp_path / "state.db")
-    migrate(connection)
-    clock = VirtualClock(T0)
-    runs = JobRunService(connection, clock)
-    data_root = tmp_path / "data"
-    try:
-        yield connection, clock, runs, data_root
-    finally:
-        connection.close()
-
-
-@dataclass(frozen=True, slots=True)
-class RunOverrides:
-    """prepare_run 的字段覆盖：默认按 T0 整点、无截止、锚定键与模板默认策略。"""
-
-    scheduled_at: datetime = T0
-    deadline_at: datetime | None = None
-    key: str = "schedule-1:2026-10-23T12:00:00+00:00"
-    policy: Mapping[str, Any] | None = None
-
-
-_DEFAULT_OVERRIDES = RunOverrides()
-
-
-def prepare_run(
-    connection: sqlite3.Connection,
-    runs: JobRunService,
-    scenario: str,
-    overrides: RunOverrides = _DEFAULT_OVERRIDES,
-) -> str:
-    insert_template(connection, scenario, policy=overrides.policy)
-    record, _ = runs.create_scheduled(
-        NewRun(
-            template_id=TEMPLATE_ID,
-            schedule_id=None,
-            scheduled_at=overrides.scheduled_at,
-            created_at=T0,
-            idempotency_key=overrides.key,
-            priority=0,
-            deadline_at=overrides.deadline_at,
-        )
-    )
-    runs.enqueue(record.id)
-    return record.id
-
-
-@dataclass(frozen=True, slots=True)
-class ExecutorStubOptions:
-    """executor_for 的可选注入：取消令牌与日志；默认无。"""
-
-    cancel: CancelFlag | None = None
-    log: Logger | None = None
-
-
-_DEFAULT_EXECUTOR_OPTIONS = ExecutorStubOptions()
-
-
-def executor_for(
-    connection: sqlite3.Connection,
-    clock: VirtualClock,
-    data_root: Path,
-    options: ExecutorStubOptions = _DEFAULT_EXECUTOR_OPTIONS,
-) -> WorkerExecutor:
-    return WorkerExecutor(
-        connection,
-        clock,
-        make_registry(),
-        ExecutorOptions(data_root=data_root, cancel=options.cancel, log=options.log),
-    )
-
-
 def set_recovery_policy(connection: sqlite3.Connection, policy: Mapping[str, Any]) -> None:
     """改写模板的恢复策略；场景用它收缩恢复预算。"""
     connection.execute(
@@ -277,9 +165,24 @@ def set_recovery_policy(connection: sqlite3.Connection, policy: Mapping[str, Any
     )
 
 
-def phases(connection: sqlite3.Connection, run_id: str) -> dict[str, PhaseState]:
-    rows = RunPhaseRepository(connection).for_run(run_id)
-    return {row.phase: row.state for row in rows}
+class _NoEvidenceVerifier:
+    def verify(self, ctx: RunContext) -> Verdict:
+        return Verdict(
+            status=VerdictStatus.COMPLETED,
+            policy_id="fake-policy",
+            confidence=1.0,
+            reason="没有证据",
+            evidence_ids=(),
+            created_at=ctx.clock.utc_now(),
+        )
+
+
+class _MissingEvidenceVerifier(FakeVerifier):
+    """结论引用不存在的证据，用来核对缺证据与缺策略的收尾原因区分。"""
+
+    def verify(self, ctx: RunContext) -> Verdict:
+        verdict = super().verify(ctx)
+        return replace(verdict, evidence_ids=("missing-1",))
 
 
 def test_instant_scenario_succeeds_end_to_end(
@@ -384,9 +287,7 @@ def test_verify_with_missing_evidence_blames_evidence(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_MissingEvidenceVerifier())
-    result = WorkerExecutor(
-        connection, clock, registry, ExecutorOptions(data_root=data_root)
-    ).execute(run_id)
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert result.error_code == "E_VERIFY_NO_EVIDENCE"
     assert unknown_reason(connection, run_id) == "verify_no_evidence"
@@ -423,7 +324,7 @@ def test_cancel_flag_prevents_start(
     run_id = prepare_run(connection, runs, "instant")
     flag = CancelFlag()
     flag.cancel()
-    result = executor_for(connection, clock, data_root, ExecutorStubOptions(cancel=flag)).execute(
+    result = executor_for(connection, clock, data_root, ExecutorOptions(cancel=flag)).execute(
         run_id
     )
     assert result.state is RunState.CANCELLED
@@ -546,7 +447,8 @@ def test_cancel_during_cleanup_records_cancelled_after_one_cleanup(
         connection,
         clock,
         registry,
-        ExecutorOptions(data_root=data_root, cancel=flag),
+        data_root=data_root,
+        cancel=flag,
     ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert result.finished_at is not None
@@ -565,18 +467,6 @@ def test_cancel_during_cleanup_records_cancelled_after_one_cleanup(
     assert events[-1].payload["status"] == "cancelled"
 
 
-class _NoEvidenceVerifier:
-    def verify(self, ctx: RunContext) -> Verdict:
-        return Verdict(
-            status=VerdictStatus.COMPLETED,
-            policy_id="fake-policy",
-            confidence=1.0,
-            reason="没有证据",
-            evidence_ids=(),
-            created_at=ctx.clock.utc_now(),
-        )
-
-
 def test_verifier_without_evidence_ends_unknown(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
@@ -591,7 +481,7 @@ def test_verifier_without_evidence_ends_unknown(
             verifier=_NoEvidenceVerifier(),
         )
     )
-    executor = WorkerExecutor(connection, clock, registry, ExecutorOptions(data_root=data_root))
+    executor = WorkerExecutor(connection, clock, registry, data_root=data_root)
     result = executor.execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert result.error_code == "E_VERIFY_NO_EVIDENCE"
@@ -629,9 +519,7 @@ def test_unfinished_script_ends_with_deadline_not_hung(
             verifier=FakeVerifier(),
         )
     )
-    result = WorkerExecutor(
-        connection, clock, registry, ExecutorOptions(data_root=data_root)
-    ).execute(run_id)
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_DEADLINE"
     execute_phase = next(
@@ -656,9 +544,9 @@ def test_cleanup_failure_logs_warning_and_recovery_continues(
         )
     )
     logger = _RecordingLogger()
-    result = WorkerExecutor(
-        connection, clock, registry, ExecutorOptions(data_root=data_root, log=logger)
-    ).execute(run_id)
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root, log=logger).execute(
+        run_id
+    )
     assert result.state is RunState.RECOVERING
     assert result.error_code == "E_SCRIPT_TASK_FAILED"
     assert any(
@@ -675,10 +563,7 @@ def test_run_succeeds_with_single_cleanup_call(
     run_id = prepare_run(connection, runs, "instant")
     provider = FakeEnvironmentProvider()
     result = WorkerExecutor(
-        connection,
-        clock,
-        _registry_with(environment=provider),
-        ExecutorOptions(data_root=data_root),
+        connection, clock, _registry_with(environment=provider), data_root=data_root
     ).execute(run_id)
     assert result.state is RunState.SUCCEEDED
     assert provider.calls.count("cleanup") == 1
@@ -692,10 +577,7 @@ def test_cleanup_failure_fails_run_with_single_cleanup_call(
     run_id = prepare_run(connection, runs, "instant")
     provider = _FailedResultCleanupProvider()
     result = WorkerExecutor(
-        connection,
-        clock,
-        _registry_with(environment=provider),
-        ExecutorOptions(data_root=data_root),
+        connection, clock, _registry_with(environment=provider), data_root=data_root
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_ENV_UNREACHABLE"
@@ -712,10 +594,7 @@ def test_cleanup_exception_ends_failed_with_single_cleanup_call(
     set_recovery_policy(connection, {"max_attempts": 1})
     provider = _FailingCleanupProvider()
     result = WorkerExecutor(
-        connection,
-        clock,
-        _registry_with(environment=provider),
-        ExecutorOptions(data_root=data_root),
+        connection, clock, _registry_with(environment=provider), data_root=data_root
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_RECOVERY_EXHAUSTED"
@@ -735,7 +614,7 @@ def test_cancel_during_verify_cleans_once_and_ends_cancelled(
         connection,
         clock,
         _registry_with(environment=provider, verifier=verifier),
-        ExecutorOptions(data_root=data_root),
+        data_root=data_root,
     ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert provider.calls.count("cleanup") == 1
@@ -761,7 +640,8 @@ def test_cancel_during_execution_cleans_once_and_ends_cancelled(
             environment=provider,
             script=_CancellingScriptAdapter(request_cancel),
         ),
-        ExecutorOptions(data_root=data_root, cancel=flag),
+        data_root=data_root,
+        cancel=flag,
     ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert provider.calls.count("cleanup") == 1
@@ -776,10 +656,7 @@ def test_recovery_exhaustion_fails_run_with_single_cleanup_call(
     set_recovery_policy(connection, {"max_attempts": 1})
     provider = FakeEnvironmentProvider()
     result = WorkerExecutor(
-        connection,
-        clock,
-        _registry_with(environment=provider),
-        ExecutorOptions(data_root=data_root),
+        connection, clock, _registry_with(environment=provider), data_root=data_root
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_RECOVERY_EXHAUSTED"
@@ -795,10 +672,7 @@ def test_cleanup_exception_aborts_with_plugin_crash_when_budget_remains(
     run_id = prepare_run(connection, runs, "instant")
     provider = _FailingCleanupProvider()
     result = WorkerExecutor(
-        connection,
-        clock,
-        _registry_with(environment=provider),
-        ExecutorOptions(data_root=data_root),
+        connection, clock, _registry_with(environment=provider), data_root=data_root
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_PLUGIN_CRASH"
@@ -814,10 +688,7 @@ def test_recovery_retry_cleans_once_per_attempt(
     run_id = prepare_run(connection, runs, "fail")
     provider = FakeEnvironmentProvider()
     executor = WorkerExecutor(
-        connection,
-        clock,
-        _registry_with(environment=provider),
-        ExecutorOptions(data_root=data_root),
+        connection, clock, _registry_with(environment=provider), data_root=data_root
     )
     first = executor.execute(run_id)
     assert first.state is RunState.RECOVERING
@@ -829,54 +700,13 @@ def test_recovery_retry_cleans_once_per_attempt(
     assert provider.calls.count("cleanup") == 2
 
 
-class _RaisingVerifier:
-    """验证阶段抛出指定异常，用来覆盖跨进程错误到运行终态的映射。"""
-
-    def __init__(
-        self,
-        error: WorkerTimeoutError | WorkerCancelledError | WorkerCrashError | WorkerCallError,
-    ) -> None:
-        self._error = error
-
-    def verify(self, ctx: RunContext) -> Verdict:
-        raise self._error
-
-
-class _MissingEvidenceVerifier(FakeVerifier):
-    """结论引用不存在的证据，用来核对缺证据与缺策略的收尾原因区分。"""
-
-    def verify(self, ctx: RunContext) -> Verdict:
-        verdict = super().verify(ctx)
-        return replace(verdict, evidence_ids=("missing-1",))
-
-
-def _registry_with(
-    *,
-    environment: FakeEnvironmentProvider | None = None,
-    script: FakeScriptAdapter | None = None,
-    verifier: Any | None = None,
-) -> PluginRegistry:
-    registry = PluginRegistry()
-    registry.register(
-        PluginCapabilities(
-            plugin_id="fake",
-            environment=FakeEnvironmentProvider() if environment is None else environment,
-            script=FakeScriptAdapter() if script is None else script,
-            verifier=FakeVerifier() if verifier is None else verifier,
-        )
-    )
-    return registry
-
-
 def test_worker_timeout_ends_with_deadline(
     env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerTimeoutError("调用超时")))
-    result = WorkerExecutor(
-        connection, clock, registry, ExecutorOptions(data_root=data_root)
-    ).execute(run_id)
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_DEADLINE"
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
@@ -888,9 +718,7 @@ def test_worker_cancel_ends_run_cancelled(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerCancelledError("已叫停")))
-    result = WorkerExecutor(
-        connection, clock, registry, ExecutorOptions(data_root=data_root)
-    ).execute(run_id)
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
 
@@ -901,9 +729,7 @@ def test_worker_crash_keeps_plugin_crash_code(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerCrashError("进程退出")))
-    result = WorkerExecutor(
-        connection, clock, registry, ExecutorOptions(data_root=data_root)
-    ).execute(run_id)
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.RECOVERING
     assert result.error_code == "E_PLUGIN_CRASH"
 
@@ -914,8 +740,6 @@ def test_worker_call_error_keeps_plugin_code(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerCallError("插件方法抛异常")))
-    result = WorkerExecutor(
-        connection, clock, registry, ExecutorOptions(data_root=data_root)
-    ).execute(run_id)
+    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_PLUGIN"
