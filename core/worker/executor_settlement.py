@@ -8,10 +8,19 @@ run.interrupted、停脚本、按需清理、释放租约）归本模块。收�
 from __future__ import annotations
 
 import sqlite3
-from datetime import timedelta
-from typing import TYPE_CHECKING
+from collections.abc import Mapping
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any
 
-from contracts import CancelToken, EventType, RecoveryAction, RunState
+from contracts import (
+    CancelToken,
+    EventType,
+    PhaseState,
+    RecoveryAction,
+    RunState,
+    ScriptObservation,
+    ScriptState,
+)
 from core.jobs.errors import RunNotFoundError
 from core.jobs.run_service import SHUTDOWN_REASON
 from core.recovery.policy import RecoveryPolicy
@@ -35,6 +44,7 @@ class RunSettlement:
         shutdown: Callable[[], bool],
     ) -> None:
         self._runs = services.runs
+        self._phases = services.phases
         self._environments = services.environments
         self._leases = services.leases
         self._events = services.events
@@ -262,5 +272,65 @@ class RunSettlement:
             error_code=error_code,
         )
 
+    def settle_execute(
+        self,
+        scope: RunScope,
+        phase: str,
+        observation: ScriptObservation,
+    ) -> JobRunRecord | None:
+        """按观察结果落执行阶段结论：信号入事件流，失败、超时与取消各自收尾。"""
+        for signal in observation.signals:
+            self._events.append_run(
+                scope.run.id,
+                EventType.RUN_SIGNAL,
+                {"run_id": scope.run.id, "kind": signal.kind, "payload": dict(signal.payload)},
+                at=self._clock.utc_now(),
+            )
+        hung = observation.state is ScriptState.HUNG
+        script_failed = (
+            observation.last_signal is not None and observation.last_signal.kind == "task_failed"
+        )
+        cancelled = self._cancel.is_cancelled()
+        state = PhaseState.FAILED if script_failed else PhaseState.OK
+        if hung:
+            state = PhaseState.TIMED_OUT
+        if cancelled:
+            state = PhaseState.FAILED
+        self._phases.finish(
+            phase,
+            state=state,
+            detail="cancelled" if cancelled else observation.state.value,
+        )
+        if cancelled:
+            self.stop_script(scope, graceful=True)
+            return self.cancel_run(scope, started=True)
+        if hung:
+            self.stop_script(scope)
+        # 阶段行已收好：停机在阶段边界排水，不进恢复与下一阶段（docs/08）。
+        if self.drain_requested():
+            return self.drain(scope.run)
+        if script_failed:
+            return self.recover(scope, "E_SCRIPT_TASK_FAILED", "script")
+        return None
+
+    def resume(self, run_id: str) -> JobRunRecord:
+        """恢复等待到点时把运行放回队列；未到点或不在 recovering 时原样返回。"""
+        run = self._runs.get(run_id)
+        if run.state is not RunState.RECOVERING:
+            return run
+        retry_at = _retry_at(run.detail)
+        if retry_at is not None and self._clock.utc_now() < retry_at:
+            return run
+        return self._runs.transition(run_id, RunState.QUEUED, reason="recovery")
+
 
 __all__ = ["RunSettlement"]
+
+
+def _retry_at(detail: Mapping[str, Any]) -> datetime | None:
+    """从运行摘要里读出恢复重试时刻。"""
+    value = detail.get("retry_at")
+    if not isinstance(value, str):
+        return None
+    moment = datetime.fromisoformat(value)
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
