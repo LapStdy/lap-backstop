@@ -26,7 +26,7 @@ from core.hostops.retention import (
     RetentionPolicy,
     RetentionRunner,
 )
-from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeOptions
+from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeLoopParts, ServeOptions
 from core.jobs.run_service import JobRunService
 from core.supervisor import Supervisor
 from storage import migrate, open_database
@@ -243,16 +243,18 @@ def test_serve_loop_survives_retention_failure_and_keeps_ticking(tmp_path: Path)
     supervisor = _StubSupervisor()
     try:
         loop = ServeLoop(
-            cast(Supervisor, supervisor),
-            JobRunService(connection, clock),
-            HeartbeatWriter(
-                path=tmp_path / "run" / "heartbeat.json",
-                started_at=NOW,
-                pid=1,
-                version="dev",
-            ),
-            ServeOptions(clock=clock, max_ticks=2, tick_interval_seconds=0.0, log=recorder),
-            retention=RetentionRunner(broken, clock, data_root=tmp_path),
+            ServeLoopParts(
+                cast(Supervisor, supervisor),
+                JobRunService(connection, clock),
+                HeartbeatWriter(
+                    path=tmp_path / "run" / "heartbeat.json",
+                    started_at=NOW,
+                    pid=1,
+                    version="dev",
+                ),
+                ServeOptions(clock=clock, max_ticks=2, tick_interval_seconds=0.0, log=recorder),
+                retention=RetentionRunner(broken, clock, data_root=tmp_path),
+            )
         )
         assert loop.run() == 0
         assert supervisor.ticks == 2

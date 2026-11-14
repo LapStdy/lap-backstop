@@ -21,7 +21,13 @@ from core.events.maintenance import (
     GlobalEventsPruner,
     PruneOutcome,
 )
-from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeOptions, run_serve
+from core.hostops.serve import (
+    HeartbeatWriter,
+    ServeLoop,
+    ServeLoopParts,
+    ServeOptions,
+    run_serve,
+)
 from core.hostops.watchdog import WATCHDOG_GAVE_UP_EVENT
 from core.jobs.run_service import JobRunService
 from core.notify.service import NotifyOptions, NotifyService
@@ -247,16 +253,18 @@ def test_serve_loop_survives_prune_failure_and_keeps_ticking(
     supervisor = _StubSupervisor()
     try:
         loop = ServeLoop(
-            cast(Supervisor, supervisor),
-            JobRunService(connection, clock),
-            HeartbeatWriter(
-                path=tmp_path / "run" / "heartbeat.json",
-                started_at=NOW,
-                pid=1,
-                version="dev",
-            ),
-            ServeOptions(clock=clock, max_ticks=2, tick_interval_seconds=0.0, log=recorder),
-            pruner=GlobalEventsPruner(broken, clock),
+            ServeLoopParts(
+                cast(Supervisor, supervisor),
+                JobRunService(connection, clock),
+                HeartbeatWriter(
+                    path=tmp_path / "run" / "heartbeat.json",
+                    started_at=NOW,
+                    pid=1,
+                    version="dev",
+                ),
+                ServeOptions(clock=clock, max_ticks=2, tick_interval_seconds=0.0, log=recorder),
+                pruner=GlobalEventsPruner(broken, clock),
+            )
         )
         assert loop.run() == 0
         assert supervisor.ticks == 2

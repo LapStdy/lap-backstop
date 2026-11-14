@@ -13,7 +13,7 @@ import pytest
 from contracts import RunState
 from core.__main__ import EXIT_DISK_LOW
 from core.clock import VirtualClock
-from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeOptions
+from core.hostops.serve import HeartbeatWriter, ServeLoop, ServeLoopParts, ServeOptions
 from core.jobs.run_service import JobRunService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.supervisor import Supervisor
@@ -298,10 +298,12 @@ def test_serve_loop_returns_disk_low_exit_code(
         version="dev",
     )
     loop = ServeLoop(
-        supervisor,
-        JobRunService(connection, clock),
-        writer,
-        ServeOptions(clock=clock, max_ticks=10, tick_interval_seconds=0.0),
+        ServeLoopParts(
+            supervisor,
+            JobRunService(connection, clock),
+            writer,
+            ServeOptions(clock=clock, max_ticks=10, tick_interval_seconds=0.0),
+        )
     )
     assert loop.run() == EXIT_DISK_LOW
     assert EXIT_DISK_LOW == 5

@@ -25,6 +25,7 @@ from core.hostops.serve import (
     WATCHDOG_GAVE_UP_EVENT,
     HeartbeatWriter,
     ServeLoop,
+    ServeLoopParts,
     ServeOptions,
     run_serve,
 )
@@ -780,10 +781,12 @@ def test_serve_loop_writes_heartbeat_while_run_blocks_in_executor(
                 shutdown=stop.is_set,
             )
             loop = ServeLoop(
-                supervisor,
-                runs,
-                cast(HeartbeatWriter, _RecordingWriter(writes)),
-                _loop_options(clock, stop),
+                ServeLoopParts(
+                    supervisor,
+                    runs,
+                    cast(HeartbeatWriter, _RecordingWriter(writes)),
+                    _loop_options(clock, stop),
+                )
             )
             ready.set()
             outcome["code"] = loop.run()
@@ -844,10 +847,12 @@ def test_shutdown_writes_single_interrupt_at_phase_boundary(tmp_path: Path) -> N
                 shutdown=stop.is_set,
             )
             loop = ServeLoop(
-                supervisor,
-                runs,
-                cast(HeartbeatWriter, _NoopHeartbeat()),
-                _loop_options(clock, stop),
+                ServeLoopParts(
+                    supervisor,
+                    runs,
+                    cast(HeartbeatWriter, _NoopHeartbeat()),
+                    _loop_options(clock, stop),
+                )
             )
             ready.set()
             outcome["code"] = loop.run()
@@ -956,10 +961,12 @@ def test_stuck_executor_times_out_bounded_wait_and_exits(
                 shutdown=stop.is_set,
             )
             loop = ServeLoop(
-                supervisor,
-                runs,
-                cast(HeartbeatWriter, _NoopHeartbeat()),
-                _loop_options(clock, stop),
+                ServeLoopParts(
+                    supervisor,
+                    runs,
+                    cast(HeartbeatWriter, _NoopHeartbeat()),
+                    _loop_options(clock, stop),
+                )
             )
             ready.set()
             outcome["code"] = loop.run()
