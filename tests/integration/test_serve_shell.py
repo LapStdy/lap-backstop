@@ -7,6 +7,7 @@ import os
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -24,6 +25,7 @@ from core.notify.sweep import SWEEP_ERROR
 from storage import migrate, open_database
 from storage.repositories.notifications import NotificationRepository
 from tests.integration.serve_shell_support import (
+    THREAD_T0,
     WAIT_SECONDS,
     autologon_registry,
     failing_task_runner,
@@ -78,18 +80,34 @@ def test_run_serve_bounded_ticks_write_heartbeat_and_cleanup(tmp_path: Path) -> 
     assert {call[4] for call in task_calls} == set(tasks.REGISTERED_TASKS)
 
 
+def _seed_pending_notifications(database: Path) -> None:
+    """预置上次进程遗留的通知：两条 pending（其一已试投两次）与一条已发送。"""
+    connection = open_database(database)
+    try:
+        migrate(connection)
+        repository = NotificationRepository(connection)
+        repository.insert_pending("n-left-1", None, "serverchan")
+        repository.insert_pending("n-left-2", None, "serverchan")
+        connection.execute("UPDATE notifications SET attempts = 2 WHERE id = 'n-left-2'")
+        repository.insert_pending("n-sent", None, "serverchan")
+        repository.mark_sent("n-sent", attempts=1, at=THREAD_T0)
+    finally:
+        connection.close()
+
+
+def _swept_pending_events(database: Path) -> list[dict[str, Any]]:
+    """全局事件里 notify.pending_swept 的载荷，按写入顺序。"""
+    return [
+        payload
+        for payload in global_event_payloads(database)
+        if payload.get("event") == "notify.pending_swept"
+    ]
+
+
 def test_run_serve_sweeps_pending_notifications_from_previous_process(tmp_path: Path) -> None:
     """上次进程遗留的 pending 通知在启动序里清扫：行落 failed，事件逐条可追。"""
     database = tmp_path / "backstop.sqlite"
-    connection = open_database(database)
-    migrate(connection)
-    repository = NotificationRepository(connection)
-    repository.insert_pending("n-left-1", None, "serverchan")
-    repository.insert_pending("n-left-2", None, "serverchan")
-    connection.execute("UPDATE notifications SET attempts = 2 WHERE id = 'n-left-2'")
-    repository.insert_pending("n-sent", None, "serverchan")
-    repository.mark_sent("n-sent", attempts=1, at=datetime(2026, 10, 25, 8, 0, tzinfo=UTC))
-    connection.close()
+    _seed_pending_notifications(database)
     options = ServeOptions(
         clock=VirtualClock(datetime(2026, 10, 25, 8, 0, tzinfo=UTC)),
         max_ticks=1,
@@ -113,23 +131,14 @@ def test_run_serve_sweeps_pending_notifications_from_previous_process(tmp_path: 
     assert rows["n-left-2"]["attempts"] == 2
     assert rows["n-sent"]["status"] == "sent"
     assert rows["n-sent"]["error"] is None
-    swept = [
-        payload
-        for payload in global_event_payloads(database)
-        if payload.get("event") == "notify.pending_swept"
-    ]
+    swept = _swept_pending_events(database)
     assert {payload["payload"]["notification_id"] for payload in swept} == {
         "n-left-1",
         "n-left-2",
     }
     # 第二次启动：无遗留 pending，不清扫也不追加事件
     assert run_serve(tmp_path, options) == 0
-    swept_after_restart = [
-        payload
-        for payload in global_event_payloads(database)
-        if payload.get("event") == "notify.pending_swept"
-    ]
-    assert swept_after_restart == swept
+    assert _swept_pending_events(database) == swept
 
 
 @pytest.mark.parametrize("mode", ["nonzero_exit", "timeout"])
