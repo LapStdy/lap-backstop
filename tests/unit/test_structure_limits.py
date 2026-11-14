@@ -5,9 +5,9 @@
 ``*args``/``**kwargs``，方法去掉首个 ``self``/``cls``；模块行数是全文物理行。
 模块级超限的名字记 ``<module>``。
 
-允许清单逐项写「文件、名字、类别、记账时实测值、为什么现在不改、欠账编号」，
-匹配只按文件加名字：类别与实测值允许随并行卡漂移，清单项变合规不要求删
-（后续卡收缩），但不许通配符、目录级或整文件豁免，清单外超限即失败。
+允许清单当前为空：任何超限都不豁免，清单外超限即失败。将来新增豁免仍逐项
+写「文件、名字、类别、记账时实测值、为什么现在不改、欠账编号」，按文件加
+名字匹配，不许通配符、目录级或整文件豁免。
 """
 
 from __future__ import annotations
@@ -79,250 +79,10 @@ class AllowEntry:
     debt: str
 
 
-# D-013：执行器与 serve 的既有行数与参数超限，随执行器拆分卡偿还。
-_D013_ENTRIES: tuple[AllowEntry, ...] = (
-    AllowEntry(
-        "core/worker/executor.py",
-        MODULE_NAME,
-        "module_lines",
-        "748 行",
-        "执行器是改动热点，模块拆分随执行器重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/worker/executor.py",
-        "WorkerExecutor",
-        "class_lines",
-        "633 行",
-        "类拆分随执行器重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/worker/executor.py",
-        "WorkerExecutor.__init__",
-        "function_params",
-        "8 个",
-        "注入点收敛随执行器重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/worker/executor.py",
-        "WorkerExecutor.execute",
-        "function_lines",
-        "61 行",
-        "阶段编排拆分随执行器重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/hostops/serve.py",
-        MODULE_NAME,
-        "module_lines",
-        "656 行",
-        "serve 装配拆分随宿主重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/hostops/serve.py",
-        "_run_core",
-        "function_lines",
-        "88 行",
-        "主循环拆分随宿主重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/hostops/serve.py",
-        "ServeLoop.__init__",
-        "function_params",
-        "7 个",
-        "注入点收敛随宿主重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/hostops/serve.py",
-        "_start_api",
-        "function_params",
-        "5 个",
-        "注入点收敛随宿主重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/hostops/serve.py",
-        "_bind_api",
-        "function_params",
-        "6 个",
-        "注入点收敛随宿主重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/supervisor.py",
-        "Supervisor",
-        "class_lines",
-        "376 行",
-        "组合根类拆分随执行器重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/supervisor.py",
-        "Supervisor.__init__",
-        "function_lines",
-        "53 行",
-        "组合根装配拆分随执行器重构卡偿还",
-        "D-013",
-    ),
-    AllowEntry(
-        "core/supervisor.py",
-        "Supervisor.__init__",
-        "function_params",
-        "7 个",
-        "组合根注入点收敛随执行器重构卡偿还",
-        "D-013",
-    ),
-)
-
-# 其余既有超限打包记的 D-018 已全部归还：十个构造与记录函数参数收敛随
-# feat/card66-param-tighten，storage/db/backup.py 模块拆分随 c2ee3f4；清单清空。
+# 允许清单按欠账编号分组（编号与归还记录见 DEBT.md）；当前三组均为空，全仓任何超限都不豁免。
+_D013_ENTRIES: tuple[AllowEntry, ...] = ()
 _D018_ENTRIES: tuple[AllowEntry, ...] = ()
-
-# D-019：tests/ 与 scripts/ 的既有超限随扫描范围扩展入闸，逐项收缩由 TASKS.md「工程治理」承接。
-_D019_ENTRIES: tuple[AllowEntry, ...] = (
-    AllowEntry(
-        "tests/integration/test_api_export.py",
-        "database",
-        "function_lines",
-        "53 行",
-        "测试函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/integration/test_end_to_end_run.py",
-        "test_due_schedule_runs_to_completion_and_results_are_queryable_over_http",
-        "function_lines",
-        "89 行",
-        "测试函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/integration/test_serve_shell.py",
-        MODULE_NAME,
-        "module_lines",
-        "1001 行",
-        "测试模块拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/integration/test_serve_shell.py",
-        "test_run_serve_sweeps_pending_notifications_from_previous_process",
-        "function_lines",
-        "52 行",
-        "测试函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/integration/test_serve_shell.py",
-        "test_serve_loop_writes_heartbeat_while_run_blocks_in_executor",
-        "function_lines",
-        "63 行",
-        "测试函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/integration/test_serve_shell.py",
-        "test_shutdown_writes_single_interrupt_at_phase_boundary",
-        "function_lines",
-        "96 行",
-        "测试函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/integration/test_serve_shell.py",
-        "test_stuck_executor_times_out_bounded_wait_and_exits",
-        "function_lines",
-        "74 行",
-        "测试函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/integration/test_serve_shutdown_force_abort.py",
-        MODULE_NAME,
-        "module_lines",
-        "591 行",
-        "测试模块拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/integration/test_serve_shutdown_force_abort.py",
-        "test_force_abort_kills_worker_tree_and_drains_run",
-        "function_lines",
-        "92 行",
-        "测试函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/integration/test_serve_shutdown_force_abort.py",
-        "_stuck_supervisor",
-        "function_lines",
-        "70 行",
-        "测试函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/scenarios/test_supervisor.py",
-        MODULE_NAME,
-        "module_lines",
-        "529 行",
-        "测试模块拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/scenarios/test_worker_lifecycle.py",
-        MODULE_NAME,
-        "module_lines",
-        "881 行",
-        "测试模块拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "tests/unit/test_worker_channel.py",
-        MODULE_NAME,
-        "module_lines",
-        "592 行",
-        "测试模块拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "scripts/check_artifacts.py",
-        MODULE_NAME,
-        "module_lines",
-        "613 行",
-        "脚本模块拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "scripts/check_artifacts.py",
-        "scan_file",
-        "function_lines",
-        "52 行",
-        "脚本函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    AllowEntry(
-        "scripts/maa_config.py",
-        "main",
-        "function_lines",
-        "55 行",
-        "脚本函数拆分随 TASKS.md 收缩条目偿还",
-        "D-019",
-    ),
-    # 检查器与允许清单内嵌同一文件，清单扩充后自身超过模块上限。
-    AllowEntry(
-        "tests/unit/test_structure_limits.py",
-        MODULE_NAME,
-        "module_lines",
-        "834 行",
-        "允许清单必须内嵌在本测试（docs/11 口径），拆分随收缩条目一并偿还",
-        "D-019",
-    ),
-)
+_D019_ENTRIES: tuple[AllowEntry, ...] = ()
 
 _ALLOWLIST: tuple[AllowEntry, ...] = _D013_ENTRIES + _D018_ENTRIES + _D019_ENTRIES
 
@@ -505,6 +265,19 @@ def test_py_files_covers_all_scan_roots() -> None:
 def test_real_repo_no_violation_outside_allowlist() -> None:
     unexpected = [v for v in scan_repo(_REPO_ROOT) if not _allowed(v)]
     assert not unexpected, "\n".join(v.message for v in unexpected)
+
+
+def test_allowlist_empty_whole_repo_within_limits() -> None:
+    assert _D013_ENTRIES == ()
+    assert _D018_ENTRIES == ()
+    assert _D019_ENTRIES == ()
+    assert _ALLOWLIST == ()
+    source = "def wide() -> None:\n" + "".join(f"    value_{i} = {i}\n" for i in range(51))
+    (violation,) = scan_source(source, "sample.py")
+    assert not _allowed(violation)
+    assert scan_repo(_REPO_ROOT) == ()
+    checker_lines = len(Path(__file__).read_text(encoding="utf-8").splitlines())
+    assert checker_lines <= MODULE_MAX_LINES
 
 
 def test_unlisted_violation_in_tests_root_is_reported(tmp_path: Path) -> None:
