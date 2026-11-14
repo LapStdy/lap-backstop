@@ -2,19 +2,20 @@
 
 每次 tick 只推进一轮：磁盘水位、调度扫描、逾期收敛、租约看护、保温关闭、派发一个
 可执行运行；运行由独立执行线程推进，tick 不等待执行（docs/08 停机与阶段边界）。
-顺序定在本模块，各步机制分别在 supervisor_disk、supervisor_leases、supervisor_environments
-与 supervisor_recovery。所有时间来自注入的 Clock，所有状态落在数据库；启动扫描按持久化状态
-重建（docs/02、docs/09）。
+顺序定在本模块，各步机制分别在 supervisor_disk、supervisor_leases、
+supervisor_environments、supervisor_recovery、supervisor_routing、supervisor_shutdown
+与 supervisor_executors。所有时间来自注入的 Clock，所有状态落在数据库；启动扫描按
+持久化状态重建（docs/02、docs/09）。
 """
 
 from __future__ import annotations
 
 import sqlite3
-import threading
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from contracts import (
     Clock,
@@ -29,11 +30,11 @@ from core.jobs.run_service import DiskFullError, JobRunService, disk_free_bytes
 from core.jobs.state_machine import is_terminal
 from core.logging import NullLogger
 from core.plugins.registry import PluginRegistry
-from core.resources.errors import ResourceBusyError
 from core.resources.service import LeaseService
 from core.scheduler.scan import ScheduleScanner
 from core.supervisor_disk import DiskWatermark
 from core.supervisor_environments import EnvironmentSupervision, SupervisionIo
+from core.supervisor_executors import ExecutorSupervision, ExecutorSupervisionDeps
 from core.supervisor_leases import LeaseSupervision, LeaseSupervisionDeps
 from core.supervisor_recovery import StartupRecovery, retry_due, scheduled_due
 from core.supervisor_routing import (
@@ -42,8 +43,6 @@ from core.supervisor_routing import (
     RouteCandidate,
     route_dispatch,
 )
-from core.supervisor_shutdown import ShutdownAbort
-from core.worker.executor import CancelFlag, WorkerExecutor
 from storage import open_database
 from storage.defaults import default
 from storage.repositories.events import EventLog
@@ -56,6 +55,47 @@ SUSPENDED_EVENT = "host.suspended"
 _JUMP_THRESHOLD_SECONDS = float(default("host", "clock_jump_seconds"))
 
 
+@dataclass(frozen=True, slots=True)
+class SupervisorOptions:
+    """装配选项：数据根、日志、磁盘探针、停机判定与宽限终止入口；缺省按默认装配。"""
+
+    data_root: Path
+    log: Logger | None = None
+    disk_free: Callable[[], int | None] | None = None
+    shutdown: Callable[[], bool] | None = None
+    abort_workers: Callable[[Sequence[str]], None] | None = None
+
+
+def _assemble_options(options: Mapping[str, object]) -> SupervisorOptions:
+    """把装配关键字收敛成选项：缺 data_root、未知键或类型不符按 TypeError 拒绝。"""
+    unknown = sorted(set(options) - {f.name for f in fields(SupervisorOptions)})
+    if unknown:
+        raise TypeError(f"未知装配选项：{', '.join(unknown)}")
+    data_root = options.get("data_root")
+    if not isinstance(data_root, Path):
+        raise TypeError("data_root 缺失或不是 Path")
+    log = options.get("log")
+    if log is not None and not callable(getattr(log, "error", None)):
+        raise TypeError("log 必须实现 Logger 协议")
+    disk_free = options.get("disk_free")
+    if disk_free is not None and not callable(disk_free):
+        raise TypeError("disk_free 必须可调用")
+    shutdown = options.get("shutdown")
+    if shutdown is not None and not callable(shutdown):
+        raise TypeError("shutdown 必须可调用")
+    abort_workers = options.get("abort_workers")
+    if abort_workers is not None and not callable(abort_workers):
+        raise TypeError("abort_workers 必须可调用")
+    return SupervisorOptions(
+        data_root=data_root,
+        # Logger 是结构化 Protocol，无运行时判别可用；上面已按 error 方法鸭子校验。
+        log=cast("Logger | None", log),
+        disk_free=disk_free,
+        shutdown=shutdown,
+        abort_workers=abort_workers,
+    )
+
+
 class Supervisor:
     """单进程内核循环：tick 推进一轮，request_cancel 处理叫停。"""
 
@@ -64,60 +104,90 @@ class Supervisor:
         connection: sqlite3.Connection,
         clock: Clock,
         registry: PluginRegistry,
-        *,
-        data_root: Path,
-        log: Logger | None = None,
-        disk_free: Callable[[], int | None] | None = None,
-        shutdown: Callable[[], bool] | None = None,
-        abort_workers: Callable[[Sequence[str]], None] | None = None,
+        **options: object,
     ) -> None:
+        """装配常驻内核循环；可注入项见 SupervisorOptions，未注入的按默认装配。
+
+        Args:
+            connection: tick 线程专用的文件库连接。
+            clock: 全部时间的来源。
+            registry: 插件注册表，供降级路由与环境动作解析 provider。
+            **options: 装配选项；data_root 必填，缺项、未知键或类型不符按 TypeError 拒绝。
+
+        Raises:
+            ValueError: 连接指向内存库或临时库（叫停入口需要文件数据库）。
+            TypeError: 选项缺 data_root、含未知键或类型不符。
+        """
         self._connection = connection
         self._database = _database_path(connection)
+        self._options = _assemble_options(options)
         self._clock = clock
         self._registry = registry
-        self._data_root = data_root
-        self._log: Logger = NullLogger() if log is None else log
-        self._shutdown: Callable[[], bool] = (lambda: False) if shutdown is None else shutdown
-        # 宽限到点的强制终止件：serve 装配时传宿主的 abort_workers 作终止入口；
-        # 未注入或非停机退场时，宽限到点只继续等待，不碰 worker 进程。
-        self._shutdown_abort = ShutdownAbort(
-            log=self._log,
-            resolve_plugin=self._plugin_of,
-            abort=abort_workers,
-            emit=self._emit_global,
+        self._wire(connection)
+        self._wire_supervision(connection)
+
+    def _wire(self, connection: sqlite3.Connection) -> None:
+        """装配默认值与数据底座：日志、停机判定、磁盘探针、事件与运行调度租约仓储。"""
+        options = self._options
+        self._log: Logger = NullLogger() if options.log is None else options.log
+        self._shutdown: Callable[[], bool] = (
+            (lambda: False) if options.shutdown is None else options.shutdown
         )
         self._disk_free: Callable[[], int | None] = (
-            (lambda: disk_free_bytes(data_root)) if disk_free is None else disk_free
+            (lambda: disk_free_bytes(options.data_root))
+            if options.disk_free is None
+            else options.disk_free
         )
-        self._runs = JobRunService(connection, clock, disk_free=self._disk_free)
-        self._scanner = ScheduleScanner(connection, clock, self._runs)
-        self._schedules = ScheduleRepository(connection)
-        self._templates = JobTemplateRepository(connection)
-        self._leases = LeaseService(connection, clock)
         self._events = EventLog(connection)
-        # 执行线程的登记与取消标记共用一把锁：登记随派发建立、随线程收尾注销，
-        # tick 查重、请求线程置位、停机收尾 join 互不交错。
-        self._executors_lock = threading.Lock()
-        self._cancel_flags: dict[str, CancelFlag] = {}
-        self._executor_threads: dict[str, threading.Thread] = {}
         # 跳变检测的基线：首轮只记录不判定，两轮之间才可算跳变量。
         self._last_wall: datetime | None = None
         self._last_mono: float | None = None
+        self._runs = JobRunService(connection, self._clock, disk_free=self._disk_free)
+        self._scanner = ScheduleScanner(connection, self._clock, self._runs)
+        self._schedules = ScheduleRepository(connection)
+        self._templates = JobTemplateRepository(connection)
+        self._leases = LeaseService(connection, self._clock)
+
+    def _wire_supervision(self, connection: sqlite3.Connection) -> None:
+        """装配各看护：磁盘水位、租约、启动恢复、环境、路由留痕与执行线程登记。
+
+        执行线程看护最后装配：它拿数据库路径与停机终止入口，收口宽限终止。
+        """
         self._disk_watermark = DiskWatermark(self._disk_free, self._log, self._emit_global)
         self._lease_watch = LeaseSupervision(
             LeaseSupervisionDeps(self._runs, self._leases, self._templates),
-            clock,
+            self._clock,
             log=self._log,
         )
-        self._startup_recovery = StartupRecovery(self._runs, self._leases, clock, log=self._log)
+        self._startup_recovery = StartupRecovery(
+            self._runs, self._leases, self._clock, log=self._log
+        )
         self._environment_watch = EnvironmentSupervision(
-            EnvironmentService(connection, clock),
-            registry,
-            clock,
-            io=SupervisionIo(data_root=data_root, log=self._log, emit_global=self._emit_global),
+            EnvironmentService(connection, self._clock),
+            self._registry,
+            self._clock,
+            io=SupervisionIo(
+                data_root=self._options.data_root,
+                log=self._log,
+                emit_global=self._emit_global,
+            ),
         )
         self._route_announcer = RouteAnnouncer(
             self._log, self._emit_global, self._registry.degradation_reason
+        )
+        self._executors = ExecutorSupervision(
+            ExecutorSupervisionDeps(
+                runs=self._runs,
+                templates=self._templates,
+                registry=self._registry,
+                clock=self._clock,
+                database=self._database,
+                data_root=self._options.data_root,
+                log=self._log,
+                shutdown=self._shutdown,
+                abort_workers=self._options.abort_workers,
+                emit_global=self._emit_global,
+            )
         )
 
     def startup(self) -> tuple[JobRunRecord, ...]:
@@ -184,67 +254,18 @@ class Supervisor:
     def join_executors(self, timeout_seconds: float, *, abort_grace_seconds: float = 0.0) -> None:
         """等待全部执行线程收尾；宽限到点仍未收尾的，先强制终止其 worker（docs/08）。
 
-        serve 循环退出前的收口点：线程各自持有连接与租约收尾口径，这里只等与终止
-        worker 进程，不动数据库里的运行状态。宽限期内自己收尾的线程不碰 worker；
-        强制终止只在停机收尾路径发生（磁盘退场与未注入终止入口时不动作），终止有账：
-        一条日志与一条全局事件。随后继续等满剩余收尾时间，仍卡死的线程不再等待，
-        运行状态与租约留给下次启动回收。
+        机制在 supervisor_executors：宽限与强制终止的口径见 ``ExecutorSupervision.join``。
 
         Args:
             timeout_seconds: 全部线程共享的等待上限秒数。
             abort_grace_seconds: 收尾宽限秒数，超过才强制终止；0 表示不终止。
         """
-        deadline = self._clock.monotonic() + timeout_seconds
-        with self._executors_lock:
-            threads = tuple(self._executor_threads.values())
-        self._join_until(threads, min(deadline, self._clock.monotonic() + abort_grace_seconds))
-        if abort_grace_seconds > 0:
-            self._force_abort(self._alive_run_ids())
-        self._join_until(threads, deadline)
-        stuck = self._alive_run_ids()
-        if not stuck:
-            return
-        self._log.error({"event": "supervisor.executor_join_timeout", "run_ids": stuck})
-        self._emit_global("supervisor.executor_join_timeout", {"run_ids": stuck})
-
-    def _join_until(self, threads: tuple[threading.Thread, ...], deadline: float) -> None:
-        """按绝对单调时刻等线程收尾；时刻已过立即返回。"""
-        for thread in threads:
-            thread.join(max(0.0, deadline - self._clock.monotonic()))
-
-    def _alive_run_ids(self) -> list[str]:
-        """仍在推进的运行 id，按 id 排序；登记在派发时建立、线程收尾时注销。"""
-        with self._executors_lock:
-            return sorted(
-                run_id for run_id, thread in self._executor_threads.items() if thread.is_alive()
-            )
-
-    def _force_abort(self, stuck_run_ids: Sequence[str]) -> None:
-        """强制终止承载在途调用的 worker，让卡死的调用立即失败返回。
-
-        只在停机收尾路径发生：非停机的退场不终止 worker（docs/08）；解析、终止与
-        记账在 supervisor_shutdown。运行状态、租约与收尾事件都归执行线程，这里不碰。
-        """
-        if not stuck_run_ids or not self._shutdown():
-            return
-        self._shutdown_abort.abort(stuck_run_ids)
-
-    def _plugin_of(self, run_id: str) -> str | None:
-        """卡死运行对应的插件 id；库故障或模板缺失按解不出处置，终止尽力而为。"""
-        try:
-            run = self._runs.get(run_id)
-        except (RunNotFoundError, sqlite3.Error):
-            return None
-        try:
-            template = self._templates.get(run.template_id)
-        except sqlite3.Error:
-            return None
-        return None if template is None else template.plugin_id
+        self._executors.join(timeout_seconds, abort_grace_seconds=abort_grace_seconds)
 
     def request_cancel(self, run_id: str, reason: str = "user_cancel") -> JobRunRecord:
         """记录叫停：未开始的立即 cancelled；执行中的置位标记，由 worker 在阶段边界收尾。"""
         record = self._runs.request_cancel(run_id, reason)
-        self._signal_cancel(run_id)
+        self._executors.signal_cancel(run_id)
         return record
 
     def stop(self, run_id: str, reason: str = "user_cancel") -> JobRunRecord:
@@ -266,16 +287,9 @@ class Supervisor:
             finally:
                 # 落库与行迁移竞争失败时仍要触达执行器；终态运行的标记已由
                 # tick 线程清走，置位是空操作。
-                self._signal_cancel(run_id)
+                self._executors.signal_cancel(run_id)
         finally:
             connection.close()
-
-    def _signal_cancel(self, run_id: str) -> None:
-        """置位该运行的取消标记；标记不存在（waiting、两次 tick 之间）时不动。"""
-        with self._executors_lock:
-            flag = self._cancel_flags.get(run_id)
-            if flag is not None:
-                flag.cancel()
 
     def prepare_environment(self, environment_id: str) -> PhaseResult:
         """手动预热：与 tick 调度无关，不建运行、不改运行状态（docs/09 预热）。
@@ -345,11 +359,11 @@ class Supervisor:
                 self._runs.enqueue(run.id)
                 return
             due_waiting = run.state is RunState.WAITING and scheduled_due(run, now)
-            if due_waiting and not self._is_inflight(run.id):
+            if due_waiting and not self._executors.is_inflight(run.id):
                 self._execute(run)
                 return
             due_retry = run.state is RunState.RECOVERING and retry_due(run, now)
-            if due_retry and not self._is_inflight(run.id):
+            if due_retry and not self._executors.is_inflight(run.id):
                 self._execute(run)
                 return
 
@@ -360,7 +374,7 @@ class Supervisor:
         """
         candidates: list[RouteCandidate] = []
         for run in queued:
-            if self._is_inflight(run.id):
+            if self._executors.is_inflight(run.id):
                 continue
             template = self._templates.get(run.template_id)
             plugin_id = template.plugin_id if template is not None else ""
@@ -368,105 +382,13 @@ class Supervisor:
         return tuple(candidates)
 
     def _execute(self, run: JobRunRecord) -> None:
-        """为运行派一个执行线程：tick 只登记与启动，不等执行（docs/08 停机与阶段边界）。"""
+        """为运行派一个执行线程：tick 只登记与启动，不等执行（docs/08 停机与阶段边界）。
+
+        保温窗口来自运行所属计划；登记与线程推进在 supervisor_executors。
+        """
         schedule = None if run.schedule_id is None else self._schedules.get(run.schedule_id)
         keep_warm = 0 if schedule is None else schedule.keep_warm_minutes
-        cancel = self._cancel_for(run.id)
-        # 叫停先落库再置位：标记不存在期间收到的请求，靠事件在这里补上。
-        if self._runs.cancel_requested(run.id):
-            cancel.cancel()
-        self._spawn_executor(run.id, keep_warm, cancel)
-
-    def _spawn_executor(self, run_id: str, keep_warm: int, cancel: CancelFlag) -> None:
-        """登记并启动执行线程；启动失败时注销登记，不留阻塞收尾的空位。
-
-        Raises:
-            RuntimeError: 线程无法启动，属程序错误，交上层按退出处置。
-        """
-        thread = threading.Thread(
-            target=self._run_executor,
-            args=(run_id, keep_warm, cancel),
-            name=f"run-executor-{run_id[:8]}",
-            daemon=True,
-        )
-        with self._executors_lock:
-            self._executor_threads[run_id] = thread
-        try:
-            thread.start()
-        except RuntimeError:
-            with self._executors_lock:
-                self._executor_threads.pop(run_id, None)
-            self._drop_cancel(run_id)
-            raise
-
-    def _run_executor(self, run_id: str, keep_warm: int, cancel: CancelFlag) -> None:
-        """执行线程主体：自开连接推进一次运行，收尾时归还标记与登记（docs/11 并发）。
-
-        执行内的意外异常在此兜底：记日志与全局事件，不冒泡进 tick，也不让核心退出；
-        运行行保持原样，交既有恢复与启动扫描处置。
-        """
-        connection = open_database(self._database)
-        try:
-            executor = WorkerExecutor(
-                connection,
-                self._clock,
-                self._registry,
-                data_root=self._data_root,
-                log=self._log,
-                keep_warm_minutes=keep_warm,
-                cancel=cancel,
-                shutdown=self._shutdown,
-            )
-            try:
-                executor.execute(run_id)
-            except ResourceBusyError:
-                self._log.info({"event": "supervisor.resource_busy", "run_id": run_id})
-            except Exception as error:
-                self._record_executor_failure(connection, run_id, error)
-        finally:
-            self._drop_cancel(run_id)
-            with self._executors_lock:
-                self._executor_threads.pop(run_id, None)
-            connection.close()
-
-    def _record_executor_failure(
-        self,
-        connection: sqlite3.Connection,
-        run_id: str,
-        error: Exception,
-    ) -> None:
-        """执行线程的兜底记账：日志与全局事件都写在线程自己的连接上（docs/11 并发）。"""
-        payload = {"run_id": run_id, "error": str(error), "error_type": type(error).__name__}
-        self._log.error({"event": "supervisor.executor_failed", **payload})
-        try:
-            EventLog(connection).append_global(
-                EventType.CORE_EVENT,
-                {"event": "supervisor.executor_failed", "payload": payload},
-                at=self._clock.utc_now(),
-            )
-        except sqlite3.Error as db_error:
-            self._log.error(
-                {
-                    "event": "supervisor.executor_event_failed",
-                    "run_id": run_id,
-                    "error": str(db_error),
-                }
-            )
-
-    def _is_inflight(self, run_id: str) -> bool:
-        """该运行是否已有执行线程在推进；登记在派发时建立、线程收尾时注销。"""
-        with self._executors_lock:
-            return run_id in self._executor_threads
-
-    def _cancel_for(self, run_id: str) -> CancelFlag:
-        """取该运行的取消标记；执行期间同一运行复用同一个对象。"""
-        with self._executors_lock:
-            return self._cancel_flags.setdefault(run_id, CancelFlag())
-
-    def _drop_cancel(self, run_id: str) -> None:
-        """执行收尾后清走标记；之后再来的叫停靠 run_events 在下一轮生效。"""
-        with self._executors_lock:
-            self._cancel_flags.pop(run_id, None)
+        self._executors.launch(run.id, keep_warm)
 
     def _emit_global(self, event: str, payload: Mapping[str, Any]) -> None:
         self._events.append_global(
@@ -489,4 +411,4 @@ def _database_path(connection: sqlite3.Connection) -> Path:
     return Path(file_name)
 
 
-__all__ = ["Supervisor"]
+__all__ = ["Supervisor", "SupervisorOptions"]
