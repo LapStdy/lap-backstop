@@ -12,9 +12,10 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from contracts import (
     Clock,
@@ -54,6 +55,47 @@ SUSPENDED_EVENT = "host.suspended"
 _JUMP_THRESHOLD_SECONDS = float(default("host", "clock_jump_seconds"))
 
 
+@dataclass(frozen=True, slots=True)
+class SupervisorOptions:
+    """装配选项：数据根、日志、磁盘探针、停机判定与宽限终止入口；缺省按默认装配。"""
+
+    data_root: Path
+    log: Logger | None = None
+    disk_free: Callable[[], int | None] | None = None
+    shutdown: Callable[[], bool] | None = None
+    abort_workers: Callable[[Sequence[str]], None] | None = None
+
+
+def _assemble_options(options: Mapping[str, object]) -> SupervisorOptions:
+    """把装配关键字收敛成选项：缺 data_root、未知键或类型不符按 TypeError 拒绝。"""
+    unknown = sorted(set(options) - {f.name for f in fields(SupervisorOptions)})
+    if unknown:
+        raise TypeError(f"未知装配选项：{', '.join(unknown)}")
+    data_root = options.get("data_root")
+    if not isinstance(data_root, Path):
+        raise TypeError("data_root 缺失或不是 Path")
+    log = options.get("log")
+    if log is not None and not callable(getattr(log, "error", None)):
+        raise TypeError("log 必须实现 Logger 协议")
+    disk_free = options.get("disk_free")
+    if disk_free is not None and not callable(disk_free):
+        raise TypeError("disk_free 必须可调用")
+    shutdown = options.get("shutdown")
+    if shutdown is not None and not callable(shutdown):
+        raise TypeError("shutdown 必须可调用")
+    abort_workers = options.get("abort_workers")
+    if abort_workers is not None and not callable(abort_workers):
+        raise TypeError("abort_workers 必须可调用")
+    return SupervisorOptions(
+        data_root=data_root,
+        # Logger 是结构化 Protocol，无运行时判别可用；上面已按 error 方法鸭子校验。
+        log=cast("Logger | None", log),
+        disk_free=disk_free,
+        shutdown=shutdown,
+        abort_workers=abort_workers,
+    )
+
+
 class Supervisor:
     """单进程内核循环：tick 推进一轮，request_cancel 处理叫停。"""
 
@@ -62,43 +104,73 @@ class Supervisor:
         connection: sqlite3.Connection,
         clock: Clock,
         registry: PluginRegistry,
-        *,
-        data_root: Path,
-        log: Logger | None = None,
-        disk_free: Callable[[], int | None] | None = None,
-        shutdown: Callable[[], bool] | None = None,
-        abort_workers: Callable[[Sequence[str]], None] | None = None,
+        **options: object,
     ) -> None:
+        """装配常驻内核循环；可注入项见 SupervisorOptions，未注入的按默认装配。
+
+        Args:
+            connection: tick 线程专用的文件库连接。
+            clock: 全部时间的来源。
+            registry: 插件注册表，供降级路由与环境动作解析 provider。
+            **options: 装配选项；data_root 必填，缺项、未知键或类型不符按 TypeError 拒绝。
+
+        Raises:
+            ValueError: 连接指向内存库或临时库（叫停入口需要文件数据库）。
+            TypeError: 选项缺 data_root、含未知键或类型不符。
+        """
         self._connection = connection
         self._database = _database_path(connection)
+        self._options = _assemble_options(options)
         self._clock = clock
         self._registry = registry
-        self._log: Logger = NullLogger() if log is None else log
-        self._shutdown: Callable[[], bool] = (lambda: False) if shutdown is None else shutdown
-        self._disk_free: Callable[[], int | None] = (
-            (lambda: disk_free_bytes(data_root)) if disk_free is None else disk_free
+        self._wire(connection)
+        self._wire_supervision(connection)
+
+    def _wire(self, connection: sqlite3.Connection) -> None:
+        """装配默认值与数据底座：日志、停机判定、磁盘探针、事件与运行调度租约仓储。"""
+        options = self._options
+        self._log: Logger = NullLogger() if options.log is None else options.log
+        self._shutdown: Callable[[], bool] = (
+            (lambda: False) if options.shutdown is None else options.shutdown
         )
-        self._runs = JobRunService(connection, clock, disk_free=self._disk_free)
-        self._scanner = ScheduleScanner(connection, clock, self._runs)
-        self._schedules = ScheduleRepository(connection)
-        self._templates = JobTemplateRepository(connection)
-        self._leases = LeaseService(connection, clock)
+        self._disk_free: Callable[[], int | None] = (
+            (lambda: disk_free_bytes(options.data_root))
+            if options.disk_free is None
+            else options.disk_free
+        )
         self._events = EventLog(connection)
         # 跳变检测的基线：首轮只记录不判定，两轮之间才可算跳变量。
         self._last_wall: datetime | None = None
         self._last_mono: float | None = None
+        self._runs = JobRunService(connection, self._clock, disk_free=self._disk_free)
+        self._scanner = ScheduleScanner(connection, self._clock, self._runs)
+        self._schedules = ScheduleRepository(connection)
+        self._templates = JobTemplateRepository(connection)
+        self._leases = LeaseService(connection, self._clock)
+
+    def _wire_supervision(self, connection: sqlite3.Connection) -> None:
+        """装配各看护：磁盘水位、租约、启动恢复、环境、路由留痕与执行线程登记。
+
+        执行线程看护最后装配：它拿数据库路径与停机终止入口，收口宽限终止。
+        """
         self._disk_watermark = DiskWatermark(self._disk_free, self._log, self._emit_global)
         self._lease_watch = LeaseSupervision(
             LeaseSupervisionDeps(self._runs, self._leases, self._templates),
-            clock,
+            self._clock,
             log=self._log,
         )
-        self._startup_recovery = StartupRecovery(self._runs, self._leases, clock, log=self._log)
+        self._startup_recovery = StartupRecovery(
+            self._runs, self._leases, self._clock, log=self._log
+        )
         self._environment_watch = EnvironmentSupervision(
-            EnvironmentService(connection, clock),
-            registry,
-            clock,
-            io=SupervisionIo(data_root=data_root, log=self._log, emit_global=self._emit_global),
+            EnvironmentService(connection, self._clock),
+            self._registry,
+            self._clock,
+            io=SupervisionIo(
+                data_root=self._options.data_root,
+                log=self._log,
+                emit_global=self._emit_global,
+            ),
         )
         self._route_announcer = RouteAnnouncer(
             self._log, self._emit_global, self._registry.degradation_reason
@@ -107,13 +179,13 @@ class Supervisor:
             ExecutorSupervisionDeps(
                 runs=self._runs,
                 templates=self._templates,
-                registry=registry,
-                clock=clock,
+                registry=self._registry,
+                clock=self._clock,
                 database=self._database,
-                data_root=data_root,
+                data_root=self._options.data_root,
                 log=self._log,
                 shutdown=self._shutdown,
-                abort_workers=abort_workers,
+                abort_workers=self._options.abort_workers,
                 emit_global=self._emit_global,
             )
         )
@@ -339,4 +411,4 @@ def _database_path(connection: sqlite3.Connection) -> Path:
     return Path(file_name)
 
 
-__all__ = ["Supervisor"]
+__all__ = ["Supervisor", "SupervisorOptions"]
