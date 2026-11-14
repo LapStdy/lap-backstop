@@ -394,6 +394,34 @@ def test_config_projection_diff_is_symmetric() -> None:
     assert [(d.path, d.kind) for d in projection.diff(ctx, desired, desired)] == []
 
 
+def test_config_projection_desired_builds_full_target() -> None:
+    """docs/05 契约测试表 config_projection 行：desired 按配置构造整份目标，任务顺序一致。"""
+    projection = MaaConfigProjection()
+    ctx = make_context()
+    target = projection.desired(
+        ctx,
+        {
+            "profile": "日常",
+            "tasks": [
+                {"type": "StartUpTask", "name": "启动", "enabled": True},
+                {"type": "FightTask", "params": {"Medicine": 1}},
+                {"type": "MallTask", "enabled": False},
+            ],
+        },
+    )
+    assert target["Current"] == "日常"
+    section = target["Configurations"]["日常"]
+    assert [task["$type"] for task in section["TaskQueue"]] == [
+        "StartUpTask",
+        "FightTask",
+        "MallTask",
+    ]
+    assert section["TaskQueue"][0]["Name"] == "启动"
+    assert section["TaskQueue"][1]["Medicine"] == 1
+    assert section["TaskQueue"][2]["IsEnable"] is False
+    assert "Gui" not in section
+
+
 def test_config_projection_apply_then_diff_is_empty(tmp_path: Path) -> None:
     """docs/05 契约测试表 config_projection 行：apply 后 diff 为空，rollback 恢复原值。"""
     path = config_path(tmp_path)

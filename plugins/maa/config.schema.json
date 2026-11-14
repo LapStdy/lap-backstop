@@ -72,7 +72,7 @@
     "profile": {
       "type": "string",
       "title": "MAA 配置名",
-      "description": "留空时使用 gui.new.json 里 Current 指向的配置"
+      "description": "留空时按 MAA 首次运行的配置名 Default 构造整份目标"
     },
     "tasks": {
       "type": "array",
