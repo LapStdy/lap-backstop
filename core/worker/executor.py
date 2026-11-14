@@ -9,52 +9,42 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from datetime import timedelta
 from pathlib import Path
-from typing import Any
 
 from contracts import (
     CancelToken,
     Clock,
-    EnvironmentRef,
-    EvidenceKind,
     Logger,
     PhaseName,
     PhaseState,
-    RunContext,
     RunState,
     Verdict,
     VerdictStatus,
 )
-from core.environments.service import EnvironmentCall, EnvironmentService
-from core.events.evidence import EvidenceDraft, EvidenceService
+from core.environments.service import EnvironmentService
+from core.events.evidence import EvidenceService
 from core.events.verdicts import VerdictError, VerdictService
 from core.jobs.errors import IllegalRunTransitionError
 from core.jobs.phases import PhaseTracker
 from core.jobs.run_service import JobRunService
 from core.logging import NullLogger
-from core.plugins import rpc
 from core.plugins.errors import PluginError, WorkerCancelledError, WorkerTimeoutError
 from core.plugins.registry import PluginRegistry
 from core.resources.service import LeaseService
 from core.worker.executor_projection import ConfigProjector
+from core.worker.executor_scope import RunScopeFactory
 from core.worker.executor_settlement import RunSettlement
 from core.worker.run_scope import CancelFlag, RunScope
-from storage.defaults import default
 from storage.repositories.events import EventLog
 from storage.repositories.job_runs import JobRunRecord
-from storage.repositories.job_templates import JobTemplateRepository, JobTemplateRow
-from storage.repositories.resources import ResourceRepository, ResourceSpec
+from storage.repositories.job_templates import JobTemplateRepository
+from storage.repositories.resources import ResourceRepository
 
-_DEFAULT_DEADLINE = timedelta(minutes=int(default("worker", "deadline_minutes")))
 _TERMINAL_BY_VERDICT: Mapping[VerdictStatus, RunState] = {
     VerdictStatus.COMPLETED: RunState.SUCCEEDED,
     VerdictStatus.FAILED: RunState.FAILED,
     VerdictStatus.UNKNOWN: RunState.UNKNOWN,
 }
-
-Emit = Callable[[str, Mapping[str, Any]], None]
-RecordEvidence = Callable[[str, Path, str], str]
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +135,7 @@ class WorkerExecutor:
         self._events = services.events
         self._settlement = RunSettlement(services, cancel, shutdown)
         self._projector = ConfigProjector(registry, services, self._settlement)
+        self._scopes = RunScopeFactory(services, registry, options.data_root, cancel)
 
     def execute(self, run_id: str) -> JobRunRecord:
         """推进一步：恢复等待、准备、执行、验证、清理，直到终态或等待时机。
@@ -173,7 +164,7 @@ class WorkerExecutor:
         template = self._templates.get(run.template_id)
         if template is None:
             return self._settlement.fail_missing_template(run)
-        scope = self._begin(run, template)
+        scope = self._scopes.begin(run, template)
         if self._cancel.is_cancelled():
             return self._settlement.cancel_run(scope, started=False)
         if self._shutdown():
@@ -182,6 +173,10 @@ class WorkerExecutor:
             claimed = self._claim_queued(scope)
             if claimed is not None:
                 return claimed
+        return self._advance_guarded(scope)
+
+    def _advance_guarded(self, scope: RunScope) -> JobRunRecord:
+        """推进一次运行并按异常族收尾：取消、超时、插件失败与崩溃转成运行状态。"""
         try:
             return self._advance_or_drain(scope)
         except WorkerCancelledError:
@@ -239,37 +234,6 @@ class WorkerExecutor:
             if self._settlement.drain_requested():
                 return self._settlement.drain(scope.run)
             raise
-
-    def _begin(self, run: JobRunRecord, template: JobTemplateRow) -> RunScope:
-        """组装一次执行用的插件、环境引用与运行上下文。"""
-        provider = self._registry.environment(template.plugin_id)
-        script = self._registry.script(template.plugin_id)
-        verifier = self._registry.verifier(template.plugin_id)
-        environment_id = template.environment_id
-        self._resources.ensure(
-            environment_id,
-            ResourceSpec(resource_type="environment", name=environment_id),
-        )
-        self._environments.register(
-            environment_id,
-            provider_id=template.plugin_id,
-            name=environment_id,
-        )
-        context = self._build_context(run, template)
-        call = EnvironmentCall(
-            environment_id=environment_id,
-            provider=provider,
-            ref=EnvironmentRef(id=environment_id, provider_id=template.plugin_id),
-            ctx=context,
-        )
-        return RunScope(
-            run=run,
-            template=template,
-            call=call,
-            script=script,
-            verifier=verifier,
-            context=context,
-        )
 
     def _claim_queued(self, scope: RunScope) -> JobRunRecord | None:
         """排队运行占租约并迁到 preparing；叫停在出队窗口内抢先时执行器退让。
@@ -400,55 +364,6 @@ class WorkerExecutor:
             else _TERMINAL_BY_VERDICT[scope.verdict.status]
         )
         return self._runs.transition(scope.run.id, target, reason="verdict")
-
-    def _build_context(self, run: JobRunRecord, template: JobTemplateRow) -> RunContext:
-        work_dir = self._data_root / "work" / run.id
-        evidence_dir = self._data_root / "evidence" / run.id
-        work_dir.mkdir(parents=True, exist_ok=True)
-        evidence_dir.mkdir(parents=True, exist_ok=True)
-        now = self._clock.utc_now()
-        deadline = run.deadline_at if run.deadline_at is not None else now + _DEFAULT_DEADLINE
-        return RunContext(
-            run_id=run.id,
-            attempt=run.attempt,
-            template_id=template.id,
-            plugin_id=template.plugin_id,
-            environment_id=template.environment_id,
-            config=dict(template.config),
-            work_dir=work_dir,
-            evidence_dir=evidence_dir,
-            deadline_at=deadline,
-            cancel=self._cancel,
-            clock=self._clock,
-            secrets={},
-            log=self._log,
-            emit=self._emitter(run.id),
-            record_evidence=self._evidence_recorder(run.id, evidence_dir),
-        )
-
-    def _emitter(self, run_id: str) -> Emit:
-        def emit(event: str, payload: Mapping[str, Any]) -> None:
-            # 插件只能写 run.signal（docs/03）：与 worker 通道共用同一白名单校验。
-            checked = rpc.plugin_event(event)
-            rpc.check_plugin_payload(checked, payload)
-            self._events.append_run(
-                run_id,
-                checked,
-                dict(payload),
-                at=self._clock.utc_now(),
-            )
-
-        return emit
-
-    def _evidence_recorder(self, run_id: str, evidence_dir: Path) -> RecordEvidence:
-        def record(kind: str, path: Path, summary: str) -> str:
-            target = path if path.is_absolute() else evidence_dir / path
-            return self._evidence.record(
-                run_id,
-                EvidenceDraft(kind=EvidenceKind(kind), path=target, summary=summary),
-            )
-
-        return record
 
 
 __all__ = ["CancelFlag", "ExecutorOptions", "RunScope", "WorkerExecutor"]
