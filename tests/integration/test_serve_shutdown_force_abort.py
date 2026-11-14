@@ -167,12 +167,11 @@ def captured_hosts(monkeypatch: pytest.MonkeyPatch) -> list[RpcPluginHost]:
     return instances
 
 
-def test_force_abort_kills_worker_tree_and_drains_run(
+def _prepared_hang_serve(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    captured_hosts: list[RpcPluginHost],
-) -> None:
-    """卡死调用下停机：宽限先到，强制终止后进程树消失、serve 提前收场且事件恰一条。"""
+) -> tuple[Path, Path, Path, str]:
+    """钉住停机时序常量、装好 hang 插件并种一条排队运行，返回数据根、插件根、pid 文件与运行 id。"""
     monkeypatch.setattr(serve_module, "_EXECUTOR_JOIN_SECONDS", JOIN_SECONDS)
     monkeypatch.setattr(serve_module, "_EXECUTOR_ABORT_GRACE_SECONDS", GRACE_SECONDS)
     data_root = tmp_path / "data"
@@ -180,8 +179,16 @@ def test_force_abort_kills_worker_tree_and_drains_run(
     shutil.copytree(PLUGIN_FIXTURES / "hang", plugins_root / "hang")
     configure(data_root, {TOKEN_KEY: TOKEN, "api.host": "127.0.0.1", "api.port": 0})
     pids_file = tmp_path / "pids.json"
-    run_id = _seed_hang_run(data_root, pids_file)
-    stop = threading.Event()
+    return data_root, plugins_root, pids_file, _seed_hang_run(data_root, pids_file)
+
+
+def _serve_owner_thread(
+    data_root: Path,
+    plugins_root: Path,
+    stop: threading.Event,
+    captured_hosts: list[RpcPluginHost],
+) -> tuple[threading.Thread, dict[str, Any], dict[str, object]]:
+    """后台线程里跑 serve，返回线程与 worker 进程号、退出码的带回容器。"""
     running: dict[str, Any] = {}
     outcome: dict[str, object] = {}
 
@@ -201,13 +208,30 @@ def test_force_abort_kills_worker_tree_and_drains_run(
 
     thread = threading.Thread(target=owner, name="serve-owner", daemon=True)
     thread.start()
+    return thread, running, outcome
+
+
+def _confirmed_pids(pids_file: Path, running: dict[str, Any]) -> tuple[int, int]:
+    """等 pid 文件落地并确认 worker 与其子进程在终止前存活，返回 worker 与子进程号。"""
+    _wait_for_file(pids_file)
+    pids = json.loads(pids_file.read_text(encoding="utf-8"))
+    assert running["worker_pid"] is not None, "worker 进程没有随插件宿主启动"
+    assert _pid_alive(int(pids["pid"])), "worker 进程应在被终止前存活"
+    assert _pid_alive(int(pids["child_pid"])), "worker 的子进程应在被终止前存活"
+    return int(running["worker_pid"]), int(pids["child_pid"])
+
+
+def _measured_abort(
+    thread: threading.Thread,
+    stop: threading.Event,
+    pids_file: Path,
+    running: dict[str, Any],
+) -> tuple[float, int, int]:
+    """发停机量总时长，返回经过时间与 worker、子进程号；前置断言失败也要把 serve 收场。"""
+    worker_pid, child_pid = 0, 0
     elapsed = float("inf")
     try:
-        _wait_for_file(pids_file)
-        pids = json.loads(pids_file.read_text(encoding="utf-8"))
-        assert running["worker_pid"] is not None, "worker 进程没有随插件宿主启动"
-        assert _pid_alive(int(pids["pid"])), "worker 进程应在被终止前存活"
-        assert _pid_alive(int(pids["child_pid"])), "worker 的子进程应在被终止前存活"
+        worker_pid, child_pid = _confirmed_pids(pids_file, running)
         started = time.monotonic()
         stop.set()
         thread.join(WAIT_SECONDS)
@@ -215,16 +239,11 @@ def test_force_abort_kills_worker_tree_and_drains_run(
     finally:
         stop.set()
         thread.join(WAIT_SECONDS)
-    assert not thread.is_alive(), "强制终止没有让 serve 收场"
-    assert outcome.get("code") == 0
-    assert elapsed < 2.0, f"总时长 {elapsed:.2f} 秒顶到了等待上限，强制终止没有生效"
-    assert elapsed >= GRACE_SECONDS - 0.05, "宽限期没有先于强制终止耗完"
+    return elapsed, worker_pid, child_pid
 
-    worker_pid = int(running["worker_pid"])
-    assert _wait_pid_gone(worker_pid), "worker 进程在强制终止后仍存活"
-    assert _wait_pid_gone(int(pids["child_pid"])), "worker 的子进程在强制终止后仍存活"
 
-    database = data_root / "backstop.sqlite"
+def _assert_shutdown_events(database: Path, run_id: str) -> None:
+    """全局事件记账：强制终止恰一条且目标正确，不再记执行器等待超时。"""
     aborts = [
         payload
         for payload in global_event_payloads(database)
@@ -239,6 +258,9 @@ def test_force_abort_kills_worker_tree_and_drains_run(
     ]
     assert timeouts == [], "强制终止生效时不应再记等待超时"
 
+
+def _assert_run_drain_state(database: Path, run_id: str) -> None:
+    """运行收尾记账：一条 shutdown 原因的 run.interrupted，运行停在 preparing，租约保持 leased。"""
     reader = sqlite3.connect(database)
     try:
         interrupted = reader.execute(
@@ -256,6 +278,26 @@ def test_force_abort_kills_worker_tree_and_drains_run(
     assert state is not None and str(state[0]) == "preparing"
     assert lease is not None and str(lease[0]) == "leased"
 
+
+def test_force_abort_kills_worker_tree_and_drains_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    captured_hosts: list[RpcPluginHost],
+) -> None:
+    """卡死调用下停机：宽限先到，强制终止后进程树消失、serve 提前收场且事件恰一条。"""
+    data_root, plugins_root, pids_file, run_id = _prepared_hang_serve(tmp_path, monkeypatch)
+    stop = threading.Event()
+    thread, running, outcome = _serve_owner_thread(data_root, plugins_root, stop, captured_hosts)
+    elapsed, worker_pid, child_pid = _measured_abort(thread, stop, pids_file, running)
+    assert not thread.is_alive(), "强制终止没有让 serve 收场"
+    assert outcome.get("code") == 0
+    assert elapsed < 2.0, f"总时长 {elapsed:.2f} 秒顶到了等待上限，强制终止没有生效"
+    assert elapsed >= GRACE_SECONDS - 0.05, "宽限期没有先于强制终止耗完"
+    assert _wait_pid_gone(worker_pid), "worker 进程在强制终止后仍存活"
+    assert _wait_pid_gone(child_pid), "worker 的子进程在强制终止后仍存活"
+    database = data_root / "backstop.sqlite"
+    _assert_shutdown_events(database, run_id)
+    _assert_run_drain_state(database, run_id)
     host = captured_hosts[0]
     assert host.channels == {}
     host.close()
@@ -327,20 +369,8 @@ class _StuckSupervisor:
         self.supervisor.join_executors(JOIN_TIMEOUT_SECONDS)
 
 
-def _stuck_supervisor(
-    tmp_path: Path,
-    *,
-    shutdown: Any,
-    abort_workers: Any,
-    log: JsonLineLogger | None = None,
-) -> _StuckSupervisor:
-    """造一个执行线程卡在 observe 上的 supervisor；停机在进入执行后才置位。
-
-    shutdown 传 None 时内部接同一个事件：派发时停机未置位，置位后才算停机收尾。
-    """
-    stop = threading.Event()
-    connection = open_database(tmp_path / "state.db")
-    migrate(connection)
+def _seed_stuck_run(connection: sqlite3.Connection) -> str:
+    """种一条指向 fake 插件的排队运行，返回运行 id。"""
     connection.execute(
         "INSERT INTO job_templates (id, name, plugin_id, environment_id, config, "
         "config_schema_version, verification_policy, recovery_policy, enabled, "
@@ -373,6 +403,24 @@ def _stuck_supervisor(
         )
     )
     runs.enqueue(record.id)
+    return record.id
+
+
+def _stuck_supervisor(
+    tmp_path: Path,
+    *,
+    shutdown: Any,
+    abort_workers: Any,
+    log: JsonLineLogger | None = None,
+) -> _StuckSupervisor:
+    """造一个执行线程卡在 observe 上的 supervisor；停机在进入执行后才置位。
+
+    shutdown 传 None 时内部接同一个事件：派发时停机未置位，置位后才算停机收尾。
+    """
+    stop = threading.Event()
+    connection = open_database(tmp_path / "state.db")
+    migrate(connection)
+    run_id = _seed_stuck_run(connection)
     registry = PluginRegistry()
     adapter = _GatedScript()
     registry.register(
@@ -396,7 +444,7 @@ def _stuck_supervisor(
     supervisor.tick()
     assert adapter.entered.wait(WAIT_SECONDS), "运行没有进入执行"
     stop.set()
-    return _StuckSupervisor(supervisor, connection, stop, record.id, adapter)
+    return _StuckSupervisor(supervisor, connection, stop, run_id, adapter)
 
 
 def _global_payloads(connection: sqlite3.Connection) -> list[dict[str, Any]]:
