@@ -57,7 +57,7 @@
 
 ## 工程治理
 
-- [ ] 按允许清单逐项收缩剩余 2 条实测超限：2 个超长模块（`_D019_ENTRIES` 17 条里 15 条已达标：`scripts` 3 条由卡79、`test_serve_shutdown_force_abort` 3 条由卡74、`test_api_export` 与 `test_end_to_end_run` 2 条由卡80、`test_serve_shell` 5 条由卡77、`test_worker_lifecycle` 与 `test_worker_channel` 各 1 条由卡81；达标条目待卡82 统一删）。
+- [ ] 按允许清单逐项收缩剩余 1 条实测超限：检查器自身模块 `tests/unit/test_structure_limits.py` 554 行（`_D019_ENTRIES` 17 条里 16 条已达标：`scripts` 3 条由卡79、`test_serve_shutdown_force_abort` 3 条由卡74、`test_api_export` 与 `test_end_to_end_run` 2 条由卡80、`test_serve_shell` 5 条由卡77、`test_worker_lifecycle` 与 `test_worker_channel` 各 1 条由卡81、`test_supervisor` 1 条由卡83；达标条目待卡82 统一删）。
 - [ ] 清宿主 C: 余量并给测试换临时卷（`D-021`）：数据根已可钉盘（`--data-root` / `LAP_BACKSTOP_DATA_ROOT`），但 C: 只剩 1.8 GiB、贴着 2 GiB 建运行守护线，且 pytest 临时根仍在 `%TEMP%`；未清出余量前平台在这台机器上调度不出运行。
 
 ## 技术验证
@@ -68,5 +68,6 @@
 - [ ] MuMu 原生截图 DLL 的稳定性与失效条件。
 - [ ] 磁盘与日志增长速度，30 天保留是否可行。
 - [ ] Tailscale 在手机上的断线/耗电表现。
+
 
 
