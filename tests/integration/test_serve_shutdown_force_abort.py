@@ -38,8 +38,8 @@ from core.plugins.worker_options import WorkerConfig
 from core.supervisor_shutdown import SHUTDOWN_FORCE_ABORT_EVENT
 from storage import open_database
 from storage.repositories.job_runs import NewRun
+from tests.integration.serve_shell_support import global_event_payloads
 from tests.integration.test_serve_api import TOKEN, configure, serve_options
-from tests.integration.test_serve_shell import global_event_payloads
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_FIXTURES = REPO_ROOT / "tests" / "fixtures" / "plugins"

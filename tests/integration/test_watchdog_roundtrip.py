@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from core.hostops.heartbeat import write_heartbeat
-from tests.integration.test_serve_shell import REPO_ROOT, WAIT_SECONDS
+from tests.integration.serve_shell_support import REPO_ROOT, WAIT_SECONDS
 
 DEAD_PID = 4_000_000
 

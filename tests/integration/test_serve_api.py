@@ -28,7 +28,7 @@ from core.logging import NullLogger
 from storage import migrate, open_database
 from storage.repositories.environments import EnvironmentRepository
 from tests.fixtures.subprocess_fakes import completed
-from tests.integration.test_serve_shell import (
+from tests.integration.serve_shell_support import (
     autologon_registry,
     fake_task_runner,
     global_event_rows,
