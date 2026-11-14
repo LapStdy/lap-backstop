@@ -25,7 +25,7 @@ from core.clock import VirtualClock
 from core.jobs.run_service import JobRunService
 from core.plugins.errors import PluginError
 from core.plugins.registry import PluginCapabilities, PluginRegistry
-from core.worker.executor import WorkerExecutor
+from core.worker.executor import ExecutorOptions, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
@@ -149,7 +149,7 @@ def make_executor(
             config_projection=stubs.projection,
         )
     )
-    return WorkerExecutor(connection, clock, registry, data_root=data_root)
+    return WorkerExecutor(connection, clock, registry, ExecutorOptions(data_root=data_root))
 
 
 class RecordingProjection:

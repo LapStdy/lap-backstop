@@ -39,7 +39,7 @@ from core.plugins.errors import (
 )
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
-from core.worker.executor import CancelFlag, WorkerExecutor
+from core.worker.executor import CancelFlag, ExecutorOptions, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.events import EventLog
@@ -245,29 +245,27 @@ def prepare_run(
 
 
 @dataclass(frozen=True, slots=True)
-class ExecutorOptions:
+class ExecutorStubOptions:
     """executor_for 的可选注入：取消令牌与日志；默认无。"""
 
     cancel: CancelFlag | None = None
     log: Logger | None = None
 
 
-_DEFAULT_EXECUTOR_OPTIONS = ExecutorOptions()
+_DEFAULT_EXECUTOR_OPTIONS = ExecutorStubOptions()
 
 
 def executor_for(
     connection: sqlite3.Connection,
     clock: VirtualClock,
     data_root: Path,
-    options: ExecutorOptions = _DEFAULT_EXECUTOR_OPTIONS,
+    options: ExecutorStubOptions = _DEFAULT_EXECUTOR_OPTIONS,
 ) -> WorkerExecutor:
     return WorkerExecutor(
         connection,
         clock,
         make_registry(),
-        data_root=data_root,
-        cancel=options.cancel,
-        log=options.log,
+        ExecutorOptions(data_root=data_root, cancel=options.cancel, log=options.log),
     )
 
 
@@ -386,7 +384,9 @@ def test_verify_with_missing_evidence_blames_evidence(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_MissingEvidenceVerifier())
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert result.error_code == "E_VERIFY_NO_EVIDENCE"
     assert unknown_reason(connection, run_id) == "verify_no_evidence"
@@ -423,7 +423,7 @@ def test_cancel_flag_prevents_start(
     run_id = prepare_run(connection, runs, "instant")
     flag = CancelFlag()
     flag.cancel()
-    result = executor_for(connection, clock, data_root, ExecutorOptions(cancel=flag)).execute(
+    result = executor_for(connection, clock, data_root, ExecutorStubOptions(cancel=flag)).execute(
         run_id
     )
     assert result.state is RunState.CANCELLED
@@ -546,8 +546,7 @@ def test_cancel_during_cleanup_records_cancelled_after_one_cleanup(
         connection,
         clock,
         registry,
-        data_root=data_root,
-        cancel=flag,
+        ExecutorOptions(data_root=data_root, cancel=flag),
     ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert result.finished_at is not None
@@ -592,7 +591,7 @@ def test_verifier_without_evidence_ends_unknown(
             verifier=_NoEvidenceVerifier(),
         )
     )
-    executor = WorkerExecutor(connection, clock, registry, data_root=data_root)
+    executor = WorkerExecutor(connection, clock, registry, ExecutorOptions(data_root=data_root))
     result = executor.execute(run_id)
     assert result.state is RunState.UNKNOWN
     assert result.error_code == "E_VERIFY_NO_EVIDENCE"
@@ -630,7 +629,9 @@ def test_unfinished_script_ends_with_deadline_not_hung(
             verifier=FakeVerifier(),
         )
     )
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_DEADLINE"
     execute_phase = next(
@@ -655,9 +656,9 @@ def test_cleanup_failure_logs_warning_and_recovery_continues(
         )
     )
     logger = _RecordingLogger()
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root, log=logger).execute(
-        run_id
-    )
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root, log=logger)
+    ).execute(run_id)
     assert result.state is RunState.RECOVERING
     assert result.error_code == "E_SCRIPT_TASK_FAILED"
     assert any(
@@ -674,7 +675,10 @@ def test_run_succeeds_with_single_cleanup_call(
     run_id = prepare_run(connection, runs, "instant")
     provider = FakeEnvironmentProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.SUCCEEDED
     assert provider.calls.count("cleanup") == 1
@@ -688,7 +692,10 @@ def test_cleanup_failure_fails_run_with_single_cleanup_call(
     run_id = prepare_run(connection, runs, "instant")
     provider = _FailedResultCleanupProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_ENV_UNREACHABLE"
@@ -705,7 +712,10 @@ def test_cleanup_exception_ends_failed_with_single_cleanup_call(
     set_recovery_policy(connection, {"max_attempts": 1})
     provider = _FailingCleanupProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_RECOVERY_EXHAUSTED"
@@ -725,7 +735,7 @@ def test_cancel_during_verify_cleans_once_and_ends_cancelled(
         connection,
         clock,
         _registry_with(environment=provider, verifier=verifier),
-        data_root=data_root,
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert provider.calls.count("cleanup") == 1
@@ -751,8 +761,7 @@ def test_cancel_during_execution_cleans_once_and_ends_cancelled(
             environment=provider,
             script=_CancellingScriptAdapter(request_cancel),
         ),
-        data_root=data_root,
-        cancel=flag,
+        ExecutorOptions(data_root=data_root, cancel=flag),
     ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert provider.calls.count("cleanup") == 1
@@ -767,7 +776,10 @@ def test_recovery_exhaustion_fails_run_with_single_cleanup_call(
     set_recovery_policy(connection, {"max_attempts": 1})
     provider = FakeEnvironmentProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_RECOVERY_EXHAUSTED"
@@ -783,7 +795,10 @@ def test_cleanup_exception_aborts_with_plugin_crash_when_budget_remains(
     run_id = prepare_run(connection, runs, "instant")
     provider = _FailingCleanupProvider()
     result = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_PLUGIN_CRASH"
@@ -799,7 +814,10 @@ def test_recovery_retry_cleans_once_per_attempt(
     run_id = prepare_run(connection, runs, "fail")
     provider = FakeEnvironmentProvider()
     executor = WorkerExecutor(
-        connection, clock, _registry_with(environment=provider), data_root=data_root
+        connection,
+        clock,
+        _registry_with(environment=provider),
+        ExecutorOptions(data_root=data_root),
     )
     first = executor.execute(run_id)
     assert first.state is RunState.RECOVERING
@@ -856,7 +874,9 @@ def test_worker_timeout_ends_with_deadline(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerTimeoutError("调用超时")))
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_DEADLINE"
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
@@ -868,7 +888,9 @@ def test_worker_cancel_ends_run_cancelled(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerCancelledError("已叫停")))
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.CANCELLED
     assert LeaseService(connection, clock).active_for_run(run_id) == ()
 
@@ -879,7 +901,9 @@ def test_worker_crash_keeps_plugin_crash_code(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerCrashError("进程退出")))
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.RECOVERING
     assert result.error_code == "E_PLUGIN_CRASH"
 
@@ -890,6 +914,8 @@ def test_worker_call_error_keeps_plugin_code(
     connection, clock, runs, data_root = env
     run_id = prepare_run(connection, runs, "instant")
     registry = _registry_with(verifier=_RaisingVerifier(WorkerCallError("插件方法抛异常")))
-    result = WorkerExecutor(connection, clock, registry, data_root=data_root).execute(run_id)
+    result = WorkerExecutor(
+        connection, clock, registry, ExecutorOptions(data_root=data_root)
+    ).execute(run_id)
     assert result.state is RunState.FAILED
     assert result.error_code == "E_PLUGIN"

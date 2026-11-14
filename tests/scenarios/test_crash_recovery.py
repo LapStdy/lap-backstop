@@ -16,7 +16,7 @@ from core.jobs.run_service import JobRunService
 from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.resources.service import LeaseService
 from core.supervisor import Supervisor
-from core.worker.executor import WorkerExecutor
+from core.worker.executor import ExecutorOptions, WorkerExecutor
 from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
@@ -176,7 +176,9 @@ def test_startup_keeps_waiting_run_and_its_lease(
 ) -> None:
     connection, clock, runs, data_root = env
     run_id = prepare_run(runs, scheduled_at=SCHEDULED_AT)
-    executor = WorkerExecutor(connection, clock, make_registry(), data_root=data_root)
+    executor = WorkerExecutor(
+        connection, clock, make_registry(), ExecutorOptions(data_root=data_root)
+    )
     assert executor.execute(run_id).state is RunState.WAITING
     assert LeaseService(connection, clock).active_for_run(run_id)
 

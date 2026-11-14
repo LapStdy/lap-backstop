@@ -19,7 +19,7 @@ from contracts import RunState
 from core.clock import VirtualClock
 from core.jobs.run_service import JobRunService
 from core.plugins.rpc_host import RpcPluginHost
-from core.worker.executor import WorkerExecutor
+from core.worker.executor import ExecutorOptions, WorkerExecutor
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 
@@ -99,18 +99,18 @@ def test_plugin_failure_only_affects_current_call(
 ) -> None:
     connection, clock, runs, data_root = env
     failed_id = enqueue_run(connection, runs, "template-crash", "crash")
-    failed = WorkerExecutor(connection, clock, host.registry, data_root=data_root).execute(
-        failed_id
-    )
+    failed = WorkerExecutor(
+        connection, clock, host.registry, ExecutorOptions(data_root=data_root)
+    ).execute(failed_id)
     assert failed.state is RunState.FAILED
     assert failed.error_code == "E_PLUGIN"
 
     next_id = enqueue_run(connection, runs, "template-instant", "instant")
     worker_pid = host.channels["fake"].pid
     assert worker_pid is not None
-    succeeded = WorkerExecutor(connection, clock, host.registry, data_root=data_root).execute(
-        next_id
-    )
+    succeeded = WorkerExecutor(
+        connection, clock, host.registry, ExecutorOptions(data_root=data_root)
+    ).execute(next_id)
     assert succeeded.state is RunState.SUCCEEDED
     assert host.channels["fake"].pid == worker_pid
     assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"

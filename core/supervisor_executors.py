@@ -20,7 +20,7 @@ from core.jobs.run_service import JobRunService
 from core.plugins.registry import PluginRegistry
 from core.resources.errors import ResourceBusyError
 from core.supervisor_shutdown import ShutdownAbort
-from core.worker.executor import CancelFlag, WorkerExecutor
+from core.worker.executor import CancelFlag, ExecutorOptions, WorkerExecutor
 from storage import open_database
 from storage.repositories.events import EventLog
 from storage.repositories.job_templates import JobTemplateRepository
@@ -197,11 +197,13 @@ class ExecutorSupervision:
                 connection,
                 self._clock,
                 self._registry,
-                data_root=self._data_root,
-                log=self._log,
-                keep_warm_minutes=keep_warm,
-                cancel=cancel,
-                shutdown=self._shutdown,
+                ExecutorOptions(
+                    data_root=self._data_root,
+                    log=self._log,
+                    keep_warm_minutes=keep_warm,
+                    cancel=cancel,
+                    shutdown=self._shutdown,
+                ),
             )
             try:
                 executor.execute(run_id)

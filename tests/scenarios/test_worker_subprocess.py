@@ -17,7 +17,7 @@ from core.environments.service import EnvironmentService
 from core.jobs.run_service import JobRunService
 from core.plugins.rpc_host import RpcPluginHost
 from core.resources.service import LeaseService
-from core.worker.executor import WorkerExecutor
+from core.worker.executor import ExecutorOptions, WorkerExecutor
 from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 from storage.repositories.run_phases import RunPhaseRepository
@@ -103,7 +103,7 @@ def executor_for(
     data_root: Path,
     host: RpcPluginHost,
 ) -> WorkerExecutor:
-    return WorkerExecutor(connection, clock, host.registry, data_root=data_root)
+    return WorkerExecutor(connection, clock, host.registry, ExecutorOptions(data_root=data_root))
 
 
 def phases(connection: sqlite3.Connection, run_id: str) -> dict[str, PhaseState]:
