@@ -198,13 +198,17 @@ def _probe(inputs: _ProbeInputs) -> None:
         inputs.stop.set()
 
 
-def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
-    tmp_path: Path,
-) -> None:
-    plugins_root = tmp_path / "plugins"
-    shutil.copytree(REPO_ROOT / "plugins" / "fake", plugins_root / "fake")
-    data_root = tmp_path / "data"
-    _seed(data_root)
+def _seed_workspace(tmp_path: Path) -> None:
+    """造数据：fake 插件拷进 tmp 的 plugins 目录，数据根写入 token、模板与到期调度。"""
+    shutil.copytree(REPO_ROOT / "plugins" / "fake", tmp_path / "plugins" / "fake")
+    _seed(tmp_path / "data")
+
+
+def _run_one_round(tmp_path: Path) -> dict[str, Any]:
+    """装配 serve 跑完一轮：API 监听即挂探针，退出后回收线程、重抛探针内失败。
+
+    返回探针收集槽，断言阶段从这里读事件帧、运行详情与证据响应。
+    """
     stop = threading.Event()
     connected = threading.Event()
     seen: dict[str, Any] = {}
@@ -223,10 +227,10 @@ def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
             stop.set()
 
     code = serve_module.run_serve(
-        data_root,
+        tmp_path / "data",
         serve_options(
             clock=VirtualClock(NOW),
-            plugins_root=plugins_root,
+            plugins_root=tmp_path / "plugins",
             max_ticks=None,
             tick_interval_seconds=0.05,
             stop=stop,
@@ -240,12 +244,19 @@ def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
     assert code == 0
     if "failure" in seen:
         raise seen["failure"]
+    return seen
 
+
+def _assert_stream_events(seen: dict[str, Any]) -> str:
+    """事件流断言：握手 200、首帧心跳、终帧 run.finished/succeeded 与信号序列齐全。
+
+    返回终帧 run_id，详情与证据文件断言用它定位同一运行。
+    """
     assert seen["status_line"].startswith("HTTP/1.0 200")
     assert seen["first_frame"][1] == "heartbeat"
     frames = seen["frames"]
     assert frames[-1][1] == "run.finished"
-    run_id = frames[-1][2]["run_id"]
+    run_id = str(frames[-1][2]["run_id"])
     assert frames[-1][2]["status"] == "succeeded"
     event_types = [frame[1] for frame in frames]
     # 一条流同时交付两张事件表：同一批里全局事件先于运行事件，只断言出现而不排全序。
@@ -262,8 +273,11 @@ def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
     assert last_event_id.startswith(f"r:{run_id}:")
     signals = [payload for _event_id, name, payload in frames if name == "run.signal"]
     assert [signal["kind"] for signal in signals] == ["completed"]
+    return run_id
 
-    detail = seen["run_detail"]
+
+def _assert_run_detail(detail: dict[str, Any], run_id: str) -> None:
+    """运行详情断言：run 行归属本轮，四阶段全 ok，verdict 与证据一一对应。"""
     run = detail["run"]
     assert run["id"] == run_id
     assert run["state"] == "succeeded"
@@ -271,7 +285,6 @@ def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
     assert run["template_id"] == TEMPLATE_ID
     phases = {phase["phase"]: phase["state"] for phase in detail["phases"]}
     assert phases == {"prepare": "ok", "execute": "ok", "verify": "ok", "cleanup": "ok"}
-
     assert len(detail["verdicts"]) == 1
     verdict = detail["verdicts"][0]
     assert verdict["status"] == "completed"
@@ -282,9 +295,23 @@ def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
     assert evidence["path"] == f"{run_id}/fake.log"
     assert verdict["evidence_ids"] == [evidence["id"]]
 
+
+def _assert_evidence_file(seen: dict[str, Any], run_id: str, tmp_path: Path) -> None:
+    """证据文件断言：HTTP 取回的字节与数据根落盘文件一致，哈希对得上详情。"""
     status, body, content_type = seen["evidence_file"]
+    evidence = seen["run_detail"]["evidence"][0]
     assert status == 200
     assert content_type.startswith("text/plain")
     assert body.startswith(b"fake instant")
-    assert body == (data_root / "evidence" / run_id / "fake.log").read_bytes()
+    assert body == (tmp_path / "data" / "evidence" / run_id / "fake.log").read_bytes()
     assert hashlib.sha256(body).hexdigest() == evidence["sha256"]
+
+
+def test_due_schedule_runs_to_completion_and_results_are_queryable_over_http(
+    tmp_path: Path,
+) -> None:
+    _seed_workspace(tmp_path)
+    seen = _run_one_round(tmp_path)
+    run_id = _assert_stream_events(seen)
+    _assert_run_detail(seen["run_detail"], run_id)
+    _assert_evidence_file(seen, run_id, tmp_path)
