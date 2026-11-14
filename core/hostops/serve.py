@@ -9,41 +9,33 @@ Windows 的 TerminateProcess 没有处理器可走，优雅停机靠可捕获的
 from __future__ import annotations
 
 import contextlib
-import errno
 import os
 import sqlite3
-import threading
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
 
-from contracts import Clock, EventType, Logger
+from contracts import Logger
 from core.__main__ import (
     EXIT_DISK_LOW,
     EXIT_ERROR,
     EXIT_OK,
-    EXIT_PORT_CONFLICT,
     EXIT_SECOND_INSTANCE,
     resolve_executable_path,
 )
-from core.api.hostops_api import DrainRequester
-from core.api.runs_api import RunStopper
-from core.api.server import (
-    DEFAULT_HOST,
-    DEFAULT_PORT,
-    ApiOptions,
-    ApiServer,
-    start_api_server,
-)
-from core.api.store import all_settings, bearer_token, ensure_token
+from core.api.server import ApiServer
 from core.api.version import executable_version
-from core.environments.actions import EnvironmentActions
 from core.events.maintenance import GlobalEventsPruner
-from core.hostops import heartbeat, instance, tailscale
+from core.hostops import heartbeat, instance
 from core.hostops.doctor import DATABASE_FILENAME
 from core.hostops.environment_actions import ActionOptions, EnvironmentActionService
 from core.hostops.retention import RetentionOptions, RetentionRunner
+from core.hostops.serve_api import (
+    PORT_CONFLICT_EVENT,
+    ApiServices,
+    _drain_requester,
+    _start_api,
+)
 from core.hostops.serve_events import (
     AUTOLOGON_CHECKED_EVENT,
     TASKS_REGISTERED_EVENT,
@@ -54,7 +46,7 @@ from core.hostops.serve_events import (
     _record_plugin_events,
     _startup_clock_events,
 )
-from core.hostops.serve_loop import HeartbeatWriter, _active_run, _active_runs
+from core.hostops.serve_loop import HeartbeatWriter, _active_run
 from core.hostops.serve_options import TICK_INTERVAL_SECONDS, ServeOptions, install_stop_handlers
 from core.jobs.run_service import JobRunService
 from core.notify.service import NotifyOptions, NotifyService
@@ -70,9 +62,6 @@ _EXECUTOR_JOIN_SECONDS = 60.0
 # 停机收尾的强制终止宽限：执行线程超过它仍未收尾，才结束承载在途调用的 worker
 # 子进程树（docs/08 停机与阶段边界）；同样留在代码里，不做成配置键。
 _EXECUTOR_ABORT_GRACE_SECONDS = 30.0
-PORT_CONFLICT_EVENT = "core.port_conflict"
-API_HOST_KEY = "api.host"
-API_PORT_KEY = "api.port"
 _HEARTBEAT_INTERVAL = timedelta(seconds=int(default("host", "heartbeat_interval_seconds")))
 
 
@@ -185,24 +174,6 @@ class ServeLoop:
         self._last_heartbeat_at = now_mono
 
 
-def _drain_requester(stop: threading.Event, database: Path, clock: Clock) -> DrainRequester:
-    """排水动作：置位停机事件并返回当时的在跑运行数。
-
-    API 请求线程自开连接（docs/11 并发）：tick 线程的连接不跨线程使用。
-    置位先于统计：在跑数是请求被接受那一刻的口径，之后的推进归停机收尾。
-    """
-
-    def request() -> int:
-        stop.set()
-        connection = open_database(database)
-        try:
-            return len(_active_runs(JobRunService(connection, clock)))
-        finally:
-            connection.close()
-
-    return request
-
-
 def run_serve(data_root: Path, options: ServeOptions | None = None) -> int:
     """serve 主流程，返回进程退出码。
 
@@ -301,18 +272,19 @@ def _run_core(data_root: Path, options: ServeOptions, started_at: datetime) -> i
             at=setup_at,
         )
         # 环境动作在请求线程自开连接：supervisor 的连接只归 tick 线程。
-        actions = EnvironmentActionService(
-            database,
-            options.clock,
-            registry,
-            options=ActionOptions(log=options.log),
-        )
         api_server, exit_code = _start_api(
             connection,
             options,
-            actions,
-            supervisor,
-            _drain_requester(options.stop, database, options.clock),
+            ApiServices(
+                environment_actions=EnvironmentActionService(
+                    database,
+                    options.clock,
+                    registry,
+                    options=ActionOptions(log=options.log),
+                ),
+                run_stopper=supervisor,
+                drain_requester=_drain_requester(options.stop, database, options.clock),
+            ),
         )
         if exit_code is not None:
             return exit_code
@@ -373,128 +345,6 @@ def _recycle(step: Callable[[], object], *, event: str, log: Logger) -> None:
         step()
     except Exception as error:
         log.error({"event": event, "error": str(error)})
-
-
-def _start_api(
-    connection: sqlite3.Connection,
-    options: ServeOptions,
-    environment_actions: EnvironmentActions,
-    run_stopper: RunStopper,
-    drain_requester: DrainRequester,
-) -> tuple[ApiServer | None, int | None]:
-    """按 settings 挂载 API：无 token 先自生成，端口被占退 4，tailnet 绑定失败降级。"""
-    _ensure_token_logged(connection, options)
-    try:
-        settings = all_settings(connection)
-        host, port = _api_listen(settings)
-        extra_hosts, down_detail = tailscale.remote_listen_plan(
-            settings, options.tailscale_runner, options.log
-        )
-    except ValueError as error:
-        options.log.error({"event": "serve.api_config_invalid", "error": str(error)})
-        return None, EXIT_ERROR
-    if down_detail is not None:
-        _record_events(
-            connection,
-            [(tailscale.TAILSCALE_DOWN_EVENT, {"detail": down_detail})],
-            at=options.clock.utc_now(),
-            event_type=EventType.HOST_EVENT,
-        )
-        options.log.warn({"event": "serve.tailscale_down", "detail": down_detail})
-    # api.host 直接配成 tailnet 地址时不再重复追加，避免同一地址绑两次。
-    plan = tailscale.ListenPlan(host, port, tuple(extra for extra in extra_hosts if extra != host))
-    server = _bind_api(connection, options, plan, environment_actions, run_stopper, drain_requester)
-    if server is None:
-        return None, EXIT_PORT_CONFLICT
-    tailscale.record_bind_degradation(
-        connection, failures=server.bind_failures, at=options.clock.utc_now()
-    )
-    bound_hosts = {bound_host for bound_host, _bound_port in server.addresses}
-    options.log.info(
-        {
-            "event": "serve.api_listening",
-            "host": plan.host,
-            "port": plan.port,
-            "extra_hosts": [extra for extra in plan.extra_hosts if extra in bound_hosts],
-        }
-    )
-    if options.on_api_listening is not None:
-        options.on_api_listening(*server.address)
-    return server, None
-
-
-def _ensure_token_logged(connection: sqlite3.Connection, options: ServeOptions) -> None:
-    """无可用 token 时生成并落库；日志只记已生成，不记值（docs/11）。"""
-    if bearer_token(connection) is not None:
-        return
-    ensure_token(connection, at=options.clock.utc_now())
-    options.log.info({"event": "serve.token_generated", "detail": "已生成访问令牌"})
-
-
-def _bind_api(
-    connection: sqlite3.Connection,
-    options: ServeOptions,
-    plan: tailscale.ListenPlan,
-    environment_actions: EnvironmentActions,
-    run_stopper: RunStopper,
-    drain_requester: DrainRequester,
-) -> ApiServer | None:
-    """启动 API 服务；主地址端口被占写 core.port_conflict 返回 None，其余 OSError 上抛。"""
-    try:
-        return start_api_server(
-            connection,
-            ApiOptions(
-                host=plan.host,
-                port=plan.port,
-                extra_hosts=plan.extra_hosts,
-                clock=options.clock,
-                log=options.log,
-                stop=options.stop,
-                task_runner=options.task_runner,
-                environment_actions=environment_actions,
-                run_stopper=run_stopper,
-                drain_requester=drain_requester,
-            ),
-        )
-    except OSError as error:
-        # docs/08 的退出码 4 只针对端口被占；地址不可达等其它绑定失败走通用失败路径。
-        if error.errno != errno.EADDRINUSE:
-            raise
-        _record_events(
-            connection,
-            [
-                (
-                    PORT_CONFLICT_EVENT,
-                    {"detail": f"{plan.host}:{plan.port} 已被其它进程监听：{error}"},
-                )
-            ],
-            at=options.clock.utc_now(),
-            event_type=EventType.CORE_EVENT,
-        )
-        options.log.error(
-            {
-                "event": "serve.port_conflict",
-                "host": plan.host,
-                "port": plan.port,
-                "error": str(error),
-            }
-        )
-        return None
-
-
-def _api_listen(settings: Mapping[str, Any]) -> tuple[str, int]:
-    """读监听地址设置；缺项用默认值，取值非法按坏配置拒绝启动并指出键名。
-
-    Raises:
-        ValueError: api.host 或 api.port 的类型或取值范围不合法。
-    """
-    host = settings.get(API_HOST_KEY, DEFAULT_HOST)
-    port = settings.get(API_PORT_KEY, DEFAULT_PORT)
-    if not isinstance(host, str) or not host:
-        raise ValueError(f"{API_HOST_KEY} 必须是非空字符串")
-    if not isinstance(port, int) or isinstance(port, bool) or not 0 <= port <= 65535:
-        raise ValueError(f"{API_PORT_KEY} 必须是 0 到 65535 的整数")
-    return host, port
 
 
 __all__ = [
