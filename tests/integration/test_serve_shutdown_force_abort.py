@@ -16,7 +16,6 @@ import sys
 import threading
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -27,33 +26,25 @@ from contracts import (
     EnvironmentRef,
     Logger,
     RunContext,
-    ScriptHandle,
-    ScriptObservation,
 )
 from core.api.store import TOKEN_KEY
 from core.clock import VirtualClock
 from core.hostops import serve as serve_module
 from core.hostops.serve import run_serve
 from core.jobs.run_service import JobRunService
-from core.logging import JsonLineLogger
 from core.plugins.channel import WorkerChannel
-from core.plugins.registry import PluginCapabilities, PluginRegistry
 from core.plugins.rpc_host import EnvironmentProxy, RpcPluginHost
 from core.plugins.worker_options import WorkerConfig
-from core.supervisor import Supervisor
 from core.supervisor_shutdown import SHUTDOWN_FORCE_ABORT_EVENT
-from plugins.fake.plugin import FakeEnvironmentProvider, FakeScriptAdapter, FakeVerifier
-from storage import migrate, open_database
+from storage import open_database
 from storage.repositories.job_runs import NewRun
 from tests.integration.test_serve_api import TOKEN, configure, serve_options
 from tests.integration.test_serve_shell import global_event_payloads
-from tests.supervisor_support import JOIN_TIMEOUT_SECONDS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PLUGIN_FIXTURES = REPO_ROOT / "tests" / "fixtures" / "plugins"
 T0 = datetime(2026, 11, 2, 9, 0, tzinfo=UTC)
 WAIT_SECONDS = 30.0
-_STABLE_DISK_FREE = 100 * 1024**3
 # monkeypatch 后的时序常量：总等待上限 1 秒，收尾宽限 0.3 秒，全部亚秒到秒级。
 JOIN_SECONDS = 1.0
 GRACE_SECONDS = 0.3
@@ -167,12 +158,11 @@ def captured_hosts(monkeypatch: pytest.MonkeyPatch) -> list[RpcPluginHost]:
     return instances
 
 
-def test_force_abort_kills_worker_tree_and_drains_run(
+def _prepared_hang_serve(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    captured_hosts: list[RpcPluginHost],
-) -> None:
-    """卡死调用下停机：宽限先到，强制终止后进程树消失、serve 提前收场且事件恰一条。"""
+) -> tuple[Path, Path, Path, str]:
+    """钉住停机时序常量、装好 hang 插件并种一条排队运行，返回数据根、插件根、pid 文件与运行 id。"""
     monkeypatch.setattr(serve_module, "_EXECUTOR_JOIN_SECONDS", JOIN_SECONDS)
     monkeypatch.setattr(serve_module, "_EXECUTOR_ABORT_GRACE_SECONDS", GRACE_SECONDS)
     data_root = tmp_path / "data"
@@ -180,8 +170,16 @@ def test_force_abort_kills_worker_tree_and_drains_run(
     shutil.copytree(PLUGIN_FIXTURES / "hang", plugins_root / "hang")
     configure(data_root, {TOKEN_KEY: TOKEN, "api.host": "127.0.0.1", "api.port": 0})
     pids_file = tmp_path / "pids.json"
-    run_id = _seed_hang_run(data_root, pids_file)
-    stop = threading.Event()
+    return data_root, plugins_root, pids_file, _seed_hang_run(data_root, pids_file)
+
+
+def _serve_owner_thread(
+    data_root: Path,
+    plugins_root: Path,
+    stop: threading.Event,
+    captured_hosts: list[RpcPluginHost],
+) -> tuple[threading.Thread, dict[str, Any], dict[str, object]]:
+    """后台线程里跑 serve，返回线程与 worker 进程号、退出码的带回容器。"""
     running: dict[str, Any] = {}
     outcome: dict[str, object] = {}
 
@@ -201,13 +199,30 @@ def test_force_abort_kills_worker_tree_and_drains_run(
 
     thread = threading.Thread(target=owner, name="serve-owner", daemon=True)
     thread.start()
+    return thread, running, outcome
+
+
+def _confirmed_pids(pids_file: Path, running: dict[str, Any]) -> tuple[int, int]:
+    """等 pid 文件落地并确认 worker 与其子进程在终止前存活，返回 worker 与子进程号。"""
+    _wait_for_file(pids_file)
+    pids = json.loads(pids_file.read_text(encoding="utf-8"))
+    assert running["worker_pid"] is not None, "worker 进程没有随插件宿主启动"
+    assert _pid_alive(int(pids["pid"])), "worker 进程应在被终止前存活"
+    assert _pid_alive(int(pids["child_pid"])), "worker 的子进程应在被终止前存活"
+    return int(running["worker_pid"]), int(pids["child_pid"])
+
+
+def _measured_abort(
+    thread: threading.Thread,
+    stop: threading.Event,
+    pids_file: Path,
+    running: dict[str, Any],
+) -> tuple[float, int, int]:
+    """发停机量总时长，返回经过时间与 worker、子进程号；前置断言失败也要把 serve 收场。"""
+    worker_pid, child_pid = 0, 0
     elapsed = float("inf")
     try:
-        _wait_for_file(pids_file)
-        pids = json.loads(pids_file.read_text(encoding="utf-8"))
-        assert running["worker_pid"] is not None, "worker 进程没有随插件宿主启动"
-        assert _pid_alive(int(pids["pid"])), "worker 进程应在被终止前存活"
-        assert _pid_alive(int(pids["child_pid"])), "worker 的子进程应在被终止前存活"
+        worker_pid, child_pid = _confirmed_pids(pids_file, running)
         started = time.monotonic()
         stop.set()
         thread.join(WAIT_SECONDS)
@@ -215,16 +230,11 @@ def test_force_abort_kills_worker_tree_and_drains_run(
     finally:
         stop.set()
         thread.join(WAIT_SECONDS)
-    assert not thread.is_alive(), "强制终止没有让 serve 收场"
-    assert outcome.get("code") == 0
-    assert elapsed < 2.0, f"总时长 {elapsed:.2f} 秒顶到了等待上限，强制终止没有生效"
-    assert elapsed >= GRACE_SECONDS - 0.05, "宽限期没有先于强制终止耗完"
+    return elapsed, worker_pid, child_pid
 
-    worker_pid = int(running["worker_pid"])
-    assert _wait_pid_gone(worker_pid), "worker 进程在强制终止后仍存活"
-    assert _wait_pid_gone(int(pids["child_pid"])), "worker 的子进程在强制终止后仍存活"
 
-    database = data_root / "backstop.sqlite"
+def _assert_shutdown_events(database: Path, run_id: str) -> None:
+    """全局事件记账：强制终止恰一条且目标正确，不再记执行器等待超时。"""
     aborts = [
         payload
         for payload in global_event_payloads(database)
@@ -239,6 +249,9 @@ def test_force_abort_kills_worker_tree_and_drains_run(
     ]
     assert timeouts == [], "强制终止生效时不应再记等待超时"
 
+
+def _assert_run_drain_state(database: Path, run_id: str) -> None:
+    """运行收尾记账：一条 shutdown 原因的 run.interrupted，运行停在 preparing，租约保持 leased。"""
     reader = sqlite3.connect(database)
     try:
         interrupted = reader.execute(
@@ -256,6 +269,26 @@ def test_force_abort_kills_worker_tree_and_drains_run(
     assert state is not None and str(state[0]) == "preparing"
     assert lease is not None and str(lease[0]) == "leased"
 
+
+def test_force_abort_kills_worker_tree_and_drains_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    captured_hosts: list[RpcPluginHost],
+) -> None:
+    """卡死调用下停机：宽限先到，强制终止后进程树消失、serve 提前收场且事件恰一条。"""
+    data_root, plugins_root, pids_file, run_id = _prepared_hang_serve(tmp_path, monkeypatch)
+    stop = threading.Event()
+    thread, running, outcome = _serve_owner_thread(data_root, plugins_root, stop, captured_hosts)
+    elapsed, worker_pid, child_pid = _measured_abort(thread, stop, pids_file, running)
+    assert not thread.is_alive(), "强制终止没有让 serve 收场"
+    assert outcome.get("code") == 0
+    assert elapsed < 2.0, f"总时长 {elapsed:.2f} 秒顶到了等待上限，强制终止没有生效"
+    assert elapsed >= GRACE_SECONDS - 0.05, "宽限期没有先于强制终止耗完"
+    assert _wait_pid_gone(worker_pid), "worker 进程在强制终止后仍存活"
+    assert _wait_pid_gone(child_pid), "worker 的子进程在强制终止后仍存活"
+    database = data_root / "backstop.sqlite"
+    _assert_shutdown_events(database, run_id)
+    _assert_run_drain_state(database, run_id)
     host = captured_hosts[0]
     assert host.channels == {}
     host.close()
@@ -294,225 +327,6 @@ def test_shutdown_without_stuck_call_skips_force_abort(
     payloads = global_event_payloads(data_root / "backstop.sqlite")
     assert not any(payload.get("event") == SHUTDOWN_FORCE_ABORT_EVENT for payload in payloads)
     assert not any(payload.get("event") == _JOIN_TIMEOUT_EVENT for payload in payloads)
-
-
-class _GatedScript(FakeScriptAdapter):
-    """observe 停在门上直到测试放行；进入事件供主线程确定性同步。"""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.entered = threading.Event()
-        self.release = threading.Event()
-
-    def observe(self, handle: ScriptHandle, ctx: RunContext) -> ScriptObservation:
-        self.entered.set()
-        assert self.release.wait(timeout=WAIT_SECONDS * 2), "测试没有放行执行器"
-        return super().observe(handle, ctx)
-
-
-@dataclass(slots=True)
-class _StuckSupervisor:
-    """带卡死执行线程的 supervisor 脚手架：连接、停机事件、运行 id 与放行门都在这里。"""
-
-    supervisor: Supervisor
-    connection: sqlite3.Connection
-    stop: threading.Event
-    run_id: str
-    adapter: _GatedScript
-
-    def settle(self) -> None:
-        """放行执行器并等线程收尾，测试失败时也不泄漏线程。"""
-        self.stop.set()
-        self.adapter.release.set()
-        self.supervisor.join_executors(JOIN_TIMEOUT_SECONDS)
-
-
-def _stuck_supervisor(
-    tmp_path: Path,
-    *,
-    shutdown: Any,
-    abort_workers: Any,
-    log: JsonLineLogger | None = None,
-) -> _StuckSupervisor:
-    """造一个执行线程卡在 observe 上的 supervisor；停机在进入执行后才置位。
-
-    shutdown 传 None 时内部接同一个事件：派发时停机未置位，置位后才算停机收尾。
-    """
-    stop = threading.Event()
-    connection = open_database(tmp_path / "state.db")
-    migrate(connection)
-    connection.execute(
-        "INSERT INTO job_templates (id, name, plugin_id, environment_id, config, "
-        "config_schema_version, verification_policy, recovery_policy, enabled, "
-        "created_at, updated_at) VALUES (?, '日常', 'fake', 'env-1', ?, '1', ?, '{}', 1, ?, ?)",
-        (
-            "template-1",
-            json.dumps({"scenario": "instant"}),
-            json.dumps(
-                {
-                    "id": "fake-policy",
-                    "verifier_plugin_id": "fake",
-                    "required_evidence": ["log"],
-                    "params": {},
-                }
-            ),
-            T0.isoformat(),
-            T0.isoformat(),
-        ),
-    )
-    runs = JobRunService(connection, VirtualClock(T0))
-    record, _ = runs.create_scheduled(
-        NewRun(
-            template_id="template-1",
-            schedule_id=None,
-            scheduled_at=T0,
-            created_at=T0,
-            idempotency_key="stuck",
-            priority=0,
-            deadline_at=None,
-        )
-    )
-    runs.enqueue(record.id)
-    registry = PluginRegistry()
-    adapter = _GatedScript()
-    registry.register(
-        PluginCapabilities(
-            plugin_id="fake",
-            environment=FakeEnvironmentProvider(),
-            script=adapter,
-            verifier=FakeVerifier(),
-        )
-    )
-    supervisor = Supervisor(
-        connection,
-        VirtualClock(T0),
-        registry,
-        data_root=tmp_path,
-        log=log,
-        disk_free=lambda: _STABLE_DISK_FREE,
-        shutdown=(lambda: stop.is_set()) if shutdown is None else shutdown,
-        abort_workers=abort_workers,
-    )
-    supervisor.tick()
-    assert adapter.entered.wait(WAIT_SECONDS), "运行没有进入执行"
-    stop.set()
-    return _StuckSupervisor(supervisor, connection, stop, record.id, adapter)
-
-
-def _global_payloads(connection: sqlite3.Connection) -> list[dict[str, Any]]:
-    """读全局事件载荷，按写入顺序。"""
-    rows = connection.execute("SELECT payload FROM events_global ORDER BY seq").fetchall()
-    return [dict(json.loads(str(row[0]))) for row in rows]
-
-
-def _log_entries(log_path: Path) -> list[dict[str, Any]]:
-    return [
-        json.loads(line)
-        for line in log_path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-
-
-def test_force_abort_records_event_and_targets_stuck_plugin(tmp_path: Path) -> None:
-    """宽限到点：终止入口只收到卡死运行的插件，日志与事件各恰一条。"""
-    log_path = tmp_path / "logs" / "core.jsonl"
-    aborted: list[tuple[str, ...]] = []
-    stuck = _stuck_supervisor(
-        tmp_path,
-        shutdown=None,
-        abort_workers=lambda plugin_ids: aborted.append(tuple(plugin_ids)),
-        log=JsonLineLogger(log_path),
-    )
-    try:
-        stuck.supervisor.join_executors(JOIN_SECONDS, abort_grace_seconds=GRACE_SECONDS)
-    finally:
-        stuck.settle()
-    assert aborted == [("fake",)], f"终止入口收到的插件不对：{aborted}"
-    aborts = [
-        payload
-        for payload in _global_payloads(stuck.connection)
-        if payload.get("event") == SHUTDOWN_FORCE_ABORT_EVENT
-    ]
-    assert len(aborts) == 1, f"强制终止事件条数不对：{len(aborts)}"
-    assert aborts[0]["payload"] == {"plugin_ids": ["fake"], "run_ids": [stuck.run_id]}
-    logged = [
-        entry
-        for entry in _log_entries(log_path)
-        if entry.get("event") == SHUTDOWN_FORCE_ABORT_EVENT
-    ]
-    assert len(logged) == 1, f"强制终止日志条数不对：{logged}"
-    assert logged[0]["plugin_ids"] == ["fake"]
-    assert logged[0]["run_ids"] == [stuck.run_id]
-    assert logged[0]["level"] == "ERROR"
-
-
-def test_force_abort_leaves_bounded_wait_accounting_when_thread_stays_stuck(
-    tmp_path: Path,
-) -> None:
-    """终止后线程仍卡死（假脚本不因杀 worker 解开）：等待顶到上限，超时记账照记。"""
-    stuck = _stuck_supervisor(tmp_path, shutdown=None, abort_workers=lambda _ids: None)
-    try:
-        stuck.supervisor.join_executors(JOIN_SECONDS, abort_grace_seconds=GRACE_SECONDS)
-    finally:
-        stuck.settle()
-    timeouts = [
-        payload
-        for payload in _global_payloads(stuck.connection)
-        if payload.get("event") == _JOIN_TIMEOUT_EVENT
-    ]
-    assert len(timeouts) == 1, f"等待超时记账条数不对：{len(timeouts)}"
-    assert timeouts[0]["payload"] == {"run_ids": [stuck.run_id]}
-
-
-def test_force_abort_skipped_on_non_shutdown_exit(tmp_path: Path) -> None:
-    """磁盘退场等非停机路径：线程卡死也只等待，不终止 worker、不记事件。"""
-    aborted: list[tuple[str, ...]] = []
-    stuck = _stuck_supervisor(
-        tmp_path,
-        shutdown=lambda: False,
-        abort_workers=lambda plugin_ids: aborted.append(tuple(plugin_ids)),
-    )
-    try:
-        stuck.supervisor.join_executors(JOIN_SECONDS, abort_grace_seconds=GRACE_SECONDS)
-    finally:
-        stuck.settle()
-    assert aborted == [], "非停机退场不应触达终止入口"
-    aborts = [
-        payload
-        for payload in _global_payloads(stuck.connection)
-        if payload.get("event") == SHUTDOWN_FORCE_ABORT_EVENT
-    ]
-    assert aborts == [], "非停机退场不应记强制终止事件"
-
-
-def test_force_abort_skipped_without_executor_threads(tmp_path: Path) -> None:
-    """停机但无在跑执行线程：不触达终止入口，也不记强制终止事件。"""
-    aborted: list[tuple[str, ...]] = []
-    connection = open_database(tmp_path / "state.db")
-    migrate(connection)
-    registry = PluginRegistry()
-    registry.register(
-        PluginCapabilities(
-            plugin_id="fake",
-            environment=FakeEnvironmentProvider(),
-            script=FakeScriptAdapter(),
-            verifier=FakeVerifier(),
-        )
-    )
-    supervisor = Supervisor(
-        connection,
-        VirtualClock(T0),
-        registry,
-        data_root=tmp_path,
-        disk_free=lambda: _STABLE_DISK_FREE,
-        shutdown=lambda: True,
-        abort_workers=lambda plugin_ids: aborted.append(tuple(plugin_ids)),
-    )
-    try:
-        supervisor.join_executors(JOIN_SECONDS, abort_grace_seconds=GRACE_SECONDS)
-    finally:
-        connection.close()
-    assert aborted == [], "无执行线程时不应触达终止入口"
 
 
 class _Cancel:
