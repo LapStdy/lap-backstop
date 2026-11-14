@@ -42,9 +42,9 @@ def insert_schedule(connection: sqlite3.Connection, *, keep_warm_minutes: int) -
 
 
 def test_expired_lease_moves_run_to_recovering(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, runs, data_root = env
+    connection, clock, runs, data_root = supervisor_env
     insert_template(connection)
     run_id = prepare_run(connection, runs)
     runs.enqueue(run_id)
@@ -65,10 +65,10 @@ def test_expired_lease_moves_run_to_recovering(
 
 
 def test_cleaning_run_holds_lease_across_renewal_ticks(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     """docs/09：租约一直持有到 cleanup 完成；cleaning 中的长清理靠周期续租保住。"""
-    connection, clock, runs, data_root = env
+    connection, clock, runs, data_root = supervisor_env
     insert_template(connection)
     run_id = prepare_run(connection, runs)
     runs.enqueue(run_id)
@@ -89,9 +89,9 @@ def test_cleaning_run_holds_lease_across_renewal_ticks(
 
 
 def test_expired_warm_window_closes_environment(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, _runs, data_root = env
+    connection, clock, _runs, data_root = supervisor_env
     insert_template(connection)
     repository = EnvironmentRepository(connection)
     repository.ensure(ENV_ID, provider_id="fake", name=ENV_ID)
@@ -104,9 +104,9 @@ def test_expired_warm_window_closes_environment(
 
 
 def test_dispatch_passes_schedule_keep_warm_to_executor(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, runs, data_root = env
+    connection, clock, runs, data_root = supervisor_env
     insert_template(connection)
     insert_schedule(connection, keep_warm_minutes=30)
     run_id = prepare_run(connection, runs, RunOverrides(schedule_id=SCHEDULE_ID))
@@ -119,9 +119,9 @@ def test_dispatch_passes_schedule_keep_warm_to_executor(
 
 
 def test_startup_marks_orphan_executing_run_unknown(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, runs, data_root = env
+    connection, clock, runs, data_root = supervisor_env
     insert_template(connection)
     run_id = prepare_run(connection, runs)
     runs.enqueue(run_id)
@@ -138,9 +138,9 @@ def test_startup_marks_orphan_executing_run_unknown(
 
 
 def test_tick_fails_overdue_run(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, runs, data_root = env
+    connection, clock, runs, data_root = supervisor_env
     insert_template(connection)
     run_id = prepare_run(connection, runs, RunOverrides(deadline_at=T0 + timedelta(minutes=1)))
     runs.enqueue(run_id)
@@ -153,10 +153,10 @@ def test_tick_fails_overdue_run(
 
 
 def test_dispatch_uses_rpc_registry(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     """supervisor 拿到 RPC 能力表时，一次 tick 就能把运行推到终态。"""
-    connection, clock, runs, data_root = env
+    connection, clock, runs, data_root = supervisor_env
     insert_template(connection)
     run_id = prepare_run(connection, runs)
     runs.enqueue(run_id)

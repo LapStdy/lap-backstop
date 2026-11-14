@@ -26,10 +26,10 @@ from tests.scenarios.supervisor_scenario_support import (
 
 
 def test_prepare_environment_moves_unknown_to_ready(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     """手动预热与 tick 调度无关：provider 被调到，环境按 service 规则迁到 ready。"""
-    connection, clock, _runs, data_root = env
+    connection, clock, _runs, data_root = supervisor_env
     provider = FakeEnvironmentProvider()
     registry = PluginRegistry()
     registry.register(PluginCapabilities(plugin_id="fake", environment=provider))
@@ -44,10 +44,10 @@ def test_prepare_environment_moves_unknown_to_ready(
 
 
 def test_reset_environment_stays_booting_until_probe(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     """docs/02：reset 复位成功后不直接 ready，等下一次探针确认。"""
-    connection, clock, _runs, data_root = env
+    connection, clock, _runs, data_root = supervisor_env
     provider = FakeEnvironmentProvider()
     registry = PluginRegistry()
     registry.register(PluginCapabilities(plugin_id="fake", environment=provider))
@@ -64,9 +64,9 @@ def test_reset_environment_stays_booting_until_probe(
 
 
 def test_prepare_environment_rejects_busy_state(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, _runs, data_root = env
+    connection, clock, _runs, data_root = supervisor_env
     registry = PluginRegistry()
     registry.register(PluginCapabilities(plugin_id="fake", environment=FakeEnvironmentProvider()))
     repository = EnvironmentRepository(connection)
@@ -81,9 +81,9 @@ def test_prepare_environment_rejects_busy_state(
 
 
 def test_prepare_environment_raises_for_missing_provider(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, _runs, data_root = env
+    connection, clock, _runs, data_root = supervisor_env
     EnvironmentRepository(connection).ensure(ENV_ID, provider_id="ghost", name=ENV_ID)
     supervisor = supervisor_for(connection, clock, data_root)
     with pytest.raises(PluginNotFoundError):
@@ -91,9 +91,9 @@ def test_prepare_environment_raises_for_missing_provider(
 
 
 def test_reset_environment_raises_for_missing_environment(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, _runs, data_root = env
+    connection, clock, _runs, data_root = supervisor_env
     supervisor = supervisor_for(connection, clock, data_root)
     with pytest.raises(EnvironmentNotFoundError):
         supervisor.reset_environment("no-such-env")

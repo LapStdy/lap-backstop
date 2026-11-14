@@ -123,9 +123,9 @@ def body_of(response: ApiResponse) -> dict[str, Any]:
 
 
 def test_cancel_during_execute_stops_script_gracefully(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
-    connection, clock, runs, data_root = env
+    connection, clock, runs, data_root = supervisor_env
     insert_template(connection)
     run_id = prepare_run(connection, runs)
     runs.enqueue(run_id)
@@ -154,10 +154,10 @@ def test_cancel_during_execute_stops_script_gracefully(
 
 
 def test_stop_during_execute_reaches_script_and_lands_cancelled(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     """执行中的叫停必须置位执行器侧的取消标记：脚本被停掉，最终 cancelled。"""
-    connection, clock, runs, data_root = env
+    connection, clock, runs, data_root = supervisor_env
     insert_template(connection)
     adapter = _GatedScriptAdapter()
     run_id = prepare_run(connection, runs)
@@ -193,10 +193,10 @@ def test_stop_during_execute_reaches_script_and_lands_cancelled(
 
 
 def test_stop_during_waiting_cancels_on_next_dispatch_without_launch(
-    env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
+    supervisor_env: tuple[sqlite3.Connection, VirtualClock, JobRunService, Path],
 ) -> None:
     """waiting 期间没有取消标记：下一轮 dispatch 按 run.interrupted 收敛，不执行脚本。"""
-    connection, clock, runs, data_root = env
+    connection, clock, runs, data_root = supervisor_env
     insert_template(connection)
     adapter = FakeScriptAdapter()
     run_id = prepare_run(

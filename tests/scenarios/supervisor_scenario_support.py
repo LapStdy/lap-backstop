@@ -65,7 +65,7 @@ def make_registry() -> PluginRegistry:
 
 
 @pytest.fixture
-def env(
+def supervisor_env(
     tmp_path: Path,
 ) -> Iterator[tuple[sqlite3.Connection, VirtualClock, JobRunService, Path]]:
     connection = open_database(tmp_path / "state.db")
