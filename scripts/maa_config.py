@@ -279,7 +279,8 @@ def cmd_title_prefix(data: dict[str, Any], args: argparse.Namespace) -> None:
     print(f"WindowTitlePrefix = {args.value!r}")
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
+    """构造命令行解析器，子命令到处理函数的映射在这里接好。"""
     ap = argparse.ArgumentParser(description="读写 MAA 的 gui.new.json（MAA 需先关闭）")
     ap.add_argument("--maa-dir", required=True, help="MAA 目录，例如 D:\\MAA-Test")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -321,8 +322,11 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("title-prefix")
     p.add_argument("value")
     p.set_defaults(func=cmd_title_prefix)
+    return ap
 
-    args = ap.parse_args(argv)
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
     cfg_path = resolve_config(args.maa_dir)
     maa_dir = Path(args.maa_dir).expanduser().resolve()
     if maa_running(maa_dir) and args.cmd not in {"profiles", "tasks", "show"}:
