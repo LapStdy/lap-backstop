@@ -16,7 +16,7 @@
 - [ ] 覆盖层模板：维护、更新、掉线、退出确认、公告与签到面板的识别与处置。
 - [ ] 预热与保温：preheat_minutes、keep_warm_minutes、空闲关闭。
 - [ ] 门控：开始唤醒失败急停（环境 ready 才放行 MAA 已由 prepare 主界面门控落地）。
-- [ ] 配置投影接线：开跑前按插件配置构造整份期望并调用 `apply`，成功写 `config.applied`，回滚写 `config.rolled_back`。
+- [ ] 配置投影合并策略：`config_projection.strategy` 的 `script_first` / `platform_first`（现行按整份目标覆盖，未知键不留）。
 - [ ] 脚本 adapter：Python 绑定（日志信号采集与 GUI 模式启停已完成）。
 - [ ] verifier：结束画面与异常画面模板（任务集核对、理智采样证据已落地）。
 - [ ] recovery：重连、重启游戏、重启模拟器、停手通知。
