@@ -64,6 +64,8 @@ RUN_SCOPED_EVENTS: Final[frozenset[EventType]] = frozenset(
         EventType.EVIDENCE,
         EventType.NOTIFY_SENT,
         EventType.NOTIFY_FAILED,
+        EventType.CONFIG_APPLIED,
+        EventType.CONFIG_ROLLED_BACK,
         EventType.ADVISOR_REQUESTED,
         EventType.ADVISOR_RESPONDED,
         EventType.ADVISOR_REJECTED,
@@ -229,17 +231,18 @@ class PluginRejectedPayload(TypedDict, total=False):
 
 
 class ConfigAppliedPayload(TypedDict, total=False):
+    run_id: str
     plugin_id: str
-    target: str
-    revision: int
-    result: str
+    revision: str | None
+    sha256: str | None
+    changed: bool
 
 
 class ConfigRolledBackPayload(TypedDict, total=False):
-    plugin_id: str
-    target: str
-    from_revision: int
-    to_revision: int
+    run_id: str
+    revision: str
+    ok: bool
+    error_code: str | None
 
 
 class DeprecationUsedPayload(TypedDict, total=False):

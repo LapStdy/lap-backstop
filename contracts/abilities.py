@@ -89,7 +89,11 @@ class Verifier(Protocol):
 
 @runtime_checkable
 class ConfigProjection(Protocol):
-    """配置投影：目标侧配置的比对、下发与回滚。"""
+    """配置投影：目标侧配置的构造、比对、下发与回滚。"""
+
+    def desired(self, ctx: RunContext, config: Mapping[str, Any]) -> Mapping[str, Any]:
+        """按插件配置构造整份目标配置。"""
+        ...
 
     def diff(
         self, ctx: RunContext, desired: Mapping[str, Any], actual: Mapping[str, Any]
