@@ -210,6 +210,7 @@ LOCALE_HINTS = (
 
 EXEMPT_DIRS = {
     ".git",
+    ".agents",
     "node_modules",
     "dist",
     "build",

@@ -15,7 +15,7 @@ maa-vision = ["opencv-python-headless>=4.9", "numpy>=2.0"]
 line-length = 100
 target-version = "py312"
 src = ["contracts", "core", "plugins", "web", "storage", "tests"]
-extend-exclude = ["archive", ".tmp"]
+extend-exclude = ["archive", ".tmp", ".agents"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]

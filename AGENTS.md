@@ -43,6 +43,12 @@
 
 范围判据与收件箱：GitHub `LapStdy/lap-skills-rules` 的 `rules/change-scope.md`。
 
+## 工作树（硬规则）
+
+1. 归属固定：ZCode 卡的 worktree 在 `D:\lap-backstop-card<N>`、分支 `feat/card<N>-<slug>`；DSH 会话的 worktree 在仓库内 `.agents/worktrees`、分支 `dsh-*`。不许把两者建到对方的位置。
+2. 不许清理对方创建的 worktree；收尾自检 `git worktree list` 与 `.agents/worktrees` 按两套都核对。
+3. 不许把运行数据放进 DSH worktree：归档该会话会回收干净 worktree，被忽略的文件（如 `data/`）不阻止回收。
+
 ## 完成判据（硬规则）
 
 完成 ＝ 项目门禁一条命令退出码 0，不由感觉判定。
