@@ -119,6 +119,11 @@ class EnvironmentSupervision:
             self._close_environment(row, now)
 
     def _close_environment(self, row: EnvironmentRow, now: datetime) -> None:
+        """关闭单个到期环境：异常与失败结果都记一条 supervisor.warm_close_failed。
+
+        失败结果带 error_code 与 detail，异常带 error；两者都不向遍历传播，是否
+        再关由下一轮 tick 按 warm_expired 重新评估（docs/09 保温）。
+        """
         try:
             provider = self._registry.environment(row.provider_id)
             call = EnvironmentCall(
@@ -127,13 +132,23 @@ class EnvironmentSupervision:
                 ref=EnvironmentRef(id=row.id, provider_id=row.provider_id),
                 ctx=self._standalone_context(row, now, "warm"),
             )
-            self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
+            result = self._environments.cleanup(call, keep_warm=False, warm_minutes=0)
         except Exception as error:
             self._log.warn(
                 {
                     "event": "supervisor.warm_close_failed",
                     "environment_id": row.id,
                     "error": str(error),
+                }
+            )
+            return
+        if not result.ok:
+            self._log.warn(
+                {
+                    "event": "supervisor.warm_close_failed",
+                    "environment_id": row.id,
+                    "error_code": result.error_code or "",
+                    "detail": result.detail,
                 }
             )
 
