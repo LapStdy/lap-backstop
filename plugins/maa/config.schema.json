@@ -173,6 +173,13 @@
       "minimum": 0,
       "default": 30
     },
+    "verify_mode": {
+      "type": "string",
+      "title": "验证档位",
+      "description": "判定口径：script 只按脚本日志；screen 只看画面证据，画面判定未接入时记 unknown；dual 双证据合成，画面证据缺失时不判完成",
+      "enum": ["script", "screen", "dual"],
+      "default": "script"
+    },
     "config_projection": {
       "type": "object",
       "title": "配置投影",

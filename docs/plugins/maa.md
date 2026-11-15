@@ -23,7 +23,7 @@
 |---|---|
 | `environment` | MuMu 6.0 + 明日方舟的探测、准备、复位、保温与清理 |
 | `script` | MAA 的启动、观察、停止与恢复 |
-| `verifier` | 本次运行 `gui.log` 段的脚本证据判据，结论 `completed` / `failed` / `unknown` |
+| `verifier` | 按 `verify_mode` 档位验证，结论 `completed` / `failed` / `unknown` |
 | `config_projection` | `gui.new.json` 的差异比较、写入、备份与回滚 |
 
 ## 环境
@@ -111,7 +111,9 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 
 ## 验证
 
-判定只用脚本证据：脚本启动时把本次运行的日志起点写进工作目录的会话标记，验证阶段按标记取 `gui.log` 的本次运行段。
+判定档位由插件配置 `verify_mode` 选：`script`（默认）只按脚本证据；`screen` 只看画面证据，画面判定未接入，结论恒为 `unknown` 并写说明证据，检查项为 `maa-screen`；`dual` 先按 script 档得出脚本结论，再与画面证据合成——脚本失败仍判 `failed`（失败优先），脚本完成而画面证据缺失时压成 `unknown`，脚本 unknown 仍为 `unknown`，不因画面缺失判完成。配置写了非法取值时按 `script` 处理并记 `maa.verify_mode.invalid` 的 warn 日志。
+
+script 档按脚本证据判定：脚本启动时把本次运行的日志起点写进工作目录的会话标记，验证阶段按标记取 `gui.log` 的本次运行段。
 
 | 结论 | 判据 |
 |---|---|
@@ -133,7 +135,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 读时不写，理智数值不参与结论。没有可判定日志段时写 `maa-verify-unknown.txt`
 说明原因，结论记 `unknown`。
 
-没有证据就不判完成：`unknown` 交人工核对，重试与停手由内核恢复策略决定，插件不重跑、不改环境。画面证据（结束截图、异常画面模板）不参与判定，待真机采帧后另卡接入。
+没有证据就不判完成：`unknown` 交人工核对，重试与停手由内核恢复策略决定，插件不重跑、不改环境。画面证据（结束截图、异常画面模板）尚未接入：`screen` 档与 `dual` 档在画面侧都记 `unknown`，待真机采帧后另卡接入画面判定。
 
 ## 配置投影
 
@@ -185,11 +187,12 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | `startup_timeout_s` | integer | 300 | 游戏启动到登录界面的上限 |
 | `sample_interval_s` | integer | 30 | 运行期抽帧间隔 |
 | `keep_warm_minutes` | integer | 30 | 运行结束后保持环境就绪的时长 |
+| `verify_mode` | enum | `script` | 验证档位：`script` 只按脚本日志判定；`screen` 只看画面证据（未接入，记 unknown）；`dual` 双证据合成，画面证据缺失时不判完成 |
 | `config_projection.enabled` | boolean | true | 是否在开跑前对账并写入 |
 | `config_projection.backup_keep` | integer | 20 | 备份保留份数 |
 | `config_projection.strategy` | enum | `script_first` | `script_first` 保留脚本侧普通字段；`platform_first` 整份目标覆盖 |
 
-三档验证口径写在 JobTemplate 的 `VerificationPolicy.params.mode`，不在插件配置里。
+三档验证口径由插件配置 `verify_mode` 决定（见上表与验证节）；JobTemplate 的 `VerificationPolicy.params` 不承载本插件的档位选择。
 
 ## 错误映射
 

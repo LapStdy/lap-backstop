@@ -126,6 +126,7 @@ def test_config_schema_locks_documented_top_level_fields() -> None:
         "startup_timeout_s",
         "sample_interval_s",
         "keep_warm_minutes",
+        "verify_mode",
         "config_projection",
     }
 
@@ -151,11 +152,32 @@ def test_config_schema_defaults_match_plugin_doc() -> None:
     assert props["startup_timeout_s"]["default"] == 300
     assert props["sample_interval_s"]["default"] == 30
     assert props["keep_warm_minutes"]["default"] == 30
+    assert props["verify_mode"]["default"] == "script"
+    assert props["verify_mode"]["enum"] == ["script", "screen", "dual"]
     projection = props["config_projection"]["properties"]
     assert projection["enabled"]["default"] is True
     assert projection["backup_keep"]["default"] == 20
     assert projection["strategy"]["default"] == "script_first"
     assert projection["strategy"]["enum"] == ["script_first", "platform_first"]
+
+
+def test_config_schema_fields_are_all_documented() -> None:
+    """docs/plugins/maa.md 参数 schema 表：schema 每个顶层字段在参数表有行，缺行即红。"""
+    schema_fields = set(load_schema()["properties"])
+    doc = (PLUGIN_DIR.parents[1] / "docs" / "plugins" / "maa.md").read_text(encoding="utf-8")
+    section = doc.split("## 参数 schema", 1)[1].split("\n## ", 1)[0]
+    documented = {
+        line.split("|")[1].strip().strip("`")
+        for line in section.splitlines()
+        if line.startswith("| `")
+    }
+    assert "verify_mode" in documented
+    undocumented = {
+        field
+        for field in schema_fields
+        if field not in documented and not any(name.startswith(f"{field}.") for name in documented)
+    }
+    assert undocumented == set()
 
 
 def test_task_type_enum_follows_maa_config_whitelist() -> None:
