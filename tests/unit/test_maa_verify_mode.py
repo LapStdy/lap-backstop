@@ -71,6 +71,7 @@ def _context(
     *,
     config_extra: Mapping[str, Any] | None = None,
     logger: _RecordingLogger | None = None,
+    verification_policy: Mapping[str, Any] | None = None,
 ) -> RunContext:
     """构造上下文；证据登记回调会核对文件确实落在证据目录里。"""
     evidence = maa_dir / "evidence"
@@ -99,6 +100,7 @@ def _context(
         log=_RecordingLogger() if logger is None else logger,
         emit=lambda event, payload: None,
         record_evidence=record,
+        verification_policy={} if verification_policy is None else verification_policy,
     )
 
 
@@ -190,3 +192,128 @@ def test_non_string_mode_falls_back_to_script_with_warn_log(tmp_path: Path) -> N
     assert len(logger.warnings) == 1
     assert logger.warnings[0]["event"] == "maa.verify_mode.invalid"
     assert logger.warnings[0]["value"] == 42
+
+
+def test_policy_mode_screen_overrides_config_script(tmp_path: Path) -> None:
+    """模板 params.mode=screen 且合法时以模板为准：配置 script 不再生效。"""
+    mark_run(tmp_path)
+    app_log(tmp_path, COMPLETED_LINES)
+    policy: dict[str, Any] = {"params": {"mode": "screen"}}
+    verdict = MaaVerifier().verify(
+        _context(tmp_path, config_extra={"verify_mode": "script"}, verification_policy=policy)
+    )
+    assert verdict.status is VerdictStatus.UNKNOWN
+    assert "画面证据未接入" in verdict.reason
+    assert [check.name for check in verdict.checks] == ["maa-screen"]
+    assert verdict.policy_id == DEFAULT_POLICY_ID
+    assert (tmp_path / "evidence" / EVIDENCE_NOTE_NAME).is_file()
+    assert not (tmp_path / "evidence" / EVIDENCE_LOG_NAME).exists()
+
+
+def test_policy_mode_absent_falls_back_to_config_dual(tmp_path: Path) -> None:
+    """模板缺 params.mode 时回退配置：dual 档行为与配置直选一致。"""
+    mark_run(tmp_path)
+    app_log(tmp_path, COMPLETED_LINES)
+    policy: dict[str, Any] = {"id": "policy-tpl", "params": {}}
+    verdict = MaaVerifier().verify(
+        _context(tmp_path, config_extra={"verify_mode": "dual"}, verification_policy=policy)
+    )
+    assert verdict.status is VerdictStatus.UNKNOWN
+    assert "画面证据缺失" in verdict.reason
+    assert verdict.confidence == 0.0
+    assert [check.name for check in verdict.checks] == [
+        "maa-script-log",
+        "maa-task-set",
+        "maa-screen",
+    ]
+    assert (tmp_path / "evidence" / EVIDENCE_LOG_NAME).is_file()
+
+
+def test_policy_mode_invalid_falls_back_to_config(tmp_path: Path) -> None:
+    """模板 params.mode 非法按缺失处理：回退配置行为且不记事件，不抛错。"""
+    mark_run(tmp_path)
+    app_log(tmp_path, COMPLETED_LINES)
+    logger = _RecordingLogger()
+    policy: dict[str, Any] = {"params": {"mode": "weird"}}
+    verdict = MaaVerifier().verify(
+        _context(
+            tmp_path,
+            config_extra={"verify_mode": "dual"},
+            logger=logger,
+            verification_policy=policy,
+        )
+    )
+    assert verdict.status is VerdictStatus.UNKNOWN
+    assert "画面证据缺失" in verdict.reason
+    assert logger.warnings == []
+
+
+def test_policy_mode_invalid_and_config_invalid_falls_back_to_script(tmp_path: Path) -> None:
+    """模板档位非法且回退到的配置也非法：按 script 判定并记配置侧 warn。"""
+    mark_run(tmp_path)
+    app_log(tmp_path, COMPLETED_LINES)
+    logger = _RecordingLogger()
+    policy: dict[str, Any] = {"params": {"mode": "weird"}}
+    verdict = MaaVerifier().verify(
+        _context(
+            tmp_path,
+            config_extra={"verify_mode": "also-weird"},
+            logger=logger,
+            verification_policy=policy,
+        )
+    )
+    assert verdict.status is VerdictStatus.COMPLETED
+    assert len(logger.warnings) == 1
+    assert logger.warnings[0]["event"] == "maa.verify_mode.invalid"
+    assert logger.warnings[0]["value"] == "also-weird"
+
+
+def test_dual_policy_mode_never_completes_without_screen_evidence(tmp_path: Path) -> None:
+    """dual 经模板档位时同样不判完成：检查项含脚本侧结论与 maa-screen unknown。"""
+    mark_run(tmp_path)
+    app_log(tmp_path, COMPLETED_LINES)
+    policy: dict[str, Any] = {"params": {"mode": "dual"}}
+    verdict = MaaVerifier().verify(_context(tmp_path, verification_policy=policy))
+    assert verdict.status is not VerdictStatus.COMPLETED
+    assert verdict.status is VerdictStatus.UNKNOWN
+    assert "画面证据缺失" in verdict.reason
+    assert verdict.confidence == 0.0
+    assert [check.name for check in verdict.checks] == [
+        "maa-script-log",
+        "maa-task-set",
+        "maa-screen",
+    ]
+    assert verdict.checks[-1].status is CheckStatus.UNKNOWN
+    assert (tmp_path / "evidence" / EVIDENCE_LOG_NAME).is_file()
+
+
+def test_dual_policy_mode_keeps_script_failure(tmp_path: Path) -> None:
+    """dual 经模板档位时脚本失败仍判 failed：失败优先，理由不混入画面缺失。"""
+    mark_run(tmp_path)
+    app_log(tmp_path, ERROR_THEN_DONE)
+    policy: dict[str, Any] = {"params": {"mode": "dual"}}
+    verdict = MaaVerifier().verify(_context(tmp_path, verification_policy=policy))
+    assert verdict.status is VerdictStatus.FAILED
+    assert "脚本证据判定失败" in verdict.reason
+    assert "画面证据缺失" not in verdict.reason
+
+
+def test_policy_id_fills_verdict_from_template(tmp_path: Path) -> None:
+    """模板策略带 id 时回填 Verdict.policy_id，替换写死的缺省值。"""
+    mark_run(tmp_path)
+    app_log(tmp_path, COMPLETED_LINES)
+    policy: dict[str, Any] = {"id": "policy-x", "params": {"mode": "script"}}
+    verdict = MaaVerifier().verify(_context(tmp_path, verification_policy=policy))
+    assert verdict.status is VerdictStatus.COMPLETED
+    assert verdict.policy_id == "policy-x"
+    assert [check.name for check in verdict.checks] == ["maa-script-log", "maa-task-set"]
+
+
+def test_policy_id_fills_unknown_verdict_from_template(tmp_path: Path) -> None:
+    """unknown 结论同样回填模板策略 id：screen 档与缺证据收口共用该口径。"""
+    mark_run(tmp_path)
+    app_log(tmp_path, COMPLETED_LINES)
+    policy: dict[str, Any] = {"id": "policy-x", "params": {"mode": "screen"}}
+    verdict = MaaVerifier().verify(_context(tmp_path, verification_policy=policy))
+    assert verdict.status is VerdictStatus.UNKNOWN
+    assert verdict.policy_id == "policy-x"
