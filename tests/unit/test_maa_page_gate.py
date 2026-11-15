@@ -332,7 +332,9 @@ def test_page_gate_disabled_keeps_old_behaviour(tmp_path: Path) -> None:
     frames = _FakeFrames([None])
     recorder = _Recorder()
     provider = MaaEnvironment(host=_StubHost(), actions=_StubActions(), frames=frames)
-    result = provider.prepare(ENV, make_context(tmp_path, recorder, config={"page_gate": False}))
+    result = provider.prepare(
+        ENV, make_context(tmp_path, recorder, config={"page_gate": False, "login_flow": False})
+    )
     assert result.ok is True
     assert result.error_code is None
     assert result.detail == "环境就绪：127.0.0.1:16384 在线，com.hypergryph.arknights 在前台"

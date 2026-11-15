@@ -53,13 +53,17 @@ adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed
 | 1 | 复用或启动 MuMu | 实例未启动时 `control launch`；adb 设备在线（先 `kill-server` 再 `connect`） | 180 秒 |
 | 2 | 确认可截图 | 截到一帧 | 单次截图 |
 | 3 | 拉起游戏 | 游戏包在前台 | 60 秒 |
-| 4 | 主界面门控 | 交接档：总分 ≥ 8、外观命中 ≥ 2、连续 2 帧（规则见 [03](../arknights/03-主界面判定与导航.md)，实现见 [04](../arknights/04-主界面探针实现.md)） | 2 秒 |
-| 5 | 等登录界面 | 登录界面模板命中，或锚点判定为 `HOME` | 300 秒 |
-| 6 | 点登录按钮 | 固定安全坐标点击后画面变化 | 30 秒 |
-| 7 | 等主界面 | 锚点判定为 `HOME` 并稳定 | 300 秒 |
-| 8 | 启动 MAA 并加载资源（`binding`） | `load` 与 `connect` 成功 | 180 秒 |
+| 4 | 登录流程 | 状态机按 [07](../arknights/07-登录流程状态机.md)：准备画面点一次 `START`、登录界面点 `开始唤醒`、连接中与加载屏等待、覆盖层处置，判到主界面才继续 | 每阶段 30–120 秒 |
+| 5 | 主界面门控 | 交接档：总分 ≥ 8、外观命中 ≥ 2、连续 2 帧（规则见 [03](../arknights/03-主界面判定与导航.md)，实现见 [04](../arknights/04-主界面探针实现.md)） | 2 秒 |
+| 6 | 启动 MAA 并加载资源（`binding`） | `load` 与 `connect` 成功 | 180 秒 |
 
-- 步骤 1–4 由环境 provider 的 `prepare` 执行（步骤 4 可用配置 `page_gate` 关闭）；步骤 5–7 属就绪状态机，步骤 8 属脚本能力。
+- 步骤 1–5 由环境 provider 的 `prepare` 执行（步骤 4 可用配置 `login_flow` 关闭，步骤 5 可用 `page_gate` 关闭）；步骤 6 属脚本能力。
+
+登录流程（步骤 4）的判读与动作：
+
+- 判读先跑主界面判定（`HomeJudge`），达标即 `HOME`；否则按三张真机帧模板判阶段：准备画面 `start_button`（阈值 0.80）、登录界面 `wake_button`（0.85）、加载屏 `loading_logo`（0.85）；都不中按未知画面等待。
+- 动作只有三处固定安全坐标：准备画面 `START`、登录界面 `开始唤醒`、覆盖层里的公告关闭与限时活动签到卡。身份不明的覆盖层、退出确认、维护与掉线一律停手，不猜坐标。
+- 状态只前进不后退；回退到更早画面、阶段超时、截帧失败都按 `E_ENV_NOT_READY` 收口，失败阶段与原因写进结果说明。
 - 分辨率在 `probe` 里核对：仅当游戏在前台时比较截图的宽高与 `screen_size`。
 - 主界面门控的截帧通道由 `frame_source` 选：`mumu`（默认）走 `external_renderer_ipc.dll` 的 `nemu_capture_display`，帧是 RGBA8888 且行序自下而上，端口翻成自上而下 BGR 后再判定，每次取帧连接一次、取完断开；`adb` 走 `exec-out screencap`。真机同刻对比（2026-11-15）：两通道都是 1280×720、像素均值差 0.212；原生 3.3–6.0 毫秒，adb 236–822 毫秒并出现过 5.2 秒离群（超过门控 2 秒预算）。取不到帧时门控按 `E_ENV_UNREACHABLE` 失败，不自动退回另一通道。
 
@@ -70,15 +74,12 @@ adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed
 - 连续 2 帧未达交接档：prepare 失败并返回 `E_ENV_NOT_READY`，另写一条 `run.signal`（`kind=maa.gate.unknown`，载荷含总分、外观命中数与帧哈希）；截帧失败或帧不是 PNG 返回 `E_ENV_UNREACHABLE`；帧宽高不是 1280×720 返回 `E_ENV_RESOLUTION`，不缩放继续识别。
 - `page_gate=false` 时不截帧、不写证据、不写信号，prepare 在步骤 3 完成后直接放行，行为与未接门控一致。
 - 前三步失败时不做门控，保持原有错误码与语义。
-- 门控一次约 1.5 秒：adb 截帧约 600 毫秒 ×2、帧间等待 0.3 秒、判定 3.4–4.1 毫秒，预算 2 秒。
-
-- 步骤 5 判定为 `HOME` 时跳过步骤 6。
-- 步骤 8 在预热窗口内执行；没有预热窗口时，等待计入准备阶段上限。
+- 主界面门控（步骤 5）一次约 1.5 秒：adb 截帧约 600 毫秒 ×2、帧间等待 0.3 秒、判定 3.4–4.1 毫秒，预算 2 秒。
+- 步骤 6 在预热窗口内执行；没有预热窗口时，等待计入准备阶段上限。
 - `gui` 模式不做预启动；MAA 启动与资源加载在 `launch` 时发生，计入执行阶段。
 - `reset` 先 `adb disconnect` 再 `adb connect`，结束游戏进程后重新拉起并等它到前台；环境状态回到 `booting` 由内核按探测迁移。
 - `warm` 确认游戏在前台，不在就拉起并等；`minutes` 为 0 是复用确认（保温窗口内再次运行前的现场检查），大于 0 时是本次保温时长，两者都记进结果说明。
 - `cleanup(keep_warm)`：`keep_warm=true` 保留游戏与模拟器；`false` 时先结束游戏进程再关闭模拟器实例。
-- 登录按钮只用固定安全坐标，点击前做区域钳制。
 
 MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请求会走死代理。MAA 以工作目录 `H:/MAA` 启动，不带命令行参数。
 
@@ -175,6 +176,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | `mumu_boot_timeout_s` | integer | 180 | 模拟器启动到 adb 可连的上限 |
 | `game_launch_timeout_s` | integer | 60 | 游戏启动到前台的时限 |
 | `page_gate` | boolean | `true` | 主界面门控：prepare 拉起游戏后截帧判定主界面，连续两帧确认才放行 |
+| `login_flow` | boolean | `true` | 登录流程：prepare 在游戏到前台后跑登录状态机，到主界面才继续 |
 | `profile` | string | `Default` | 使用的 MAA 配置名，即整份目标的 `Current` |
 | `tasks` | array | 日常队列 | 每项含 `type`、`name`、`enabled`、`params` |
 | `launch_timeout_s` | integer | 180 | 启动到资源加载完成的上限 |

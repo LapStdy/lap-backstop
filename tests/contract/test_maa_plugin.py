@@ -98,7 +98,7 @@ def test_manifest_contract_range_covers_api_version() -> None:
 
 
 def test_config_schema_locks_documented_top_level_fields() -> None:
-    """docs/plugins/maa.md 参数 schema 表：20 个配置字段、Draft 2020-12、根封闭。"""
+    """docs/plugins/maa.md 参数 schema 表：21 个配置字段、Draft 2020-12、根封闭。"""
     schema = load_schema()
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["x-schema-version"] == 1
@@ -117,6 +117,7 @@ def test_config_schema_locks_documented_top_level_fields() -> None:
         "mumu_boot_timeout_s",
         "game_launch_timeout_s",
         "page_gate",
+        "login_flow",
         "profile",
         "tasks",
         "launch_timeout_s",
@@ -302,8 +303,8 @@ class _StubActions:
 def test_environment_actions_are_repeatable_and_idempotent() -> None:
     """docs/05 契约测试表 environment 行：四个动作可重复调用且都成功。"""
     provider = MaaEnvironment(host=_StubHost(), actions=_StubActions())
-    # 契约测试不依赖可选视觉 extra（maa-vision），主界面门控路径由单元测试覆盖。
-    ctx = make_context(config={"page_gate": False})
+    # 契约测试不依赖可选视觉 extra（maa-vision）：门控与登录流程都显式关闭。
+    ctx = make_context(config={"page_gate": False, "login_flow": False})
     ref = env_ref()
     for _ in range(2):
         assert provider.prepare(ref, ctx).ok is True

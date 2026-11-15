@@ -19,14 +19,18 @@ from contracts import (
     EnvironmentProbe,
     EnvironmentRef,
     EnvironmentState,
+    ErrorCode,
     PhaseResult,
     RunContext,
 )
 from plugins.maa.capabilities.page_gate import PageGate
 from plugins.maa.emulator_host import EmulatorHost, WindowsEmulatorHost
 from plugins.maa.mumu_instance import MumuInstance
+from plugins.maa.vision.clicker import AdbClicker
 from plugins.maa.vision.frames import AdbFrameSource, FrameSource
+from plugins.maa.vision.login_vision import LoginVision
 from plugins.maa.vision.mumu_frames import MumuFrameSource, NemuIpc
+from plugins.maa.vision.readiness import LoginPorts, drive_login
 from plugins.maa.windows_host import MachineHost, ScreenSize, WindowsMachineHost
 
 _DEFAULT_MUMU_DIR = "H:/MuMuPlayer"
@@ -135,6 +139,10 @@ class MaaEnvironment:
         except OSError as error:
             return _failure(ctx, started_at, "E_ENV_UNREACHABLE", f"环境动作失败：{error}")
         gate_summary = ""
+        if _is_login_enabled(config):
+            login_failure = self._login(config, ctx)
+            if login_failure is not None:
+                return _failure(ctx, started_at, login_failure[0], login_failure[1])
         if _is_gate_enabled(config):
             outcome = self._gate(config).run(ctx)
             gate_error = None if outcome.passed else outcome.error_code
@@ -240,6 +248,21 @@ class MaaEnvironment:
         frames = self._frames if self._frames is not None else _build_frames(config)
         return PageGate(frames=frames, wait=self._wait)
 
+    def _login(self, config: Mapping[str, Any], ctx: RunContext) -> tuple[str, str] | None:
+        """跑登录流程状态机：到家返回 None，否则给出错误码与说明。"""
+        frames = self._frames if self._frames is not None else _build_frames(config)
+        ports = LoginPorts(
+            frames=frames,
+            judge=LoginVision(),
+            clicker=_build_clicker(config),
+            clock=ctx.clock.monotonic,
+            wait=self._wait,
+        )
+        result = drive_login(ports)
+        if result.reached_home:
+            return None
+        return (ErrorCode.ENV_NOT_READY.value, f"登录流程未到主界面：{result.detail}")
+
     def _instance_running(self, host: MachineHost, config: Mapping[str, Any]) -> bool:
         """实例在跑就不重复拉起；info 读不到时退回窗口判据。"""
         index = _instance_index(config)
@@ -328,6 +351,20 @@ def _is_gate_enabled(config: Mapping[str, Any]) -> bool:
     """主界面门控开关；未配置或写法非法按开启处理（schema 默认 true）。"""
     value = config.get("page_gate")
     return value if isinstance(value, bool) else True
+
+
+def _is_login_enabled(config: Mapping[str, Any]) -> bool:
+    """登录流程开关；未配置或写法非法按开启处理（schema 默认 true）。"""
+    value = config.get("login_flow")
+    return value if isinstance(value, bool) else True
+
+
+def _build_clicker(config: Mapping[str, Any]) -> AdbClicker:
+    """按配置拼点击端口：adb 与 MuMu 装在同一目录树下。"""
+    mumu_dir = Path(str(config.get("mumu_dir", _DEFAULT_MUMU_DIR)))
+    return AdbClicker(
+        adb_path=mumu_dir / "nx_main" / "adb.exe", address=_text(config, "adb_address")
+    )
 
 
 def _build_frames(config: Mapping[str, Any]) -> FrameSource:
