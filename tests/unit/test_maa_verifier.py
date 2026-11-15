@@ -236,3 +236,16 @@ def test_verdict_is_stable_for_same_segment(tmp_path: Path) -> None:
     assert first.status is second.status
     assert first.reason == second.reason
     assert first.checks[0].detail == second.checks[0].detail
+
+
+def test_default_mode_keeps_script_behaviour(tmp_path: Path) -> None:
+    """不配 verify_mode：结论与证据走 script 档现状，检查项里没有画面项。"""
+    app_log(tmp_path, (OLD_LINE,))
+    mark_run(tmp_path)
+    app_log(tmp_path, COMPLETED_LINES)
+    verdict = MaaVerifier().verify(_context(tmp_path))
+    assert verdict.status is VerdictStatus.COMPLETED
+    assert verdict.policy_id == DEFAULT_POLICY_ID
+    assert verdict.confidence > 0
+    assert verdict.evidence_ids == ("evidence-1",)
+    assert [check.name for check in verdict.checks] == ["maa-script-log", "maa-task-set"]

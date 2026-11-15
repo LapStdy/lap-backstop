@@ -1,8 +1,12 @@
 """MAA 验证能力（docs/plugins/maa.md 验证节，Verifier 协议见 docs/05）。
 
-判定只用脚本证据：脚本启动时把本次运行的日志起点写进工作目录的会话标记，验证
-阶段按标记取 ``gui.log`` 的本次运行段，逐行识别信号后给结论。失败优先于完成——
-MAA 在单任务出错后仍会打印「任务已全部完成！」，两者同时出现记 ``failed``。
+档位由插件配置 ``verify_mode`` 选：``script``（默认）按脚本证据判定；``screen``
+只看画面证据——画面判定未接入，恒记 ``unknown``；``dual`` 先按 script 档得出脚本
+结论，再与画面证据合成，失败优先，画面证据缺失时完成压成 ``unknown``。
+
+script 档判定：脚本启动时把本次运行的日志起点写进工作目录的会话标记，验证阶段按
+标记取 ``gui.log`` 的本次运行段，逐行识别信号后给结论。失败优先于完成——MAA 在单
+任务出错后仍会打印「任务已全部完成！」，两者同时出现记 ``failed``。
 
 插件配置带期望任务集时，完成行还须覆盖全部 enabled 任务才判完成；配置没有期望
 任务集时维持只看完成行与失败行的口径。缺失任务只把结论压成 ``unknown``，不改
@@ -10,7 +14,8 @@ MAA 在单任务出错后仍会打印「任务已全部完成！」，两者同�
 不参与结论。
 
 标记缺失、日志滚动、日志不可读或段内没有终止信号都记 ``unknown``，不降级为完成：
-没有可判定的证据时，宁可交人工核对。画面证据（结束截图、异常画面模板）未接入本能力。
+没有可判定的证据时，宁可交人工核对。``verify_mode`` 取值非法时按 ``script`` 处理
+并记 warn，不让配置错误打断验证。
 """
 
 from __future__ import annotations
@@ -18,7 +23,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 
@@ -52,7 +57,17 @@ EVIDENCE_NOTE_NAME = "maa-verify-unknown.txt"
 EVIDENCE_SANITY_NAME = "maa-sanity.json"
 MAX_EVIDENCE_BYTES = 1_048_576
 
+VERIFY_MODE_KEY = "verify_mode"
+MODE_SCRIPT = "script"
+MODE_SCREEN = "screen"
+MODE_DUAL = "dual"
+VERIFY_MODES = frozenset({MODE_SCRIPT, MODE_SCREEN, MODE_DUAL})
+VERIFY_MODE_INVALID_EVENT = "maa.verify_mode.invalid"
+SCREEN_UNAVAILABLE_REASON = "画面证据未接入：screen 档不读脚本日志，记 unknown 交人工核对"
+SCREEN_MISSING_SUFFIX = "；画面证据缺失：画面口径未接入，不判完成"
+
 _CHECK_NAME = "maa-script-log"
+_SCREEN_CHECK_NAME = "maa-screen"
 _TASK_SET_CHECK_NAME = "maa-task-set"
 _FAILED_KINDS = frozenset({KIND_TASK_ERROR, KIND_RUN_FAILED, KIND_RUN_DISCONNECTED})
 _EVIDENCE_CONFIDENCE = 0.9
@@ -72,20 +87,53 @@ class _EvidenceFile:
 
 
 class MaaVerifier:
-    """verifier 能力：按本次运行的 gui.log 段给出 completed / failed / unknown。"""
+    """verifier 能力：按 verify_mode 档位给出 completed / failed / unknown。"""
 
     def verify(self, ctx: RunContext) -> Verdict:
-        """取本次运行的日志段并判定；没有可判定证据时记 unknown 并留说明证据。"""
-        marker = read_marker(ctx.work_dir)
-        if marker is None:
-            return _unknown(ctx, "缺少会话标记：取不到本次运行的日志段")
-        gui_log = _gui_log_path(ctx)
-        if gui_log is None:
-            return _unknown(ctx, "插件配置缺 maa_dir：定位不了脚本日志")
-        problem, lines = _read_segment(gui_log, marker.gui_offset)
-        if problem is not None:
-            return _unknown(ctx, problem)
-        return _judge(ctx, lines, marker, gui_log)
+        """按档位判定；没有可判定证据时记 unknown 并留说明证据。"""
+        mode = _resolve_verify_mode(ctx)
+        if mode == MODE_SCREEN:
+            return _unknown(ctx, SCREEN_UNAVAILABLE_REASON, check_name=_SCREEN_CHECK_NAME)
+        verdict = _script_verdict(ctx)
+        if mode == MODE_DUAL:
+            return _merge_screen_evidence(verdict)
+        return verdict
+
+
+def _resolve_verify_mode(ctx: RunContext) -> str:
+    """验证档位：插件配置 verify_mode；缺省按 script，非法取值记 warn 后回退。"""
+    raw = ctx.config.get(VERIFY_MODE_KEY)
+    if isinstance(raw, str) and raw in VERIFY_MODES:
+        return raw
+    if raw is not None:
+        ctx.log.warn({"event": VERIFY_MODE_INVALID_EVENT, "run_id": ctx.run_id, "value": raw})
+    return MODE_SCRIPT
+
+
+def _script_verdict(ctx: RunContext) -> Verdict:
+    """script 档判定：按会话标记取 gui.log 本次运行段并给结论。"""
+    marker = read_marker(ctx.work_dir)
+    if marker is None:
+        return _unknown(ctx, "缺少会话标记：取不到本次运行的日志段")
+    gui_log = _gui_log_path(ctx)
+    if gui_log is None:
+        return _unknown(ctx, "插件配置缺 maa_dir：定位不了脚本日志")
+    problem, lines = _read_segment(gui_log, marker.gui_offset)
+    if problem is not None:
+        return _unknown(ctx, problem)
+    return _judge(ctx, lines, marker, gui_log)
+
+
+def _merge_screen_evidence(verdict: Verdict) -> Verdict:
+    """dual 档合成：画面证据缺失时脚本完成压成 unknown；失败与未知原样保留。"""
+    if verdict.status is not VerdictStatus.COMPLETED:
+        return verdict
+    return replace(
+        verdict,
+        status=VerdictStatus.UNKNOWN,
+        confidence=0.0,
+        reason=verdict.reason + SCREEN_MISSING_SUFFIX,
+    )
 
 
 def _gui_log_path(ctx: RunContext) -> Path | None:
@@ -303,13 +351,13 @@ def _detail(signals: list[ParsedSignal]) -> str:
     return text
 
 
-def _unknown(ctx: RunContext, reason: str) -> Verdict:
-    """没有可判定证据时的收口：写说明证据，结论记 unknown。"""
+def _unknown(ctx: RunContext, reason: str, *, check_name: str = _CHECK_NAME) -> Verdict:
+    """没有可判定证据时的收口：写说明证据，结论记 unknown；检查项名随档位给。"""
     now = ctx.clock.utc_now()
     note = _EvidenceFile(name=EVIDENCE_NOTE_NAME, text=f"{reason}\n", summary="验证不可用的原因")
     evidence_id = _write_evidence(ctx, note)
     check = CheckResult(
-        name=_CHECK_NAME,
+        name=check_name,
         status=CheckStatus.UNKNOWN,
         detail=reason,
         evidence_ids=(evidence_id,),
