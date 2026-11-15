@@ -26,6 +26,8 @@ from tests.maa_vision_support import (
     suppressed_appearance_score,
 )
 
+REQS = ("A-102",)
+
 # 合成角标补丁：贴在日历框内的主体格子上。实测该帧抑制后得分 0.90（命中
 # 侧余量 0.05）、不抑制 0.79（不命中侧余量 0.06），两侧都留有裕度。
 PATCH_XYWH = (255, 40, 14, 10)
