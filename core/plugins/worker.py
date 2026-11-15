@@ -249,6 +249,7 @@ class _Server:
             record_evidence=lambda kind, path, summary: self._record_evidence(
                 call_id, kind, path, summary
             ),
+            verification_policy=payload.verification_policy,
         )
 
     def _emit(self, call_id: int, event: str, payload: Mapping[str, Any]) -> None:

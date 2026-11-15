@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -35,7 +36,7 @@ class _Logger:
         return None
 
 
-def make_context() -> RunContext:
+def make_context(verification_policy: Mapping[str, Any] | None = None) -> RunContext:
     clock = VirtualClock(NOW)
     return RunContext(
         run_id="run-1",
@@ -53,6 +54,7 @@ def make_context() -> RunContext:
         log=_Logger(),
         emit=lambda event, payload: None,
         record_evidence=lambda kind, path, summary: "evidence-1",
+        verification_policy=({} if verification_policy is None else dict(verification_policy)),
     )
 
 
@@ -81,6 +83,28 @@ def test_context_round_trip() -> None:
     assert payload.work_dir == Path("D:/data/work/run-1")
     assert payload.deadline_at == NOW + timedelta(minutes=30)
     assert payload.secrets == {"token": "s3cret"}
+
+
+def test_context_round_trip_carries_verification_policy() -> None:
+    policy = {"id": "p-1", "params": {"mode": "screen"}}
+    payload = rpc.decode_context(rpc.encode_context(make_context(policy)))
+    assert payload.verification_policy == policy
+    assert payload.verification_policy["params"] == {"mode": "screen"}
+
+
+def test_context_missing_policy_falls_back_to_empty() -> None:
+    encoded = rpc.encode_context(make_context())
+    del encoded["verification_policy"]
+    payload = rpc.decode_context(encoded)
+    assert payload.verification_policy == {}
+
+
+@pytest.mark.parametrize("policy", [["screen"], "p-1"])
+def test_context_rejects_non_object_policy(policy: object) -> None:
+    encoded = rpc.encode_context(make_context())
+    encoded["verification_policy"] = policy
+    with pytest.raises(WorkerPayloadError):
+        rpc.decode_context(encoded)
 
 
 def test_context_rejects_naive_deadline() -> None:

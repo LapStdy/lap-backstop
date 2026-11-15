@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
@@ -68,3 +68,4 @@ class RunContext:
     log: Logger
     emit: EmitEvent
     record_evidence: RecordEvidence
+    verification_policy: Mapping[str, Any] = field(default_factory=dict)
