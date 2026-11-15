@@ -1,8 +1,11 @@
 """MAA 验证能力（docs/plugins/maa.md 验证节，Verifier 协议见 docs/05）。
 
-档位由插件配置 ``verify_mode`` 选：``script``（默认）按脚本证据判定；``screen``
-只看画面证据——画面判定未接入，恒记 ``unknown``；``dual`` 先按 script 档得出脚本
-结论，再与画面证据合成，失败优先，画面证据缺失时完成压成 ``unknown``。
+档位优先取模板策略 ``verification_policy.params.mode``：存在且合法时以模板为准
+（作业开始时冻结、回放同源）；缺失或取值非法时按缺失处理，回退插件配置
+``verify_mode``；两者都缺失时 ``script``。``script``（默认）按脚本证据判定；
+``screen`` 只看画面证据——画面判定未接入，恒记 ``unknown``；``dual`` 先按 script
+档得出脚本结论，再与画面证据合成，失败优先，画面证据缺失时完成压成 ``unknown``
+并补一条画面检查项。模板策略带 ``id`` 时回填结论的 ``policy_id``。
 
 script 档判定：脚本启动时把本次运行的日志起点写进工作目录的会话标记，验证阶段按
 标记取 ``gui.log`` 的本次运行段，逐行识别信号后给结论。失败优先于完成——MAA 在单
@@ -26,6 +29,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from contracts import (
     CheckResult,
@@ -64,7 +68,12 @@ MODE_DUAL = "dual"
 VERIFY_MODES = frozenset({MODE_SCRIPT, MODE_SCREEN, MODE_DUAL})
 VERIFY_MODE_INVALID_EVENT = "maa.verify_mode.invalid"
 SCREEN_UNAVAILABLE_REASON = "画面证据未接入：screen 档不读脚本日志，记 unknown 交人工核对"
-SCREEN_MISSING_SUFFIX = "；画面证据缺失：画面口径未接入，不判完成"
+SCREEN_MISSING_DETAIL = "画面证据缺失：画面口径未接入，不判完成"
+SCREEN_MISSING_SUFFIX = "；" + SCREEN_MISSING_DETAIL
+
+_POLICY_ID_KEY = "id"
+_POLICY_PARAMS_KEY = "params"
+_POLICY_MODE_KEY = "mode"
 
 _CHECK_NAME = "maa-script-log"
 _SCREEN_CHECK_NAME = "maa-screen"
@@ -87,7 +96,7 @@ class _EvidenceFile:
 
 
 class MaaVerifier:
-    """verifier 能力：按 verify_mode 档位给出 completed / failed / unknown。"""
+    """verifier 能力：按模板策略与插件配置定的档位给出 completed / failed / unknown。"""
 
     def verify(self, ctx: RunContext) -> Verdict:
         """按档位判定；没有可判定证据时记 unknown 并留说明证据。"""
@@ -101,13 +110,35 @@ class MaaVerifier:
 
 
 def _resolve_verify_mode(ctx: RunContext) -> str:
-    """验证档位：插件配置 verify_mode；缺省按 script，非法取值记 warn 后回退。"""
+    """验证档位：模板 params.mode 合法时优先；否则读配置 verify_mode，非法记 warn 回退。"""
+    policy_mode = _policy_mode(ctx.verification_policy)
+    if policy_mode is not None:
+        return policy_mode
     raw = ctx.config.get(VERIFY_MODE_KEY)
     if isinstance(raw, str) and raw in VERIFY_MODES:
         return raw
     if raw is not None:
         ctx.log.warn({"event": VERIFY_MODE_INVALID_EVENT, "run_id": ctx.run_id, "value": raw})
     return MODE_SCRIPT
+
+
+def _policy_mode(policy: Mapping[str, Any]) -> str | None:
+    """模板策略的档位：params.mode 合法时返回；params 缺失、非映射或取值非法按缺失返回 None。"""
+    params = policy.get(_POLICY_PARAMS_KEY)
+    if not isinstance(params, Mapping):
+        return None
+    mode = params.get(_POLICY_MODE_KEY)
+    if isinstance(mode, str) and mode in VERIFY_MODES:
+        return mode
+    return None
+
+
+def _policy_id(policy: Mapping[str, Any]) -> str:
+    """结论归属的策略 id：模板策略带非空 id 时回填，否则维持缺省。"""
+    policy_id = policy.get(_POLICY_ID_KEY)
+    if isinstance(policy_id, str) and policy_id:
+        return policy_id
+    return DEFAULT_POLICY_ID
 
 
 def _script_verdict(ctx: RunContext) -> Verdict:
@@ -125,14 +156,21 @@ def _script_verdict(ctx: RunContext) -> Verdict:
 
 
 def _merge_screen_evidence(verdict: Verdict) -> Verdict:
-    """dual 档合成：画面证据缺失时脚本完成压成 unknown；失败与未知原样保留。"""
+    """dual 档合成：画面证据缺失时脚本完成压成 unknown 并补画面检查项；失败与未知原样保留。"""
     if verdict.status is not VerdictStatus.COMPLETED:
         return verdict
+    screen_check = CheckResult(
+        name=_SCREEN_CHECK_NAME,
+        status=CheckStatus.UNKNOWN,
+        detail=SCREEN_MISSING_DETAIL,
+        at=verdict.created_at,
+    )
     return replace(
         verdict,
         status=VerdictStatus.UNKNOWN,
         confidence=0.0,
         reason=verdict.reason + SCREEN_MISSING_SUFFIX,
+        checks=(*verdict.checks, screen_check),
     )
 
 
@@ -179,7 +217,7 @@ def _judge(
     evidence_ids = (evidence_id,) if sanity_id is None else (evidence_id, sanity_id)
     return Verdict(
         status=status,
-        policy_id=DEFAULT_POLICY_ID,
+        policy_id=_policy_id(ctx.verification_policy),
         confidence=0.0 if status is VerdictStatus.UNKNOWN else _EVIDENCE_CONFIDENCE,
         reason=reason,
         checks=(script_check, task_check),
@@ -365,7 +403,7 @@ def _unknown(ctx: RunContext, reason: str, *, check_name: str = _CHECK_NAME) -> 
     )
     return Verdict(
         status=VerdictStatus.UNKNOWN,
-        policy_id=DEFAULT_POLICY_ID,
+        policy_id=_policy_id(ctx.verification_policy),
         confidence=0.0,
         reason=reason,
         checks=(check,),

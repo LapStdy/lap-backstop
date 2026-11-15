@@ -111,7 +111,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 
 ## 验证
 
-判定档位由插件配置 `verify_mode` 选：`script`（默认）只按脚本证据；`screen` 只看画面证据，画面判定未接入，结论恒为 `unknown` 并写说明证据，检查项为 `maa-screen`；`dual` 先按 script 档得出脚本结论，再与画面证据合成——脚本失败仍判 `failed`（失败优先），脚本完成而画面证据缺失时压成 `unknown`，脚本 unknown 仍为 `unknown`，不因画面缺失判完成。配置写了非法取值时按 `script` 处理并记 `maa.verify_mode.invalid` 的 warn 日志。
+判定档位优先取配置模板 `verification_policy.params.mode`：存在且合法时以模板为准（作业开始时冻结、回放同源），缺失或取值非法时按缺失处理、回退插件配置 `verify_mode`：`script`（默认）只按脚本证据；`screen` 只看画面证据，画面判定未接入，结论恒为 `unknown` 并写说明证据，检查项为 `maa-screen`；`dual` 先按 script 档得出脚本结论，再与画面证据合成——脚本失败仍判 `failed`（失败优先），脚本完成而画面证据缺失时压成 `unknown` 并补一条 `maa-screen` unknown 检查项，脚本 unknown 仍为 `unknown`，不因画面缺失判完成。配置写了非法取值时按 `script` 处理并记 `maa.verify_mode.invalid` 的 warn 日志。模板策略带 `id` 时，结论的 `policy_id` 回填该 `id`。
 
 script 档按脚本证据判定：脚本启动时把本次运行的日志起点写进工作目录的会话标记，验证阶段按标记取 `gui.log` 的本次运行段。
 
@@ -187,12 +187,12 @@ script 档按脚本证据判定：脚本启动时把本次运行的日志起点�
 | `startup_timeout_s` | integer | 300 | 游戏启动到登录界面的上限 |
 | `sample_interval_s` | integer | 30 | 运行期抽帧间隔 |
 | `keep_warm_minutes` | integer | 30 | 运行结束后保持环境就绪的时长 |
-| `verify_mode` | enum | `script` | 验证档位：`script` 只按脚本日志判定；`screen` 只看画面证据（未接入，记 unknown）；`dual` 双证据合成，画面证据缺失时不判完成 |
+| `verify_mode` | enum | `script` | 验证档位：`script` 只按脚本日志判定；`screen` 只看画面证据（未接入，记 unknown）；`dual` 双证据合成，画面证据缺失时不判完成。配置模板 `verification_policy.params.mode` 存在且合法时优先，缺省回退本配置；两者都缺失时为 `script` |
 | `config_projection.enabled` | boolean | true | 是否在开跑前对账并写入 |
 | `config_projection.backup_keep` | integer | 20 | 备份保留份数 |
 | `config_projection.strategy` | enum | `script_first` | `script_first` 保留脚本侧普通字段；`platform_first` 整份目标覆盖 |
 
-三档验证口径由插件配置 `verify_mode` 决定（见上表与验证节）；JobTemplate 的 `VerificationPolicy.params` 不承载本插件的档位选择。
+三档验证口径优先由 JobTemplate 的 `VerificationPolicy.params.mode` 决定，缺失或取值非法时回退插件配置 `verify_mode`（见上表与验证节）。
 
 ## 错误映射
 

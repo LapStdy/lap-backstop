@@ -227,6 +227,7 @@ def make_context(
     evidence_dir: Path | None = None,
     config: Mapping[str, Any] | None = None,
     work_dir: Path | None = None,
+    verification_policy: Mapping[str, Any] | None = None,
 ) -> RunContext:
     """构造契约测试用的 RunContext；证据 id 恒为 evidence-1。"""
     return RunContext(
@@ -245,6 +246,7 @@ def make_context(
         log=_Logger(),
         emit=lambda event, payload: None,
         record_evidence=lambda kind, path, summary: "evidence-1",
+        verification_policy={} if verification_policy is None else verification_policy,
     )
 
 
@@ -398,6 +400,23 @@ def test_verifier_returns_unknown_with_evidence_stably(tmp_path: Path) -> None:
     assert first.status == second.status
     assert first.policy_id == second.policy_id == DEFAULT_POLICY_ID
     assert (tmp_path / EVIDENCE_NOTE_NAME).is_file()
+
+
+def test_verification_policy_params_reach_verifier_and_drive_dispatch(tmp_path: Path) -> None:
+    """docs/05 契约测试表 verifier 行：模板 params 经 ctx 原样送达，验证器据此分派并回填策略 id。"""
+    template_policy = {
+        "id": "policy-x",
+        "verifier_plugin_id": "maa",
+        "required_evidence": [],
+        "params": {"mode": "screen"},
+    }
+    ctx = make_context(evidence_dir=tmp_path, verification_policy=template_policy)
+    assert ctx.verification_policy == template_policy
+    verdict = MaaVerifier().verify(ctx)
+    assert verdict.status is VerdictStatus.UNKNOWN
+    assert "画面证据未接入" in verdict.reason
+    assert [check.name for check in verdict.checks] == ["maa-screen"]
+    assert verdict.policy_id == template_policy["id"]
 
 
 def test_config_projection_diff_reports_nested_changes_in_order() -> None:
