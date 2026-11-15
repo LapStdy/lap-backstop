@@ -362,10 +362,12 @@ def test_navigation_disabled_keeps_prepare_unchanged(tmp_path: Path) -> None:
 
 
 def test_navigation_enabled_reaches_home_then_gate_passes(tmp_path: Path) -> None:
-    """navigation 开启：按后即时判定到家，门控随后放行；返回只按一次。"""
+    """navigation 开启：非主界面按一次返回，其后连续 3 帧达导航档到家，门控随后放行。"""
     frames = _ScriptedFrames(
         [
             _named_frame("MuMu-20261108-210433-099"),
+            _named_frame("主界面"),
+            _named_frame("主界面"),
             _named_frame("主界面"),
             _named_frame("主界面"),
             _named_frame("主界面"),
@@ -377,7 +379,7 @@ def test_navigation_enabled_reaches_home_then_gate_passes(tmp_path: Path) -> Non
     assert result.ok is True
     assert "门控放行" in result.detail
     assert actions.calls.count("back") == 1
-    assert frames.calls == 4
+    assert frames.calls == 6
 
 
 def test_navigation_budget_exhausted_fails_before_gate(tmp_path: Path) -> None:

@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 
 from plugins.maa.vision.frames import Frame, FrameOrigin
-from plugins.maa.vision.judge import HomeJudge
+from plugins.maa.vision.judge import HomeJudge, PageState, VisionResult
 from plugins.maa.vision.navigation import (
     DEFAULT_BACK_BUDGET,
     AdbBackSender,
@@ -44,6 +44,22 @@ _FRAME = Frame(
 _HOME = ScreenReading(state=NavPageState.HOME, total_score=11, appearance_hits=4)
 _OTHER = ScreenReading(state=NavPageState.OTHER, total_score=0, appearance_hits=0)
 _OVERLAY = ScreenReading(state=NavPageState.OVERLAY, total_score=0, appearance_hits=0)
+
+
+def _vision(
+    total_score: int, appearance_hits: int, *, handover: bool, navigation: bool
+) -> VisionResult:
+    """构造一帧判定结果：分数与两档结论显式给定，与判定器口径一致。"""
+    return VisionResult(
+        page_state=PageState.HOME if handover else PageState.OTHER,
+        total_score=total_score,
+        appearance_hits=appearance_hits,
+        handover_hit=handover,
+        navigation_hit=navigation,
+        anchors=(),
+        error_code=None,
+        captured_at=NOW,
+    )
 
 
 class _ScriptedFrames:
@@ -74,6 +90,20 @@ class _ScriptedJudge:
         return reading
 
 
+class _ScriptedVisionJudge(HomeJudge):
+    """假主界面判定器：按脚本逐次给出 VisionResult，不加载模板、不读帧。"""
+
+    def __init__(self, results: Sequence[VisionResult]) -> None:
+        self._results = list(results)
+        self.calls = 0
+
+    def judge(self, frame: np.ndarray, captured_at: datetime) -> VisionResult:
+        assert self.calls < len(self._results), "判定次数超出脚本长度"
+        result = self._results[self.calls]
+        self.calls += 1
+        return result
+
+
 class _RecordingBack:
     """假返回键：只记录发送次数。"""
 
@@ -102,17 +132,74 @@ class _RecordingWait:
 
 
 def test_home_on_first_frame() -> None:
-    """现状 2：第一帧判 HOME 即成功：返回 0 次、不等待、证据 1 条。"""
-    frames = _ScriptedFrames([_FRAME])
-    judge = _ScriptedJudge([_HOME])
+    """现状 2：首帧达导航档只是连续计数的第 1 帧，不判 home；连续 3 帧才判。"""
+    vision = _vision(10, 4, handover=True, navigation=True)
+    adapter = HomeJudgeAdapter(_ScriptedVisionJudge([vision] * 3))
+    first = adapter.judge(_FRAME)
+    second = adapter.judge(_FRAME)
+    third = adapter.judge(_FRAME)
+    assert first.state is NavPageState.OTHER and second.state is NavPageState.OTHER
+    assert third.state is NavPageState.HOME
+
+
+def test_handover_only_frame_is_other() -> None:
+    """现状 1：只达交接档（总分 8、外观 2）的帧判 other：循环不判 home、在预算内按返回。"""
+    vision = _vision(8, 2, handover=True, navigation=False)
+    reading = HomeJudgeAdapter(_ScriptedVisionJudge([vision])).judge(_FRAME)
+    assert reading.state is NavPageState.OTHER
+    assert reading.total_score == 8 and reading.appearance_hits == 2
+
+    frames = _ScriptedFrames([_FRAME] * 7)
+    judge = HomeJudgeAdapter(_ScriptedVisionJudge([vision] * 7))
+    back = _RecordingBack()
+    wait = _RecordingWait()
+    result = ensure_home(NavigationPorts(frames=frames, judge=judge, back=back), wait=wait)
+    assert result.reached_home is False and result.reason is StopReason.BUDGET_EXHAUSTED
+    assert back.calls == 3
+    assert [step.reading.state for step in result.steps] == [NavPageState.OTHER] * 7
+
+
+def test_strict_gate_needs_three_consecutive_frames() -> None:
+    """现状 2：三帧连续达导航档（总分 10、外观 4）第 3 帧才判 home；前两帧 other 且不按返回。"""
+    frames = _ScriptedFrames([_FRAME] * 3)
+    vision = _vision(10, 4, handover=True, navigation=True)
+    judge = HomeJudgeAdapter(_ScriptedVisionJudge([vision] * 3))
     back = _RecordingBack()
     wait = _RecordingWait()
     result = ensure_home(NavigationPorts(frames=frames, judge=judge, back=back), wait=wait)
     assert result.reached_home is True and result.reason is None
     assert back.calls == 0 and wait.calls == 0
-    assert len(result.steps) == 1
-    assert result.steps[0].sample == 1
-    assert result.steps[0].reading.state is NavPageState.HOME
+    assert [step.reading.state for step in result.steps] == [
+        NavPageState.OTHER,
+        NavPageState.OTHER,
+        NavPageState.HOME,
+    ]
+    assert all(step.pressed_back is False for step in result.steps)
+
+
+def test_strict_streak_resets_on_miss() -> None:
+    """现状 2：达标、未达标、达标、达标仍未确认（断一次清零重数）；再一帧达标才确认。"""
+    frames = _ScriptedFrames([_FRAME] * 5)
+    judge = HomeJudgeAdapter(
+        _ScriptedVisionJudge(
+            [
+                _vision(10, 4, handover=True, navigation=True),
+                _vision(3, 1, handover=False, navigation=False),
+                _vision(10, 4, handover=True, navigation=True),
+                _vision(10, 4, handover=True, navigation=True),
+                _vision(10, 4, handover=True, navigation=True),
+            ]
+        )
+    )
+    back = _RecordingBack()
+    wait = _RecordingWait()
+    result = ensure_home(NavigationPorts(frames=frames, judge=judge, back=back), wait=wait)
+    assert result.reached_home is True and result.reason is None
+    assert back.calls == 1 and wait.calls == 1
+    assert [step.reading.state for step in result.steps] == [NavPageState.OTHER] * 4 + [
+        NavPageState.HOME
+    ]
+    assert [step.pressed_back for step in result.steps] == [False, True, False, False, False]
 
 
 def test_other_then_home_returns_once() -> None:
@@ -237,16 +324,22 @@ def test_frame_loss_stops_with_no_frame_reason() -> None:
 
 
 def test_home_judge_adapter_maps_verdict_states() -> None:
-    """现状 4：交接档命中帧判 home、分辨率错误帧判 other；总分与外观命中数原样带出。"""
+    """现状 1、3：真实主界面帧连续 3 帧判 home、总分与外观命中数原样带出；分辨率错误帧判 other。"""
     judge = HomeJudge()
     adapter = HomeJudgeAdapter(judge)
     home = fixture_frame(frame_entry(load_manifest(), "主界面"))
-    reading = adapter.judge(home)
     direct = judge.judge(home.image, home.captured_at)
-    assert direct.handover_hit is True
-    assert reading.state is NavPageState.HOME
-    assert reading.total_score == direct.total_score
-    assert reading.appearance_hits == direct.appearance_hits
+    assert direct.handover_hit is True and direct.navigation_hit is True
+    readings = [adapter.judge(home) for _ in range(3)]
+    assert [reading.state for reading in readings] == [
+        NavPageState.OTHER,
+        NavPageState.OTHER,
+        NavPageState.HOME,
+    ]
+    assert readings[0].total_score == direct.total_score
+    assert readings[0].appearance_hits == direct.appearance_hits
+    assert readings[2].total_score == direct.total_score
+    assert readings[2].appearance_hits == direct.appearance_hits
     wrong = Frame(
         image=np.zeros((360, 640, 3), dtype=np.uint8),
         width=640,
