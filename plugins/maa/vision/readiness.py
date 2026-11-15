@@ -25,6 +25,7 @@ START_TAP = (640, 672)
 WAKE_TAP = (640, 512)
 CLOSE_TAP = (1190, 100)
 ACTIVITY_TAP = (106, 140)
+SIGNIN_CLOSE_TAP = (1217, 68)
 
 
 class LoginStage(StrEnum):
@@ -244,6 +245,9 @@ def _handle_overlay(reading: LoginReading, ports: LoginPorts) -> LoginStep:
     if kind is OverlayKind.ACTIVITY:
         ports.clicker.tap(*ACTIVITY_TAP)
         return LoginStep(ProgressStage.OVERLAY, reading, "点限时活动签到卡", ACTIVITY_TAP)
+    if kind is OverlayKind.DAILY_SIGNIN:
+        ports.clicker.tap(*SIGNIN_CLOSE_TAP)
+        return LoginStep(ProgressStage.OVERLAY, reading, "点每日签到关闭", SIGNIN_CLOSE_TAP)
     if kind is OverlayKind.EXIT_CONFIRM:
         return LoginStep(ProgressStage.OVERLAY, reading, "退出确认，停手不点", reason="退出确认")
     reason = kind.value if kind is not None else "unknown"

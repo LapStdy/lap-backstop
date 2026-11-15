@@ -9,12 +9,13 @@ import numpy as np
 from plugins.maa.vision.frames import Frame, FrameOrigin
 from plugins.maa.vision.judge import DEFAULT_TEMPLATE_DIR, vision_modules
 from plugins.maa.vision.login_vision import (
+    DAILY_SIGNIN_TEMPLATE,
     LOADING_TEMPLATE,
     START_TEMPLATE,
     WAKE_TEMPLATE,
     LoginVision,
 )
-from plugins.maa.vision.readiness import LoginStage
+from plugins.maa.vision.readiness import LoginStage, OverlayKind
 
 
 def _canvas() -> np.ndarray:
@@ -63,6 +64,20 @@ def test_loading_screen_recognized() -> None:
 def test_blank_canvas_is_unknown() -> None:
     vision = LoginVision()
     assert vision.judge(_frame(_canvas())).stage is LoginStage.UNKNOWN
+
+
+def test_daily_signin_overlay_recognized() -> None:
+    vision = LoginVision()
+    reading = vision.judge(_frame(_place(_canvas(), DAILY_SIGNIN_TEMPLATE, 98, 82)))
+    assert reading.stage is LoginStage.OVERLAY
+    assert reading.overlay is OverlayKind.DAILY_SIGNIN
+
+
+def test_overlay_wins_over_start_screen() -> None:
+    canvas = _place(_canvas(), START_TEMPLATE, 600, 640)
+    vision = LoginVision()
+    reading = vision.judge(_frame(_place(canvas, DAILY_SIGNIN_TEMPLATE, 98, 82)))
+    assert reading.stage is LoginStage.OVERLAY
 
 
 def test_missing_templates_fall_back_to_unknown(tmp_path) -> None:

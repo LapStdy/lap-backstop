@@ -10,6 +10,7 @@ from plugins.maa.vision.frames import Frame, FrameOrigin
 from plugins.maa.vision.readiness import (
     ACTIVITY_TAP,
     CLOSE_TAP,
+    SIGNIN_CLOSE_TAP,
     START_TAP,
     WAKE_TAP,
     LoginPorts,
@@ -141,13 +142,17 @@ def test_activity_overlay_entered() -> None:
     assert ACTIVITY_TAP in clicker.taps
 
 
-def test_daily_signin_overlay_stops_without_tapping() -> None:
-    readings = [_ready(), _login(), LoginReading(LoginStage.OVERLAY, OverlayKind.DAILY_SIGNIN)]
+def test_daily_signin_overlay_closed_to_home() -> None:
+    readings = [
+        _ready(),
+        _login(),
+        LoginReading(LoginStage.OVERLAY, OverlayKind.DAILY_SIGNIN),
+        _home(),
+    ]
     ports, clicker = _ports(readings)
     result = drive_login(ports)
-    assert result.reached_home is False
-    assert result.detail == "daily_signin"
-    assert clicker.taps == [START_TAP, WAKE_TAP]
+    assert result.reached_home is True
+    assert SIGNIN_CLOSE_TAP in clicker.taps
 
 
 def test_unknown_overlay_stops() -> None:
