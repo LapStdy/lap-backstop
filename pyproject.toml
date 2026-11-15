@@ -2,6 +2,7 @@
 name = "lap-backstop"
 version = "0.1.0"
 description = "Windows 上的调度与监督平台：按时触发、就绪才执行、验证结果、失败恢复"
+license = { text = "AGPL-3.0-only" }
 requires-python = ">=3.12"
 dependencies = []
 

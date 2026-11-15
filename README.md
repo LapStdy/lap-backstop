@@ -1,5 +1,7 @@
 # lap-backstop
 
+<img src="assets/icon/app-icon.png" alt="lap-backstop 程序图标" width="160">
+
 给 Windows 上的外部自动化脚本配一个**调度与监督层**：按计划在正确的时间、正确的环境状态下执行，监督过程，验证结果，失败按策略恢复，任何地方可看可停。
 
 ## 项目定义
@@ -132,6 +134,7 @@
 | [docs/11-代码规约.md](docs/11-代码规约.md) | 依赖方向、命名、函数、类型、错误、日志 |
 | [docs/12-测试与质量门禁.md](docs/12-测试与质量门禁.md) | 测试分层、契约测试、故障注入、门禁 |
 | [docs/13-变更与演进.md](docs/13-变更与演进.md) | 变更类型、DoD、ADR、版本、迁移、复盘 |
+| [docs/14-开源与许可.md](docs/14-开源与许可.md) | 许可选择、第三方引用、图标与生成信息、分发清单 |
 | [docs/plugins/maa.md](docs/plugins/maa.md) | MAA 插件设计 |
 | [docs/plugins/maaend.md](docs/plugins/maaend.md) | MAAEnd 插件契约 |
 | [docs/arknights/00-方舟日常.md](docs/arknights/00-方舟日常.md) | 方舟环境、就绪、日常作业 |
@@ -164,5 +167,9 @@
 
 ## 许可证
 
-[MIT](LICENSE)。
+源代码与文档以 [AGPL-3.0-only](LICENSE) 发布；版权所有 (C) 2026 LapStdy。
+
+- 第三方引用（MAA、MAAEnd、MaaFramework、游戏素材）与不在 AGPL 范围内的内容（程序图标）见 [NOTICE](NOTICE)。
+- 许可选择理由、分发义务与图标信息见 [docs/14-开源与许可.md](docs/14-开源与许可.md)。
+- 程序图标 `assets/icon/app-icon.png` 采用 Seedream 5.0 Flash 生成，画面人物为《明日方舟》荒芜拉普兰德，角色形象归鹰角网络所有。
 
