@@ -22,6 +22,7 @@ from core.environments.state_machine import require_transition
 from storage.db.transaction import transaction
 from storage.repositories.environments import EnvironmentRepository, EnvironmentRow
 from storage.repositories.events import EventLog
+from storage.repositories.leases import LeaseRepository
 
 # 跨连接写环境状态的输家证据：先提交者赢，输家丢弃本次写入（docs/11 并发与超时）。
 ENV_ACTION_CONFLICT: Final[str] = "core.env_action_conflict"
@@ -213,9 +214,12 @@ class EnvironmentService:
         return result
 
     def warm_expired(self, now: datetime | None = None) -> tuple[EnvironmentRow, ...]:
-        """保温到期、等待关闭的环境。"""
+        """保温到期且没有在途运行的环境；持有活跃租约的等运行收尾后再关。"""
         moment = self._clock.utc_now() if now is None else now
-        return self._environments.warm_expired(moment)
+        leases = LeaseRepository(self._connection)
+        return tuple(
+            row for row in self._environments.warm_expired(moment) if not leases.active_for(row.id)
+        )
 
     def mark_busy(self, call: EnvironmentCall) -> EnvironmentRow:
         """脚本开始执行：环境从 ready 进入 busy。"""
