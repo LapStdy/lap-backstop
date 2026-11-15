@@ -4030,6 +4030,112 @@
           }
         }
       }
+    },
+    {
+      "name": "MuMu-20261115-1657-native",
+      "batch": "20261115-native-home",
+      "theme": "festival",
+      "expected": "home",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261115-1657-native/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261115-1657-native/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261115-1657-native/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261115-1657-native/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261115-1657-native/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 13,
+        "appearance_hits": 5,
+        "handover_hit": true,
+        "navigation_hit": true,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.9999831914901733,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.5471647406611126,
+            "position_hit": true,
+            "points": 3
+          },
+          "warning": {
+            "appearance_score": 0.9999484419822693,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": 0.3387182203389831,
+            "position_hit": true,
+            "points": 3
+          },
+          "calendar": {
+            "appearance_score": 0.9995056986808777,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              7
+            ],
+            "position_score": 0.4982876712328767,
+            "position_hit": true,
+            "points": 3
+          },
+          "redeem": {
+            "appearance_score": 0.9999614953994751,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          },
+          "loop": {
+            "appearance_score": 0.9999997615814209,
+            "appearance_hit": true,
+            "offset": [
+              0,
+              0
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 2
+          }
+        }
+      }
     }
   ]
 }

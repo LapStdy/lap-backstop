@@ -182,9 +182,9 @@ def make_context(
 
 
 def _home_entries() -> list[dict]:
-    """冻结样本里的 21 帧主界面。"""
+    """冻结样本里的 22 帧主界面。"""
     homes = [entry for entry in load_manifest()["frames"] if entry["expected"] == "home"]
-    assert len(homes) == 21
+    assert len(homes) == 22
     return homes
 
 
@@ -206,7 +206,7 @@ def _sized_frame(width: int, height: int) -> Frame:
 
 
 def test_home_frames_pass_gate(tmp_path: Path) -> None:
-    """21 帧主界面样本逐帧喂入：连续两帧达交接档，全部放行。"""
+    """22 帧主界面样本逐帧喂入：连续两帧达交接档，全部放行。"""
     for entry in _home_entries():
         frame = fixture_frame(entry)
         recorder = _Recorder()
