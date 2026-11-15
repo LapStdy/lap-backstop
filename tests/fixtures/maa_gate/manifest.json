@@ -4242,6 +4242,218 @@
           }
         }
       }
+    },
+    {
+      "name": "MuMu-20261115-1740-signin-scroll1",
+      "batch": "20261115-native-real",
+      "theme": "signin",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll1/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll1/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll1/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll1/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll1/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.5015788078308105,
+            "appearance_hit": false,
+            "offset": [
+              -1,
+              2
+            ],
+            "position_score": 0.2582639075517334,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.7629128694534302,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              -2
+            ],
+            "position_score": 0.298728813559322,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.23751580715179443,
+            "appearance_hit": false,
+            "offset": [
+              9,
+              -18
+            ],
+            "position_score": 0.12818003913894324,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.5299965143203735,
+            "appearance_hit": false,
+            "offset": [
+              1,
+              -1
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.28300610184669495,
+            "appearance_hit": false,
+            "offset": [
+              -7,
+              1
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
+    },
+    {
+      "name": "MuMu-20261115-1740-signin-scroll2",
+      "batch": "20261115-native-real",
+      "theme": "signin",
+      "expected": "other",
+      "regions": {
+        "gear": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll2/gear.png",
+          "x": 9,
+          "y": 1,
+          "w": 77,
+          "h": 77
+        },
+        "warning": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll2/warning.png",
+          "x": 79,
+          "y": 1,
+          "w": 80,
+          "h": 75
+        },
+        "calendar": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll2/calendar.png",
+          "x": 229,
+          "y": 3,
+          "w": 89,
+          "h": 72
+        },
+        "redeem": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll2/redeem.png",
+          "x": 1035,
+          "y": 9,
+          "w": 77,
+          "h": 85
+        },
+        "loop": {
+          "file": "frames/MuMu-20261115-1740-signin-scroll2/loop.png",
+          "x": 272,
+          "y": 373,
+          "w": 65,
+          "h": 60
+        }
+      },
+      "judge": {
+        "total_score": 0,
+        "appearance_hits": 0,
+        "handover_hit": false,
+        "navigation_hit": false,
+        "anchors": {
+          "gear": {
+            "appearance_score": 0.5015788078308105,
+            "appearance_hit": false,
+            "offset": [
+              -1,
+              2
+            ],
+            "position_score": 0.2582639075517334,
+            "position_hit": false,
+            "points": 0
+          },
+          "warning": {
+            "appearance_score": 0.7629128694534302,
+            "appearance_hit": false,
+            "offset": [
+              0,
+              -2
+            ],
+            "position_score": 0.298728813559322,
+            "position_hit": false,
+            "points": 0
+          },
+          "calendar": {
+            "appearance_score": 0.23751580715179443,
+            "appearance_hit": false,
+            "offset": [
+              9,
+              -18
+            ],
+            "position_score": 0.12818003913894324,
+            "position_hit": false,
+            "points": 0
+          },
+          "redeem": {
+            "appearance_score": 0.5299965143203735,
+            "appearance_hit": false,
+            "offset": [
+              1,
+              -1
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          },
+          "loop": {
+            "appearance_score": 0.28300610184669495,
+            "appearance_hit": false,
+            "offset": [
+              -7,
+              1
+            ],
+            "position_score": null,
+            "position_hit": false,
+            "points": 0
+          }
+        }
+      }
     }
   ]
 }

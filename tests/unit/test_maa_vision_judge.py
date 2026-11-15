@@ -129,7 +129,7 @@ def test_two_gate_levels_on_same_details() -> None:
 
 
 def test_frame_judge_within_budget() -> None:
-    """宽松性能阈值：单帧 ≤ 100 毫秒、40 帧判定循环 ≤ 30 秒（实测进回执）。"""
+    """宽松性能阈值：单帧 ≤ 100 毫秒、42 帧判定循环 ≤ 30 秒（实测进回执）。"""
     manifest = load_manifest()
     judge = make_judge()
     judge.judge(rebuild_canvas(manifest["frames"][0]), NOW)  # 首帧 OpenCV 预热，不计时
@@ -141,7 +141,7 @@ def test_frame_judge_within_budget() -> None:
         durations.append(time.perf_counter() - begin)
     elapsed = time.perf_counter() - start
     assert max(durations) <= 0.1, f"单帧超预算：{max(durations) * 1000:.1f}ms"
-    assert elapsed <= 30.0, f"40 帧超预算：{elapsed:.1f}s"
+    assert elapsed <= 30.0, f"42 帧超预算：{elapsed:.1f}s"
 
 
 def test_offset_limit_boundary() -> None:

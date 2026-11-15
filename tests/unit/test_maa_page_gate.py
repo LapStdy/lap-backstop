@@ -219,9 +219,9 @@ def test_home_frames_pass_gate(tmp_path: Path) -> None:
 
 
 def test_non_home_frames_block_gate(tmp_path: Path) -> None:
-    """18 帧非主界面样本逐帧喂入：全部拦下，错误码与 run.signal 载荷齐全。"""
+    """20 帧非主界面样本逐帧喂入：全部拦下，错误码与 run.signal 载荷齐全。"""
     others = [entry for entry in load_manifest()["frames"] if entry["expected"] == "other"]
-    assert len(others) == 18
+    assert len(others) == 20
     for entry in others:
         frame = fixture_frame(entry)
         recorder = _Recorder()
