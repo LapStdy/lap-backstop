@@ -14,7 +14,7 @@ from typing import Protocol
 
 from plugins.maa.vision.frames import Frame, FrameSource
 
-LAUNCH_TIMEOUT = 90.0
+LAUNCH_TIMEOUT = 180.0  # 冷启动实测 109 秒才到准备画面，90 秒会先超时（docs/arknights/06 时序）
 READY_TIMEOUT = 60.0
 LOGIN_TIMEOUT = 60.0
 CONNECT_TIMEOUT = 30.0
