@@ -1,9 +1,10 @@
 """主界面导航控制器：星型拓扑的有界返回循环与逐步证据。
 
-循环与预算见 docs/arknights/03「导航」：判为主界面即成功；覆盖层、战斗中、
-截不到帧与预算耗尽（默认 3 次返回）即停手。每次按返回前后各判定一次，不
-连续盲按；逐步证据只进返回值，不写文件、不发事件。判定与返回键端口的
-生产实现（``HomeJudgeAdapter``、``AdbBackSender``）也在本模块。
+循环与预算见 docs/arknights/03「导航」：导航档（总分 ≥ 10 且外观命中 ≥ 4）
+连续 3 帧达标即到家；覆盖层、战斗中、截不到帧与预算耗尽（默认 3 次返回）
+即停手。每次按返回前后各判定一次，不连续盲按；逐步证据只进返回值，不写
+文件、不发事件。判定与返回键端口的生产实现（``HomeJudgeAdapter``、
+``AdbBackSender``）也在本模块。
 """
 
 from __future__ import annotations
@@ -23,9 +24,10 @@ from plugins.maa.vision.frames import (
     ProcessRunner,
     subprocess_runner,
 )
-from plugins.maa.vision.judge import HomeJudge
+from plugins.maa.vision.judge import HomeJudge, evaluate_gates
 from plugins.maa.vision.login_vision import LoginVision
 from plugins.maa.vision.readiness import LoginStage
+from plugins.maa.vision.states import FrameStreak
 
 DEFAULT_BACK_BUDGET = 3
 WAIT_RANGE_SECONDS = (0.4, 0.8)
@@ -124,25 +126,29 @@ class AdbBackSender:
 class HomeJudgeAdapter:
     """``ScreenJudge`` 端口的生产实现：主界面判定结果适配成导航判读。
 
-    ``handover_hit`` 判 ``home``，总分与外观命中数原样带出，不改门槛、不另算分；
-    ``error_code`` 非空（如分辨率不符）与未达交接档都判 ``other``。覆盖层先经
-    ``LoginVision`` 判读：目前只有每日签到有对应模板，公告、限时活动等其余
-    覆盖层没有模板、落不到覆盖层判读，一律按 ``other`` 处理——返回键导航不
-    处置覆盖层，只停手。覆盖层判读没有主界面计分，总分与外观命中记 0。
+    导航档（总分 ≥ 10 且外观命中 ≥ 4）连续 3 帧达标才判 ``home``，未满连续帧
+    与只达交接档（总分 8–9 或外观 2–3）的帧都判 ``other``，总分与外观命中数
+    原样带出，不改门槛、不另算分；``error_code`` 非空（如分辨率不符）判
+    ``other`` 并清零连续帧。覆盖层先经 ``LoginVision`` 判读：目前只有每日签到
+    有对应模板，公告、限时活动等其余覆盖层没有模板、落不到覆盖层判读，一律
+    按 ``other`` 处理——返回键导航不处置覆盖层，只停手。覆盖层判读没有主界面
+    计分，总分与外观命中记 0。
     """
 
     def __init__(self, home: HomeJudge, overlay: LoginVision | None = None) -> None:
         self._home = home
         self._overlay = overlay
+        self._streak = FrameStreak()
 
     def judge(self, frame: Frame) -> ScreenReading:
-        """判定一帧：覆盖层优先，再按主界面判定给 ``home`` 或 ``other``。"""
+        """判定一帧：覆盖层优先，再按导航档连帧确认给 ``home`` 或 ``other``。"""
         if self._overlay is not None:
             reading = self._overlay.judge(frame)
             if reading.stage is LoginStage.OVERLAY:
                 return ScreenReading(state=NavPageState.OVERLAY, total_score=0, appearance_hits=0)
         result = self._home.judge(frame.image, frame.captured_at)
-        state = NavPageState.HOME if result.handover_hit else NavPageState.OTHER
+        confirmed = self._streak.observe(result).navigation_confirmed
+        state = NavPageState.HOME if confirmed else NavPageState.OTHER
         return ScreenReading(
             state=state, total_score=result.total_score, appearance_hits=result.appearance_hits
         )
@@ -188,6 +194,12 @@ def _read(ports: NavigationPorts) -> ScreenReading | None:
     return None if frame is None else ports.judge.judge(frame)
 
 
+def _is_navigation_hit(reading: ScreenReading) -> bool:
+    """该帧是否达导航档分数门槛：达标帧不按返回，只继续采样等连续帧确认。"""
+    _, navigation = evaluate_gates(reading.total_score, reading.appearance_hits)
+    return navigation
+
+
 def _finish(steps: list[NavigationStep], reason: StopReason | None) -> NavigationResult:
     """收尾：原因码为空当且仅当到家；证据冻结为元组。"""
     return NavigationResult(reached_home=reason is None, reason=reason, steps=tuple(steps))
@@ -223,8 +235,9 @@ def ensure_home(
 ) -> NavigationResult:
     """有界返回导航到主界面，返回结果与逐步证据。
 
-    每轮采样判定：``HOME`` 即成功；``OVERLAY``、战斗中或截帧失败立即停手；
-    ``OTHER`` 在预算内按一次返回，按后即时再判定一次，仍非主界面才等待
+    每轮采样判定：``HOME``（导航档连续 3 帧达标）即成功；``OVERLAY``、战斗中
+    或截帧失败立即停手；已达导航档分数但连续帧未满时不按返回，继续采样确认；
+    其余 ``OTHER`` 在预算内按一次返回，按后即时再判定一次，仍非主界面才等待
     （时长经 ``wait`` 注入）并回到采样。预算用尽仍非主界面即停手，不再按键。
     """
     steps: list[NavigationStep] = []
@@ -237,6 +250,10 @@ def ensure_home(
             return _conclude(steps, reading, None)
         if reading.state is NavPageState.OVERLAY:
             return _conclude(steps, reading, StopReason.OVERLAY)
+        # 达导航档但连续帧未满：主界面按返回会弹退出确认框，达标帧不按键，继续采样确认。
+        if _is_navigation_hit(reading):
+            steps.append(NavigationStep(len(steps) + 1, reading))
+            continue
         # 战斗门先于预算：预算未尽也不向战斗画面发送返回键。
         if ports.battle.in_battle():
             return _conclude(steps, reading, StopReason.IN_BATTLE)
