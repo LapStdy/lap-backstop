@@ -5,6 +5,8 @@
 ``nemu_capture_display(handle, display, buf_size, &width, &height, buf)`` 返回 0 才成功，
 先用 buf_size=0 与空缓冲查尺寸。帧是 RGBA8888、行序自下而上，这里翻成自上而下并转
 BGR。任何失败都返回 ``None``，不抛异常；原生通道没有原始 PNG，摘要取现编码的字节。
+DLL 调用不可中断：取帧放到 daemon 工作线程，超过上限即放弃该线程、断开连接并
+按时限收口为 ``None``，卡死不再拖住调用方。
 """
 
 from __future__ import annotations
@@ -12,6 +14,9 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import sys
+import threading
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,7 +31,12 @@ if TYPE_CHECKING:
 LIBRARY_NAME = "external_renderer_ipc.dll"
 CANDIDATE_SUBDIRS = ("nx_device/15.0/shell/sdk", "nx_device/12.0/shell/sdk", "shell/sdk")
 DEFAULT_DISPLAY_PACKAGE = b"default"
+DEFAULT_CAPTURE_TIMEOUT_MS = 5000
+FRAME_TIMEOUT_EVENT = "maa.frame.timeout"
 _CHANNELS = 4
+_MS_PER_SECOND = 1000.0
+
+FrameEventSink = Callable[[str, Mapping[str, object]], None]
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,32 +60,82 @@ class Renderer(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class NemuIpcOptions:
+    """原生通道的可调项：DLL 绑定替换件、单次取帧的超时上限与超时事件写入口。
+
+    ``bind`` 供测试注入假绑定；``logger`` 形如内核 ``RunContext.emit``，未注入时
+    超时不写事件也不报错。
+    """
+
+    bind: Callable[[Path], Any] | None = None
+    timeout_ms: int = DEFAULT_CAPTURE_TIMEOUT_MS
+    logger: FrameEventSink | None = None
+
+
 class NemuIpc:
-    """外部渲染通道的 ctypes 绑定：连一次、取 display、查尺寸、取帧。"""
+    """外部渲染通道的 ctypes 绑定：连一次、取 display、查尺寸、取帧。
+
+    DLL 调用不可中断，取帧在 daemon 工作线程里跑：超过上限即放弃该线程并断开
+    连接，卡死的那一次按时限收口为 ``None``，不拖住调用方，也不阻止进程退出。
+    """
 
     def __init__(
         self,
         mumu_dir: Path,
         index: int,
         package: str,
-        bind: Any = None,
+        options: NemuIpcOptions | None = None,
     ) -> None:
+        resolved = options if options is not None else NemuIpcOptions()
         self._dir = mumu_dir
         self._index = index
         self._package = package.encode("utf-8")
-        self._bind = bind if bind is not None else _bind
+        self._bind = resolved.bind if resolved.bind is not None else _bind
+        self._timeout_ms = resolved.timeout_ms
+        self._logger = resolved.logger
         self._lib: Any = None
         self._handle = 0
 
     def capture(self) -> RgbaFrame | None:
-        """取一帧；每次连接、取完即断开，门控反复运行不会漏句柄。"""
+        """取一帧；每次连接、取完即断开，DLL 卡死按超时收口返回 None。"""
         handle = self._connect()
         if handle == 0:
             return None
+        started = time.monotonic()
+        done = threading.Event()
+        result: dict[str, RgbaFrame | None] = {}
+        worker = threading.Thread(
+            target=self._grab_and_signal, args=(handle, done, result), daemon=True
+        )
+        worker.start()
+        finished = done.wait(self._timeout_ms / _MS_PER_SECOND)
+        self.close()
+        if not finished:
+            self._emit_timeout((time.monotonic() - started) * _MS_PER_SECOND)
+            return None
+        return result.get("frame")
+
+    def _grab_and_signal(
+        self,
+        handle: int,
+        done: threading.Event,
+        result: dict[str, RgbaFrame | None],
+    ) -> None:
+        """在工作线程里取一帧：结果经盒子与事件交还；被放弃时不碰连接状态。"""
         try:
-            return self._grab(handle)
+            result["frame"] = self._grab(handle)
+        except AttributeError:
+            # 线程边界抛不回调用方：缺符号按端口契约收口为 None。
+            result["frame"] = None
         finally:
-            self.close()
+            done.set()
+
+    def _emit_timeout(self, elapsed_ms: float) -> None:
+        """超时收口记一条事件，载荷带通道与整数耗时；未注入写入口时静默。"""
+        if self._logger is None:
+            return
+        self._logger(FRAME_TIMEOUT_EVENT, {"channel": "native", "elapsed_ms": int(elapsed_ms)})
 
     def close(self) -> None:
         """断开连接；重复调用安全。"""
