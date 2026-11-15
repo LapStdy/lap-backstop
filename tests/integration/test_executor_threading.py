@@ -31,6 +31,8 @@ from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 from tests.supervisor_support import JOIN_TIMEOUT_SECONDS, tick_and_settle
 
+REQS = ("A-106",)
+
 T0 = datetime(2026, 10, 31, 8, 0, tzinfo=UTC)
 TEMPLATE_A = "template-a"
 TEMPLATE_B = "template-b"

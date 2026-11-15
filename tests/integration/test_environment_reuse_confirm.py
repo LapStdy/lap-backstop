@@ -22,6 +22,8 @@ from tests.integration.test_environments import (
     state_events,
 )
 
+REQS = ("A-104",)
+
 
 @pytest.fixture
 def env(tmp_path: Path) -> Iterator[tuple[sqlite3.Connection, VirtualClock, EnvironmentService]]:

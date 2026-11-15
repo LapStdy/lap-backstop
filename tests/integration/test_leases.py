@@ -20,6 +20,8 @@ from storage import migrate, open_database
 from storage.repositories.job_runs import NewRun
 from storage.repositories.resources import ResourceRepository, ResourceSpec
 
+REQS = ("A-106",)
+
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 TEMPLATE_ID = "template-1"
 

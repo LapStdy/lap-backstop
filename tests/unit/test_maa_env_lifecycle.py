@@ -15,6 +15,8 @@ from plugins.maa.capabilities.environment import MaaEnvironment
 from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.windows_host import ScreenSize
 
+REQS = ("M-108",)
+
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=UTC)
 ENV = EnvironmentRef(id="env-1", provider_id="maa")
 GAME = "com.hypergryph.arknights"

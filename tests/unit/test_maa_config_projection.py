@@ -18,6 +18,8 @@ from tests.config_store_support import (
     sample_config,
 )
 
+REQS = ("M-107", "M-108")
+
 REVISION = "20261025-120000"
 
 

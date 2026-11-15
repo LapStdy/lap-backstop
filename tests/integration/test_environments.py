@@ -24,6 +24,8 @@ from core.environments.errors import EnvironmentNotFoundError, EnvironmentStateE
 from core.environments.service import EnvironmentCall, EnvironmentService
 from storage import migrate, open_database
 
+REQS = ("A-104",)
+
 T0 = datetime(2026, 10, 23, 12, 0, tzinfo=UTC)
 ENV_ID = "env-1"
 
