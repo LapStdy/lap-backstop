@@ -22,6 +22,7 @@ from plugins.maa.capabilities.environment import MaaEnvironment
 from plugins.maa.capabilities.page_gate import GATE_SIGNAL_KIND, PageGate
 from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.vision.frames import Frame, FrameOrigin
+from plugins.maa.vision.mumu_frames import MumuFrameSource, RgbaFrame
 from plugins.maa.windows_host import ScreenSize
 from tests.maa_vision_support import fixture_frame, frame_entry, load_manifest
 
@@ -84,6 +85,25 @@ class _FakeFrames:
     def capture(self) -> Frame | None:
         self.captures += 1
         return self._frames.pop(0) if self._frames else None
+
+
+class _FixedRenderer:
+    """按序列返回预置 RGBA 帧的渲染通道假件；耗尽后返回 None。"""
+
+    def __init__(self, frames: Sequence[RgbaFrame | None]) -> None:
+        self._frames = list(frames)
+
+    def capture(self) -> RgbaFrame | None:
+        return self._frames.pop(0) if self._frames else None
+
+    def close(self) -> None:
+        return None
+
+
+def _to_rgba_bottom_up(image: np.ndarray) -> bytes:
+    """BGR 自上而下帧 → 原生通道的原始形态：RGBA 且行序自下而上。"""
+    rgba = cv2.cvtColor(image[::-1, :, :], cv2.COLOR_BGR2RGBA)
+    return np.ascontiguousarray(rgba).tobytes()
 
 
 class _StubHost:
@@ -287,6 +307,24 @@ def test_gate_within_budget(tmp_path: Path) -> None:
             probe = json.loads((tmp_path / path).read_text(encoding="utf-8"))
             judge_ms += float(probe["judge_ms"])
     assert judge_ms <= 20.0, f"两帧判定合计 {judge_ms} 毫秒"
+
+
+def test_gate_accepts_native_channel_frames(tmp_path: Path) -> None:
+    """原生通道帧走同一条门控：BGR 转回自下而上 RGBA 后判定与放行不变。"""
+    frame = fixture_frame(frame_entry(load_manifest(), _home_entries()[0]["name"]))
+    sample = RgbaFrame(
+        width=frame.width,
+        height=frame.height,
+        rgba=_to_rgba_bottom_up(frame.image),
+    )
+    source = MumuFrameSource(_FixedRenderer([sample, sample]))
+    recorder = _Recorder()
+    outcome = PageGate(frames=source, wait=_no_wait).run(make_context(tmp_path, recorder))
+    assert outcome.passed is True
+    probe_path = next(path for kind, path, _summary in recorder.evidence if kind == "probe")
+    probe = json.loads((tmp_path / probe_path).read_text(encoding="utf-8"))
+    assert probe["frame_source"] == FrameOrigin.NATIVE.value
+    assert probe["handover_hit"] is True
 
 
 def test_page_gate_disabled_keeps_old_behaviour(tmp_path: Path) -> None:

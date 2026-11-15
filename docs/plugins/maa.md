@@ -61,7 +61,7 @@ adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed
 
 - 步骤 1–4 由环境 provider 的 `prepare` 执行（步骤 4 可用配置 `page_gate` 关闭）；步骤 5–7 属就绪状态机，步骤 8 属脚本能力。
 - 分辨率在 `probe` 里核对：仅当游戏在前台时比较截图的宽高与 `screen_size`。
-- 主界面门控的截帧通道由 `frame_source` 选：`adb`（默认）走 `exec-out screencap`；`mumu` 走 `external_renderer_ipc.dll` 的 `nemu_capture_display`，帧是 RGBA8888 且行序自下而上，端口翻成自上而下 BGR 后再判定。原生通道实测 1280×720、中位 5.9 毫秒；`frame_source=mumu` 的门控尚未在真机验收。`probe` 的分辨率判据仍读 adb 截帧，两者口径见 D-023。
+- 主界面门控的截帧通道由 `frame_source` 选：`adb`（默认）走 `exec-out screencap`；`mumu` 走 `external_renderer_ipc.dll` 的 `nemu_capture_display`，帧是 RGBA8888 且行序自下而上，端口翻成自上而下 BGR 后再判定。原生通道每次取帧连接一次、取完断开。原生通道测值 1280×720、中位 5.9 毫秒；取不到帧时门控按 `E_ENV_UNREACHABLE` 失败，不自动退回 adb。`frame_source=mumu` 的门控尚未在真机验收；`probe` 的分辨率判据仍读 adb 截帧，两者口径见 D-023。
 
 主界面门控（步骤 4）的口径：
 
