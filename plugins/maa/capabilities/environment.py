@@ -32,7 +32,7 @@ from plugins.maa.vision.clicker import AdbClicker
 from plugins.maa.vision.frames import AdbFrameSource, FrameSource
 from plugins.maa.vision.judge import HomeJudge
 from plugins.maa.vision.login_vision import LoginVision
-from plugins.maa.vision.mumu_frames import MumuFrameSource, NemuIpc
+from plugins.maa.vision.mumu_frames import FrameEventSink, MumuFrameSource, NemuIpc, NemuIpcOptions
 from plugins.maa.vision.navigation import (
     WAIT_RANGE_SECONDS,
     HomeJudgeAdapter,
@@ -154,11 +154,11 @@ class MaaEnvironment:
             if login_failure is not None:
                 return _failure(ctx, started_at, login_failure[0], login_failure[1])
         if _is_navigation_enabled(config):
-            navigation_failure = self._navigate_home(config, actions)
+            navigation_failure = self._navigate_home(config, actions, ctx.emit)
             if navigation_failure is not None:
                 return _failure(ctx, started_at, navigation_failure[0], navigation_failure[1])
         if _is_gate_enabled(config):
-            outcome = self._gate(config).run(ctx)
+            outcome = self._gate(config, ctx.emit).run(ctx)
             gate_error = None if outcome.passed else outcome.error_code
             if gate_error is not None:
                 return _failure(ctx, started_at, gate_error.value, outcome.detail)
@@ -257,14 +257,14 @@ class MaaEnvironment:
         """真机只读端口按需构造：测试注入假件，生产用 Windows 实现。"""
         return self._host if self._host is not None else _build_host(config)
 
-    def _gate(self, config: Mapping[str, Any]) -> PageGate:
-        """主界面门控按需装配：测试注入帧源，生产用 adb 截帧实现。"""
-        frames = self._frames if self._frames is not None else _build_frames(config)
+    def _gate(self, config: Mapping[str, Any], emit: FrameEventSink) -> PageGate:
+        """主界面门控按需装配：测试注入帧源，生产按本次运行构造帧端口。"""
+        frames = self._frames if self._frames is not None else _build_frames(config, emit)
         return PageGate(frames=frames, wait=self._wait)
 
     def _login(self, config: Mapping[str, Any], ctx: RunContext) -> tuple[str, str] | None:
         """跑登录流程状态机：到家返回 None，否则给出错误码与说明。"""
-        frames = self._frames if self._frames is not None else _build_frames(config)
+        frames = self._frames if self._frames is not None else _build_frames(config, ctx.emit)
         ports = LoginPorts(
             frames=frames,
             judge=LoginVision(),
@@ -278,10 +278,10 @@ class MaaEnvironment:
         return (ErrorCode.ENV_NOT_READY.value, f"登录流程未到主界面：{result.detail}")
 
     def _navigate_home(
-        self, config: Mapping[str, Any], actions: EmulatorHost
+        self, config: Mapping[str, Any], actions: EmulatorHost, emit: FrameEventSink
     ) -> tuple[str, str] | None:
         """登录后导航到主界面：到家返回 None，否则给出错误码与停手说明。"""
-        frames = self._frames if self._frames is not None else _build_frames(config)
+        frames = self._frames if self._frames is not None else _build_frames(config, emit)
         ports = NavigationPorts(
             frames=frames,
             judge=HomeJudgeAdapter(HomeJudge(), LoginVision()),
@@ -413,11 +413,19 @@ def _build_clicker(config: Mapping[str, Any]) -> AdbClicker:
     )
 
 
-def _build_frames(config: Mapping[str, Any]) -> FrameSource:
-    """按 ``frame_source`` 拼帧端口：mumu（默认）走原生渲染通道，adb 走截帧命令。"""
+def _build_frames(config: Mapping[str, Any], emit: FrameEventSink) -> FrameSource:
+    """按 ``frame_source`` 拼帧端口：mumu（默认）走原生渲染通道，adb 走截帧命令。
+
+    原生通道把 ``emit`` 作为超时事件写入口注入构造项：真机取帧超时的事件落当次运行。
+    """
     mumu_dir = Path(str(config.get("mumu_dir", _DEFAULT_MUMU_DIR)))
     if _frame_source(config) == _FRAME_SOURCE_MUMU:
-        renderer = NemuIpc(mumu_dir, _instance_index(config), _text(config, "game_package"))
+        renderer = NemuIpc(
+            mumu_dir,
+            _instance_index(config),
+            _text(config, "game_package"),
+            options=NemuIpcOptions(logger=emit),
+        )
         return MumuFrameSource(renderer)
     return AdbFrameSource(
         adb_path=mumu_dir / "nx_main" / "adb.exe", address=_text(config, "adb_address")
