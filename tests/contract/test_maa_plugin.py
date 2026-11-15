@@ -31,6 +31,7 @@ from plugins.maa.capabilities.config_projection import MaaConfigProjection
 from plugins.maa.capabilities.environment import MaaEnvironment
 from plugins.maa.capabilities.script import DEFAULT_MAA_DIR, MaaScript
 from plugins.maa.capabilities.verifier import DEFAULT_POLICY_ID, EVIDENCE_NOTE_NAME, MaaVerifier
+from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.plugin import PLUGIN, load_manifest
 from plugins.maa.windows_host import ScreenSize
 from tests.config_store_support import (
@@ -243,6 +244,9 @@ class _StubHost:
 
     def window_titles(self) -> tuple[str, ...]:
         return ("MuMuPlayer-12.0",)
+
+    def instance_state(self, index: int) -> MumuInstance | None:
+        return None
 
     def adb_device_state(self) -> str:
         return "device"

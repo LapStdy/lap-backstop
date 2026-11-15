@@ -12,6 +12,7 @@ from typing import Any
 
 from contracts import EnvironmentRef, RunContext
 from plugins.maa.capabilities.environment import MaaEnvironment
+from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.windows_host import ScreenSize
 
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=UTC)
@@ -64,6 +65,9 @@ class _FakeHost:
 
     def window_titles(self) -> tuple[str, ...]:
         return ("MuMuNxMain",)
+
+    def instance_state(self, index: int) -> MumuInstance | None:
+        return None
 
     def adb_device_state(self) -> str:
         return self._adb_state

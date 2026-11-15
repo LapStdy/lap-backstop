@@ -21,7 +21,7 @@
 
 | 能力 | 实现内容 |
 |---|---|
-| `environment` | MuMu 12 + 明日方舟的探测、准备、复位、保温与清理 |
+| `environment` | MuMu 6.0 + 明日方舟的探测、准备、复位、保温与清理 |
 | `script` | MAA 的启动、观察、停止与恢复 |
 | `verifier` | 本次运行 `gui.log` 段的脚本证据判据，结论 `completed` / `failed` / `unknown` |
 | `config_projection` | `gui.new.json` 的差异比较、写入、备份与回滚 |
@@ -40,15 +40,17 @@
 | MAA 资源 | `H:/MAA/resource` |
 | Python 绑定 | `H:/MAA/Python/asst` |
 
-探测 `probe` 经只读端口确认四件事：模拟器窗口存在、adb 可连接且可截图、游戏在前台、
-游戏横屏时截图是 1280×720。任一不满足时返回对应状态：未启动为 `off`，启动中为 `booting`，
+探测 `probe` 经只读端口确认五件事：模拟器实例进程在且 Android 启动完成、模拟器窗口存在、
+adb 可连接且可截图、游戏在前台、游戏横屏时截图是 1280×720。实例状态取自
+`MuMuManager info -v 0` 的 `is_process_started` 与 `is_android_started`，读不到时退回窗口
+判据。任一不满足时返回对应状态：实例或窗口不在为 `off`，实例在启动为 `booting`，
 adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed`。
 
 准备 `prepare` 的步骤与判据：
 
 | 顺序 | 步骤 | 判据 | 超时 |
 |---|---|---|---|
-| 1 | 复用或启动 MuMu | 窗口存在；adb 设备在线（先 `kill-server` 再 `connect`） | 180 秒 |
+| 1 | 复用或启动 MuMu | 实例未启动时 `control launch`；adb 设备在线（先 `kill-server` 再 `connect`） | 180 秒 |
 | 2 | 确认可截图 | 截到一帧 | 单次截图 |
 | 3 | 拉起游戏 | 游戏包在前台 | 60 秒 |
 | 4 | 主界面门控 | 交接档：总分 ≥ 8、外观命中 ≥ 2、连续 2 帧（规则见 [03](../arknights/03-主界面判定与导航.md)，实现见 [04](../arknights/04-主界面探针实现.md)） | 2 秒 |

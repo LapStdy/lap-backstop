@@ -146,6 +146,7 @@ def test_windows_host_capture_returns_bytes_or_none(monkeypatch: pytest.MonkeyPa
     assert members == [
         "adb_device_state",
         "foreground_package",
+        "instance_state",
         "screencap_size",
         "window_titles",
     ]

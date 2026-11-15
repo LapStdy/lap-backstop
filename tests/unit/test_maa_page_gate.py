@@ -20,6 +20,7 @@ import numpy as np
 from contracts import EnvironmentRef, ErrorCode, EventType, RunContext
 from plugins.maa.capabilities.environment import MaaEnvironment
 from plugins.maa.capabilities.page_gate import GATE_SIGNAL_KIND, PageGate
+from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.vision.frames import Frame, FrameOrigin
 from plugins.maa.windows_host import ScreenSize
 from tests.maa_vision_support import fixture_frame, frame_entry, load_manifest
@@ -90,6 +91,9 @@ class _StubHost:
 
     def window_titles(self) -> tuple[str, ...]:
         return ("MuMuNxMain",)
+
+    def instance_state(self, index: int) -> MumuInstance | None:
+        return None
 
     def adb_device_state(self) -> str:
         return "device"

@@ -13,6 +13,7 @@ from typing import Any
 
 from contracts import EnvironmentRef, RunContext
 from plugins.maa.capabilities.environment import MaaEnvironment
+from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.vision.frames import Frame, FrameSource
 from plugins.maa.windows_host import ScreenSize
 from tests.maa_vision_support import fixture_frame, load_manifest
@@ -71,9 +72,13 @@ class _FakeHost:
         self._adb_seen = 0
         self._size_seen = 0
         self._package_seen = 0
+        self.instance: MumuInstance | None = None
 
     def window_titles(self) -> tuple[str, ...]:
         return self._titles
+
+    def instance_state(self, index: int) -> MumuInstance | None:
+        return self.instance
 
     def adb_device_state(self) -> str:
         return self._next(self._adb, "_adb_seen")
@@ -198,6 +203,28 @@ def test_prepare_starts_instance_when_window_missing(tmp_path: Path) -> None:
     result = make_provider(_FakeHost(titles=()), actions, ctx).prepare(ENV, ctx)
     assert result.ok is True
     assert actions.calls[0] == "start:0"
+
+
+def test_prepare_starts_instance_when_launcher_window_open(tmp_path: Path) -> None:
+    """控制窗口在、实例没起来：仍要拉起实例，不白等 adb 超时。"""
+    actions = _FakeActions()
+    ctx = make_context(evidence_dir=tmp_path)
+    host = _FakeHost()
+    host.instance = MumuInstance(0, "明日方舟", "15.0", False, False)
+    result = make_provider(host, actions, ctx).prepare(ENV, ctx)
+    assert result.ok is True
+    assert actions.calls[0] == "start:0"
+
+
+def test_prepare_skips_start_when_instance_already_running(tmp_path: Path) -> None:
+    """info 说实例在跑时不重复拉起，即便窗口标题没匹配上。"""
+    actions = _FakeActions()
+    ctx = make_context(evidence_dir=tmp_path)
+    host = _FakeHost(titles=("记事本",))
+    host.instance = MumuInstance(0, "明日方舟", "15.0", True, True)
+    result = make_provider(host, actions, ctx).prepare(ENV, ctx)
+    assert result.ok is True
+    assert actions.calls == []
 
 
 def test_prepare_reconnects_adb_when_offline(tmp_path: Path) -> None:

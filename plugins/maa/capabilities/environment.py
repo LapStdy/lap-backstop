@@ -24,6 +24,7 @@ from contracts import (
 )
 from plugins.maa.capabilities.page_gate import PageGate
 from plugins.maa.emulator_host import EmulatorHost, WindowsEmulatorHost
+from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.vision.frames import AdbFrameSource, FrameSource
 from plugins.maa.windows_host import MachineHost, ScreenSize, WindowsMachineHost
 
@@ -56,11 +57,24 @@ class MaaEnvironment:
         self._frames = frames
 
     def probe(self, env: EnvironmentRef, ctx: RunContext) -> EnvironmentProbe:
-        """按窗口、adb、前台与分辨率四项给出环境状态；只读且可重复。"""
+        """按实例、窗口、adb、前台与分辨率给出环境状态；只读且可重复。
+
+        实例状态先判：控制窗口在实例关闭时也留着，只按窗口会把「实例没起来」判成
+        正在启动。``instance_state`` 读不到时退回窗口判据。
+        """
         config = ctx.config
         host = self._host_for(config)
+        index = _instance_index(config)
+        instance = host.instance_state(index)
+        early = _instance_verdict(instance, index)
+        if early is not None:
+            return _probe(ctx, early[0], early[1])
         title = _find_window(host.window_titles(), _text(config, "emulator_window_title"))
         if title is None:
+            if instance is not None:
+                return _probe(
+                    ctx, EnvironmentState.BOOTING, f"实例 index {index} 已启动，窗口未出现"
+                )
             needle = _text(config, "emulator_window_title")
             return _probe(
                 ctx, EnvironmentState.OFF, f"模拟器窗口不存在：未找到标题含「{needle}」的窗口"
@@ -105,7 +119,7 @@ class MaaEnvironment:
         address = _text(config, "adb_address")
         game = _text(config, "game_package")
         try:
-            if _find_window(host.window_titles(), _text(config, "emulator_window_title")) is None:
+            if not self._instance_running(host, config):
                 actions.start_instance(_instance_index(config))
             if not self._wait_adb(host, actions, config, ctx):
                 return _failure(ctx, started_at, "E_ENV_UNREACHABLE", "adb 未在限期内连上模拟器")
@@ -223,6 +237,15 @@ class MaaEnvironment:
         frames = self._frames if self._frames is not None else _build_frames(config)
         return PageGate(frames=frames, wait=self._wait)
 
+    def _instance_running(self, host: MachineHost, config: Mapping[str, Any]) -> bool:
+        """实例在跑就不重复拉起；info 读不到时退回窗口判据。"""
+        index = _instance_index(config)
+        instance = host.instance_state(index)
+        if instance is not None:
+            return instance.is_process_started
+        titles = host.window_titles()
+        return _find_window(titles, _text(config, "emulator_window_title")) is not None
+
     def _wait_adb(
         self,
         host: MachineHost,
@@ -263,6 +286,20 @@ class MaaEnvironment:
 def _probe(ctx: RunContext, state: EnvironmentState, detail: str) -> EnvironmentProbe:
     """构造带注入时钟时间戳的探测结果。"""
     return EnvironmentProbe(state=state, detail=detail, observed_at=ctx.clock.utc_now())
+
+
+def _instance_verdict(
+    instance: MumuInstance | None,
+    index: int,
+) -> tuple[EnvironmentState, str] | None:
+    """实例状态先判：未启动、Android 未启动完成都轮不到窗口与 adb 判据。"""
+    if instance is None:
+        return None
+    if not instance.is_process_started:
+        return EnvironmentState.OFF, f"模拟器实例未启动：index {index}（{instance.name}）"
+    if not instance.is_android_started:
+        return EnvironmentState.BOOTING, f"实例 index {index} 已启动，Android 未启动完成"
+    return None
 
 
 def _failure(ctx: RunContext, started_at: datetime, code: str, detail: str) -> PhaseResult:

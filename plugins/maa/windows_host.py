@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from plugins.maa.mumu_instance import MUMU_MANAGER_NAME, MumuInstance, read_instance_info
+
 _ADB_TIMEOUT_SECONDS = 20.0
 _SCREENCAP_TIMEOUT_SECONDS = 30.0
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -46,10 +48,14 @@ class ScreenSize:
 
 
 class MachineHost(Protocol):
-    """读真机的最小端口；四个方法都只读，不改变任何外部状态。"""
+    """读真机的最小端口；五个方法都只读，不改变任何外部状态。"""
 
     def window_titles(self) -> Sequence[str]:
         """返回当前所有带标题的顶层窗口标题。"""
+        ...
+
+    def instance_state(self, index: int) -> MumuInstance | None:
+        """返回 MuMu 实例的进程与 Android 启动状态；info 查询不可用时返回 None。"""
         ...
 
     def adb_device_state(self) -> str:
@@ -71,6 +77,7 @@ class WindowsMachineHost:
     def __init__(self, adb_path: Path, address: str) -> None:
         self._adb_path = adb_path
         self._address = address
+        self._manager = adb_path.with_name(MUMU_MANAGER_NAME)
 
     def window_titles(self) -> Sequence[str]:
         """枚举带标题的顶层窗口；标题按窗口文本原样返回。"""
@@ -87,6 +94,10 @@ class WindowsMachineHost:
 
         _user32.EnumWindows(_enum_windows_proc(collect), 0)
         return tuple(titles)
+
+    def instance_state(self, index: int) -> MumuInstance | None:
+        """只读查询 MuMuManager info；查询不可用时返回 None，由调用方退回窗口判据。"""
+        return read_instance_info(self._manager, index)
 
     def adb_device_state(self) -> str:
         """不发起 connect，只读 adb devices 的现有状态。"""

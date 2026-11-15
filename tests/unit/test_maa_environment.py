@@ -13,6 +13,7 @@ from typing import Any
 
 from contracts import EnvironmentRef, EnvironmentState, RunContext
 from plugins.maa.capabilities.environment import MaaEnvironment
+from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.windows_host import ScreenSize
 
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=UTC)
@@ -61,13 +62,14 @@ class _Readings:
     size: ScreenSize | None = None
     package: str | None = "com.hypergryph.arknights"
     screencap_ok: bool = True
+    instance: MumuInstance | None = None
 
 
 _DEFAULT_READINGS = _Readings()
 
 
 class _FakeHost:
-    """可调的真机读数假件：四个方法都只返回预置值。"""
+    """可调的真机读数假件：五个方法都只返回预置值。"""
 
     def __init__(self, readings: _Readings = _DEFAULT_READINGS) -> None:
         self._titles = tuple(readings.titles)
@@ -75,9 +77,13 @@ class _FakeHost:
         self._size = ScreenSize(width=1280, height=720) if readings.size is None else readings.size
         self._package = readings.package
         self._screencap_ok = readings.screencap_ok
+        self._instance = readings.instance
 
     def window_titles(self) -> Sequence[str]:
         return self._titles
+
+    def instance_state(self, index: int) -> MumuInstance | None:
+        return self._instance
 
     def adb_device_state(self) -> str:
         return self._adb_state
@@ -157,6 +163,22 @@ def test_probe_reports_failed_on_resolution_mismatch() -> None:
     probe = provider.probe(ENV, make_context())
     assert probe.state is EnvironmentState.FAILED
     assert "720x1280" in probe.detail
+
+
+def test_probe_reports_off_when_instance_not_started_even_with_window() -> None:
+    """控制窗口在、实例没起来：判未启动，不判正在启动。"""
+    readings = _Readings(instance=MumuInstance(0, "明日方舟", "15.0", False, False))
+    probe = MaaEnvironment(host=_FakeHost(readings)).probe(ENV, make_context())
+    assert probe.state is EnvironmentState.OFF
+    assert "实例未启动" in probe.detail
+
+
+def test_probe_reports_booting_when_android_not_started() -> None:
+    """实例进程起来了但 Android 没启动完成：判启动中，不往下查 adb。"""
+    readings = _Readings(instance=MumuInstance(0, "明日方舟", "15.0", True, False))
+    probe = MaaEnvironment(host=_FakeHost(readings)).probe(ENV, make_context())
+    assert probe.state is EnvironmentState.BOOTING
+    assert "Android" in probe.detail
 
 
 def test_probe_reports_ready_when_all_four_checks_pass() -> None:
