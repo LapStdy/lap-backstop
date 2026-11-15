@@ -61,6 +61,7 @@ adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed
 
 - 步骤 1–4 由环境 provider 的 `prepare` 执行（步骤 4 可用配置 `page_gate` 关闭）；步骤 5–7 属就绪状态机，步骤 8 属脚本能力。
 - 分辨率在 `probe` 里核对：仅当游戏在前台时比较截图的宽高与 `screen_size`。
+- 门控与 `probe` 的截帧当前走 adb；MuMu 原生通道（`external_renderer_ipc.dll` 的 `nemu_capture_display`）尚未接入，实测它在本机取到 1280×720、中位 5.9 毫秒，而 `wm size` 报 720×1280。
 
 主界面门控（步骤 4）的口径：
 
