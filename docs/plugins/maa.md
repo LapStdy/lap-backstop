@@ -57,7 +57,7 @@ adb 失联或游戏未就绪为 `degraded`，分辨率或缩放不符为 `failed
 | 5 | 主界面门控 | 交接档：总分 ≥ 8、外观命中 ≥ 2、连续 2 帧（规则见 [03](../arknights/03-主界面判定与导航.md)，实现见 [04](../arknights/04-主界面探针实现.md)） | 2 秒 |
 | 6 | 启动 MAA 并加载资源（`binding`） | `load` 与 `connect` 成功 | 180 秒 |
 
-- 步骤 1–5 由环境 provider 的 `prepare` 执行（步骤 4 可用配置 `login_flow` 关闭，步骤 5 可用 `page_gate` 关闭）；步骤 6 属脚本能力。
+- 步骤 1–5 由环境 provider 的 `prepare` 执行（步骤 4 可用配置 `login_flow` 关闭；`navigation` 开启时在步骤 4 与 5 之间跑有界返回导航，规则见 [03](../arknights/03-主界面判定与导航.md)；步骤 5 可用 `page_gate` 关闭）；步骤 6 属脚本能力。
 
 登录流程（步骤 4）的判读与动作：
 
@@ -177,6 +177,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | `game_launch_timeout_s` | integer | 60 | 游戏启动到前台的时限 |
 | `page_gate` | boolean | `true` | 主界面门控：prepare 拉起游戏后截帧判定主界面，连续两帧确认才放行 |
 | `login_flow` | boolean | `true` | 登录流程：prepare 在游戏到前台后跑登录状态机，到主界面才继续 |
+| `navigation` | boolean | `false` | 登录后导航：prepare 在登录流程之后、主界面门控之前跑有界返回导航，判到主界面才继续；覆盖层、战斗中、截不到帧或预算耗尽（默认 3 次返回）即停手 |
 | `profile` | string | `Default` | 使用的 MAA 配置名，即整份目标的 `Current` |
 | `tasks` | array | 日常队列 | 每项含 `type`、`name`、`enabled`、`params` |
 | `launch_timeout_s` | integer | 180 | 启动到资源加载完成的上限 |
