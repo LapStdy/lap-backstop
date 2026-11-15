@@ -45,6 +45,7 @@ class ContextPayload:
     evidence_dir: Path
     deadline_at: datetime
     secrets: Mapping[str, str]
+    verification_policy: Mapping[str, Any]
 
 
 def plugin_event(name: str) -> EventType:
@@ -109,11 +110,15 @@ def encode_context(ctx: RunContext) -> dict[str, Any]:
         "evidence_dir": str(ctx.evidence_dir),
         "deadline_at": ctx.deadline_at.astimezone(UTC).isoformat(),
         "secrets": dict(ctx.secrets),
+        "verification_policy": dict(ctx.verification_policy),
     }
 
 
 def decode_context(value: object) -> ContextPayload:
-    """解码 RunContext 载荷；缺字段或类型不符抛 ``WorkerPayloadError``。"""
+    """解码 RunContext 载荷；缺字段或类型不符抛 ``WorkerPayloadError``。
+
+    ``verification_policy`` 是可选字段：缺省回退空映射，出现但非 JSON 对象时抛错。
+    """
     data = _mapping(value, "context")
     return ContextPayload(
         run_id=_text(data, "run_id", "context"),
@@ -126,6 +131,9 @@ def decode_context(value: object) -> ContextPayload:
         evidence_dir=Path(_text(data, "evidence_dir", "context")),
         deadline_at=_required_time(data, "deadline_at", "context"),
         secrets=_text_map(_required(data, "secrets", "context"), "context.secrets"),
+        verification_policy=_json_object(
+            data.get("verification_policy", {}), "context.verification_policy"
+        ),
     )
 
 

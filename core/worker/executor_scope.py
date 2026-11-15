@@ -112,6 +112,7 @@ class RunScopeFactory:
             log=self._log,
             emit=self._emitter(run.id),
             record_evidence=self._evidence_recorder(run.id, evidence_dir),
+            verification_policy=dict(template.verification_policy),
         )
 
     def _emitter(self, run_id: str) -> Emit:

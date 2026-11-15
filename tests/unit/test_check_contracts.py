@@ -90,6 +90,7 @@ def test_registry_matches_contract_code() -> None:
             "log",
             "emit",
             "record_evidence",
+            "verification_policy",
         }
     )
     assert {"Verdict", "Evidence", "VerificationPolicy", "RunContext"} <= loaded.type_names
