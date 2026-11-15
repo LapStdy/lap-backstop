@@ -200,13 +200,7 @@ class EnvironmentService:
         result = call.provider.cleanup(call.ref, call.ctx, keep_warm)
         now = self._clock.utc_now()
         if not result.ok:
-            self._writer.apply(
-                self.get(call.environment_id),
-                EnvironmentState.FAILED,
-                at=now,
-                detail={"action": "cleanup", "error_code": result.error_code or ""},
-            )
-            return result
+            return self._apply_failure(row, result, action="cleanup")
         target = EnvironmentState.READY if keep_warm else EnvironmentState.OFF
         with transaction(self._connection):
             try:
@@ -236,22 +230,16 @@ class EnvironmentService:
         """维持保温：只在已就绪的环境上生效，写 warm_until。
 
         以发起插件调用前读到的环境行为仲裁基准（docs/11 并发与超时）：调用期间
-        前置状态被其它连接先提交时丢弃本次 warm_until 写入，只记一条
-        core.env_action_conflict，按 ``E_ENV_NOT_READY`` 失败结果收口，不向调用方
-        抛状态冲突异常。
+        前置状态被其它连接先提交时丢弃本次写入（成功路径的 warm_until 与失败路径
+        的 failed），只记一条 core.env_action_conflict，按 ``E_ENV_NOT_READY`` 失败
+        结果收口，不向调用方抛状态冲突异常。
         """
         row = self.get(call.environment_id)
         if row.state is not EnvironmentState.READY:
             raise EnvironmentStateError("保温要求环境已就绪")
         result = call.provider.warm(call.ref, call.ctx, minutes)
         if not result.ok:
-            self._writer.apply(
-                self.get(call.environment_id),
-                EnvironmentState.FAILED,
-                at=self._clock.utc_now(),
-                detail={"action": "warm", "error_code": result.error_code or ""},
-            )
-            return result
+            return self._apply_failure(row, result, action="warm")
         now = self._clock.utc_now()
         try:
             self._writer.keep_warm_until(row, now + timedelta(minutes=minutes), at=now)
@@ -299,6 +287,37 @@ class EnvironmentService:
             at=self._clock.utc_now(),
             detail={"action": action, "error_code": result.error_code or ""},
         )
+
+    def _apply_failure(
+        self,
+        row: EnvironmentRow,
+        result: PhaseResult,
+        *,
+        action: str,
+    ) -> PhaseResult:
+        """provider 失败结果按前置 row 仲裁落盘：前置成立写 failed，原样返回结果。
+
+        前置在插件调用期间被其它连接先提交时丢弃 failed 写入，返回
+        ``E_ENV_NOT_READY`` 失败结果（detail 带前置变化与 provider 原错误码），
+        终态保持赢家状态；前置未变但状态机拒绝时原样上抛（docs/11 并发与超时）。
+        """
+        try:
+            self._writer.apply(
+                row,
+                EnvironmentState.FAILED,
+                at=self._clock.utc_now(),
+                detail={"action": action, "error_code": result.error_code or ""},
+            )
+        except EnvironmentStateError as error:
+            current = self.get(row.id)
+            if current.state is row.state:
+                raise
+            return PhaseResult(
+                ok=False,
+                error_code=ErrorCode.ENV_NOT_READY.value,
+                detail=f"{error}（provider 原错误码：{result.error_code or '无'}）",
+            )
+        return result
 
 
 class _StateWriter:

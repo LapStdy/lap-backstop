@@ -49,26 +49,34 @@ def arbitration_env(tmp_path: Path) -> Iterator[TwoWriters]:
 
 
 class CleanupWarmProvider(StubProvider):
-    """cleanup/warm 返回前先执行注入动作，模拟调用期间另一连接先提交。"""
+    """cleanup/warm 返回前先执行注入动作，模拟调用期间另一连接先提交；可指定失败错误码。"""
 
     def __init__(
         self,
         *,
+        cleanup_error: str | None = None,
+        warm_error: str | None = None,
         on_cleanup: Callable[[], None] | None = None,
         on_warm: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
+        self._cleanup_error = cleanup_error
+        self._warm_error = warm_error
         self._on_cleanup = on_cleanup
         self._on_warm = on_warm
 
     def cleanup(self, env: EnvironmentRef, ctx: RunContext, keep_warm: bool) -> PhaseResult:
         if self._on_cleanup is not None:
             self._on_cleanup()
+        if self._cleanup_error is not None:
+            return PhaseResult(ok=False, error_code=self._cleanup_error, detail="cleanup 失败")
         return super().cleanup(env, ctx, keep_warm)
 
     def warm(self, env: EnvironmentRef, ctx: RunContext, minutes: int) -> PhaseResult:
         if self._on_warm is not None:
             self._on_warm()
+        if self._warm_error is not None:
+            return PhaseResult(ok=False, error_code=self._warm_error, detail="warm 失败")
         return super().warm(env, ctx, minutes)
 
 
@@ -242,3 +250,126 @@ def test_warm_without_conflict_keeps_current_behaviour(arbitration_env: TwoWrite
     row = service.get(ENV_ID)
     assert row.state is EnvironmentState.READY
     assert row.warm_until == T0 + timedelta(minutes=30)
+
+
+def test_cleanup_failure_writes_failed_without_race(arbitration_env: TwoWriters) -> None:
+    """无并发：cleanup provider 失败按前置行写 failed，返回 provider 原结果。"""
+    connection_a, _connection_b, clock, service = arbitration_env
+    service.prepare(make_call(StubProvider(), clock))
+    before = state_events(connection_a)
+
+    provider = CleanupWarmProvider(cleanup_error="E_SIM_DOWN")
+    result = service.cleanup(make_call(provider, clock), keep_warm=True, warm_minutes=240)
+
+    assert result.ok is False
+    assert result.error_code == "E_SIM_DOWN"
+    assert result.detail == "cleanup 失败"
+    assert service.get(ENV_ID).state is EnvironmentState.FAILED
+    assert state_events(connection_a) == [
+        *before,
+        {
+            "environment_id": ENV_ID,
+            "from_state": "ready",
+            "to_state": "failed",
+            "probe": {"action": "cleanup", "error_code": "E_SIM_DOWN"},
+        },
+    ]
+    assert conflict_events(connection_a) == []
+
+
+def test_cleanup_failure_conflict_discards_failed_write(arbitration_env: TwoWriters) -> None:
+    """cleanup 失败且调用期间前置已变：丢弃 failed 写入，按 E_ENV_NOT_READY 收口。"""
+    connection_a, connection_b, clock, service = arbitration_env
+    service.prepare(make_call(StubProvider(), clock))
+    before = state_events(connection_a)
+
+    provider = CleanupWarmProvider(
+        cleanup_error="E_SIM_DOWN", on_cleanup=rewrite_state_to(connection_b, "off")
+    )
+    result = service.cleanup(make_call(provider, clock), keep_warm=True, warm_minutes=240)
+
+    assert result.ok is False
+    assert result.error_code == "E_ENV_NOT_READY"
+    assert "已从 ready 变为 off" in result.detail
+    assert "E_SIM_DOWN" in result.detail
+    assert service.get(ENV_ID).state is EnvironmentState.OFF
+    assert state_events(connection_a) == before
+    assert conflict_events(connection_a) == [
+        {
+            "environment_id": ENV_ID,
+            "action": "cleanup",
+            "expected_state": "ready",
+            "actual_state": "off",
+        }
+    ]
+    assert not connection_a.in_transaction
+
+
+def test_cleanup_failure_rejected_transition_still_raises(arbitration_env: TwoWriters) -> None:
+    """前置未变但状态机拒绝（off 上 provider 失败要写 failed）仍按异常上抛。"""
+    connection_a, _connection_b, clock, service = arbitration_env
+    service.prepare(make_call(StubProvider(), clock))
+    service.cleanup(make_call(StubProvider(), clock), keep_warm=False)
+    assert service.get(ENV_ID).state is EnvironmentState.OFF
+    before = state_events(connection_a)
+
+    provider = CleanupWarmProvider(cleanup_error="E_SIM_DOWN")
+    with pytest.raises(EnvironmentStateError):
+        service.cleanup(make_call(provider, clock), keep_warm=True)
+
+    assert service.get(ENV_ID).state is EnvironmentState.OFF
+    assert state_events(connection_a) == before
+    assert conflict_events(connection_a) == []
+
+
+def test_warm_failure_writes_failed_without_race(arbitration_env: TwoWriters) -> None:
+    """无并发：warm provider 失败按前置行写 failed，返回 provider 原结果。"""
+    connection_a, _connection_b, clock, service = arbitration_env
+    service.prepare(make_call(StubProvider(), clock))
+    before = state_events(connection_a)
+
+    provider = CleanupWarmProvider(warm_error="E_SIM_DOWN")
+    result = service.warm(make_call(provider, clock), minutes=30)
+
+    assert result.ok is False
+    assert result.error_code == "E_SIM_DOWN"
+    assert result.detail == "warm 失败"
+    assert service.get(ENV_ID).state is EnvironmentState.FAILED
+    assert state_events(connection_a) == [
+        *before,
+        {
+            "environment_id": ENV_ID,
+            "from_state": "ready",
+            "to_state": "failed",
+            "probe": {"action": "warm", "error_code": "E_SIM_DOWN"},
+        },
+    ]
+    assert conflict_events(connection_a) == []
+
+
+def test_warm_failure_conflict_discards(arbitration_env: TwoWriters) -> None:
+    """warm 失败且调用期间前置已变：丢弃 failed 写入，按 E_ENV_NOT_READY 收口。"""
+    connection_a, connection_b, clock, service = arbitration_env
+    service.prepare(make_call(StubProvider(), clock))
+    before = state_events(connection_a)
+
+    provider = CleanupWarmProvider(
+        warm_error="E_SIM_DOWN", on_warm=rewrite_state_to(connection_b, "off")
+    )
+    result = service.warm(make_call(provider, clock), minutes=30)
+
+    assert result.ok is False
+    assert result.error_code == "E_ENV_NOT_READY"
+    assert "已从 ready 变为 off" in result.detail
+    assert "E_SIM_DOWN" in result.detail
+    assert service.get(ENV_ID).state is EnvironmentState.OFF
+    assert state_events(connection_a) == before
+    assert conflict_events(connection_a) == [
+        {
+            "environment_id": ENV_ID,
+            "action": "warm",
+            "expected_state": "ready",
+            "actual_state": "off",
+        }
+    ]
+    assert not connection_a.in_transaction
