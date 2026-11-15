@@ -1,4 +1,4 @@
-"""冻结样本回归：39 帧按期望判定，manifest 重建画布与生成时明细一致。"""
+"""冻结样本回归：40 帧按期望判定，manifest 重建画布与生成时明细一致。"""
 
 from __future__ import annotations
 
@@ -77,7 +77,7 @@ def _check_judge(entry: dict, result: VisionResult, problems: list[str]) -> None
 
 
 def test_frozen_frames_regression() -> None:
-    """22 帧主界面全部 HOME 且最低总分 ≥ 8；17 帧非主界面全部 OTHER 且最高总分 ≤ 2。"""
+    """22 帧主界面全部 HOME 且最低总分 ≥ 8；18 帧非主界面全部 OTHER 且最高总分 ≤ 2。"""
     manifest = load_manifest()
     judge = make_judge()
     rows = []
@@ -104,7 +104,7 @@ def test_frozen_frames_regression() -> None:
         if not ok:
             failures.append(row)
     assert len(home_totals) == 22, f"主界面帧数 {len(home_totals)} ≠ 22"
-    assert len(other_totals) == 17, f"非主界面帧数 {len(other_totals)} ≠ 17"
+    assert len(other_totals) == 18, f"非主界面帧数 {len(other_totals)} ≠ 17"
     assert min(home_totals) >= HANDOVER_MIN_TOTAL, (
         f"主界面最低总分 {min(home_totals)} < {HANDOVER_MIN_TOTAL}"
     )
@@ -113,9 +113,9 @@ def test_frozen_frames_regression() -> None:
 
 
 def test_manifest_matches_rebuilt_canvas() -> None:
-    """manifest 字段齐全且 39 条；几何与锚点表一致；重叠裁片逐像素一致；重建判定一致。"""
+    """manifest 字段齐全且 40 条；几何与锚点表一致；重叠裁片逐像素一致；重建判定一致。"""
     manifest = load_manifest()
-    assert len(manifest["frames"]) == 39
+    assert len(manifest["frames"]) == 40
     judge = make_judge()
     problems: list[str] = []
     for entry in manifest["frames"]:
