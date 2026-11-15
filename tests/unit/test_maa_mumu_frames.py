@@ -111,6 +111,19 @@ def test_nemu_ipc_falls_back_to_default_display_and_reads_size(tmp_path: Path) -
     assert library.disconnected == 1
 
 
+def test_each_capture_connects_and_disconnects(tmp_path: Path) -> None:
+    """每次取帧都成对连接与断开：门控一个运行两帧，句柄不复用也不泄漏。"""
+    sdk = tmp_path / "nx_device" / "15.0" / "shell" / "sdk"
+    sdk.mkdir(parents=True)
+    (sdk / "external_renderer_ipc.dll").write_bytes(b"")
+    library = _FakeLib(width=2, height=1)
+    ipc = NemuIpc(tmp_path, 0, "com.hypergryph.arknights", bind=lambda path: library)
+    assert ipc.capture() is not None
+    assert ipc.capture() is not None
+    assert library.calls.count("connect") == 2
+    assert library.disconnected == 2
+
+
 def test_build_frames_picks_channel_by_config() -> None:
     """`frame_source=mumu` 选原生通道，其余（含缺省）走 adb。"""
     assert isinstance(_build_frames({"frame_source": "mumu"}), MumuFrameSource)

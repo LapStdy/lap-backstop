@@ -124,6 +124,7 @@ def _probe_payload(frame: Frame, result: VisionResult, judge_ms: float) -> dict[
     """判定明细载荷：帧哈希、总分与档位结论、判定耗时与逐锚点计分。"""
     return {
         "frame_sha256": frame.sha256,
+        "frame_source": frame.source.value,
         "page_state": result.page_state.value,
         "total_score": result.total_score,
         "appearance_hits": result.appearance_hits,

@@ -68,10 +68,23 @@ class NemuIpc:
         self._handle = 0
 
     def capture(self) -> RgbaFrame | None:
-        """取一帧；没库、连不上、查不到尺寸或取帧失败都返回 None。"""
+        """取一帧；每次连接、取完即断开，门控反复运行不会漏句柄。"""
         handle = self._connect()
         if handle == 0:
             return None
+        try:
+            return self._grab(handle)
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        """断开连接；重复调用安全。"""
+        if self._handle != 0 and self._lib is not None:
+            self._lib.nemu_disconnect(self._handle)
+        self._handle = 0
+
+    def _grab(self, handle: int) -> RgbaFrame | None:
+        """在已连接的句柄上取一帧：取 display、查尺寸、带缓冲取像素。"""
         display = self._display_id(handle)
         size = self._frame_size(handle, display)
         if size is None:
@@ -81,12 +94,6 @@ class NemuIpc:
         if self._call(handle, display, len(buffer), buffer)[0] != 0:
             return None
         return RgbaFrame(width=width, height=height, rgba=buffer.raw)
-
-    def close(self) -> None:
-        """断开连接；重复调用安全。"""
-        if self._handle != 0 and self._lib is not None:
-            self._lib.nemu_disconnect(self._handle)
-        self._handle = 0
 
     def _connect(self) -> int:
         if self._handle != 0:

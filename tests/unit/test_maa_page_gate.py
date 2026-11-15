@@ -265,6 +265,7 @@ def test_gate_writes_two_evidence_rows(tmp_path: Path) -> None:
     assert (tmp_path / f"{stem}.png").read_bytes() == frame.png
     probe = json.loads((tmp_path / f"{stem}.json").read_text(encoding="utf-8"))
     assert probe["frame_sha256"] == frame.sha256
+    assert probe["frame_source"] == frame.source.value
     assert probe["total_score"] >= 8
     assert probe["handover_hit"] is True
 
