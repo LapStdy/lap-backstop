@@ -1,22 +1,28 @@
 """MaaEnvironment.prepare 的单元测试（docs/plugins/maa.md 环境节）。
 
 模拟器动作、真机读数与帧源全部用假件：不启动实例、不连 adb、不拉起游戏、
-不截真帧；主界面判定输入用冻结样本重建的满帧。
+不截真帧；主界面判定输入用冻结样本重建的满帧；登录后导航用例用冻结样本帧
+驱动，覆盖层停手用黑画布贴签到锚点模板的合成帧，返回键经假动作端口计数。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from contracts import EnvironmentRef, RunContext
 from plugins.maa.capabilities.environment import MaaEnvironment
 from plugins.maa.mumu_instance import MumuInstance
-from plugins.maa.vision.frames import Frame, FrameSource
+from plugins.maa.vision.frames import Frame, FrameOrigin, FrameSource
+from plugins.maa.vision.judge import DEFAULT_TEMPLATE_DIR, vision_modules
+from plugins.maa.vision.login_vision import DAILY_SIGNIN_TEMPLATE
 from plugins.maa.windows_host import ScreenSize
-from tests.maa_vision_support import fixture_frame, load_manifest
+from tests.maa_vision_support import fixture_frame, frame_entry, load_manifest
 
 NOW = datetime(2026, 11, 8, 12, 0, tzinfo=UTC)
 ENV = EnvironmentRef(id="env-1", provider_id="maa")
@@ -96,12 +102,13 @@ class _FakeHost:
 
 
 class _FakeActions:
-    """记录动作调用的假模拟器端口。"""
+    """记录动作调用的假模拟器端口；返回键与实例动作可分别注入失败。"""
 
     def __init__(self, package_running: bool = True) -> None:
         self.package_running = package_running
         self.calls: list[str] = []
         self.failure: OSError | None = None
+        self.back_failure: OSError | None = None
 
     def start_instance(self, instance_index: int) -> None:
         self.calls.append(f"start:{instance_index}")
@@ -122,6 +129,11 @@ class _FakeActions:
 
     def disconnect_adb(self) -> None:
         self.calls.append("disconnect")
+
+    def send_back(self) -> None:
+        self.calls.append("back")
+        if self.back_failure is not None:
+            raise self.back_failure
 
     def shutdown_instance(self, instance_index: int) -> None:
         self.calls.append(f"shutdown:{instance_index}")
@@ -287,3 +299,140 @@ def test_prepare_reports_action_failure_as_unreachable() -> None:
     assert result.ok is False
     assert result.error_code == "E_ENV_UNREACHABLE"
     assert "MuMuManager" in result.detail
+
+
+class _ScriptedFrames:
+    """按脚本逐帧返回冻结样本帧（None 表示截帧失败），记录截帧次数。"""
+
+    def __init__(self, frames: Sequence[Frame | None]) -> None:
+        self._frames = list(frames)
+        self.calls = 0
+
+    def capture(self) -> Frame | None:
+        assert self.calls < len(self._frames), "截帧次数超出脚本长度"
+        frame = self._frames[self.calls]
+        self.calls += 1
+        return frame
+
+
+def _named_frame(name: str) -> Frame:
+    """按 manifest 帧名重建冻结样本帧，导航用例的判定输入。"""
+    return fixture_frame(frame_entry(load_manifest(), name))
+
+
+def _overlay_frame() -> Frame:
+    """黑画布贴签到锚点模板的合成帧：登录判读认出的每日签到覆盖层。"""
+    cv2, _ = vision_modules()
+    rng = np.random.default_rng(7)
+    canvas = rng.integers(0, 60, (720, 1280, 3), dtype=np.uint8)
+    template = cv2.imread(str(DEFAULT_TEMPLATE_DIR / DAILY_SIGNIN_TEMPLATE), cv2.IMREAD_COLOR)
+    height, width = template.shape[:2]
+    canvas[82 : 82 + height, 98 : 98 + width] = template
+    ok, encoded = cv2.imencode(".png", canvas)
+    assert ok, "合成覆盖层帧编码 PNG 失败"
+    data = encoded.tobytes()
+    return Frame(
+        image=canvas,
+        width=1280,
+        height=720,
+        captured_at=NOW,
+        sha256=hashlib.sha256(data).hexdigest(),
+        source=FrameOrigin.ADB,
+        png=data,
+    )
+
+
+def _navigation_context(tmp_path: Path) -> RunContext:
+    """登录流程关闭、导航开启的上下文：导航用例只驱动导航环节。"""
+    return make_context({"navigation": True, "login_flow": False}, evidence_dir=tmp_path)
+
+
+def test_navigation_disabled_keeps_prepare_unchanged(tmp_path: Path) -> None:
+    """navigation 关闭（缺省与显式 false）时：不发返回键、不多采样，结果与现状一致。"""
+    frame = _named_frame("主界面")
+    for config in ({}, {"navigation": False}):
+        frames = _RepeatFrames(frame)
+        actions = _FakeActions()
+        ctx = make_context(config, evidence_dir=tmp_path)
+        result = make_provider(_FakeHost(), actions, ctx, frames).prepare(ENV, ctx)
+        assert result.ok is True
+        assert "back" not in actions.calls
+        # 截帧数＝现状：登录流程采样 1 次＋门控连续确认 2 次；导航若被误开会多采样一次。
+        assert frames.captures == 3
+
+
+def test_navigation_enabled_reaches_home_then_gate_passes(tmp_path: Path) -> None:
+    """navigation 开启：按后即时判定到家，门控随后放行；返回只按一次。"""
+    frames = _ScriptedFrames(
+        [
+            _named_frame("MuMu-20261108-210433-099"),
+            _named_frame("主界面"),
+            _named_frame("主界面"),
+            _named_frame("主界面"),
+        ]
+    )
+    actions = _FakeActions()
+    ctx = _navigation_context(tmp_path)
+    result = make_provider(_FakeHost(), actions, ctx, frames).prepare(ENV, ctx)
+    assert result.ok is True
+    assert "门控放行" in result.detail
+    assert actions.calls.count("back") == 1
+    assert frames.calls == 4
+
+
+def test_navigation_budget_exhausted_fails_before_gate(tmp_path: Path) -> None:
+    """navigation 开启：连续非主界面帧用满 3 次返回后停手，门控未运行。"""
+    frame = _named_frame("MuMu-20261108-210433-099")
+    frames = _ScriptedFrames([frame] * 7)
+    actions = _FakeActions()
+    ctx = _navigation_context(tmp_path)
+    result = make_provider(_FakeHost(), actions, ctx, frames).prepare(ENV, ctx)
+    assert result.ok is False
+    assert result.error_code == "E_ENV_NOT_READY"
+    assert "budget_exhausted" in result.detail
+    assert "导航步数 7" in result.detail
+    assert actions.calls.count("back") == 3
+    assert frames.calls == 7
+
+
+def test_navigation_overlay_stops_without_pressing_key(tmp_path: Path) -> None:
+    """navigation 开启：判到覆盖层立即停手失败，一次返回键都不发。"""
+    frames = _ScriptedFrames([_overlay_frame()])
+    actions = _FakeActions()
+    ctx = _navigation_context(tmp_path)
+    result = make_provider(_FakeHost(), actions, ctx, frames).prepare(ENV, ctx)
+    assert result.ok is False
+    assert result.error_code == "E_ENV_NOT_READY"
+    assert "overlay" in result.detail
+    assert "导航步数 1" in result.detail
+    assert actions.calls.count("back") == 0
+    assert frames.calls == 1
+
+
+def test_navigation_no_frame_fails(tmp_path: Path) -> None:
+    """navigation 开启：截帧返回 None 立即停手，不按键、不重试。"""
+    frames = _ScriptedFrames([None])
+    actions = _FakeActions()
+    ctx = _navigation_context(tmp_path)
+    result = make_provider(_FakeHost(), actions, ctx, frames).prepare(ENV, ctx)
+    assert result.ok is False
+    assert result.error_code == "E_ENV_NOT_READY"
+    assert "no_frame" in result.detail
+    assert "导航步数 0" in result.detail
+    assert actions.calls.count("back") == 0
+    assert frames.calls == 1
+
+
+def test_navigation_back_key_failure_fails_prepare(tmp_path: Path) -> None:
+    """navigation 开启：返回键命令失败（OSError）按 E_ENV_NOT_READY 收口，循环不继续。"""
+    frame = _named_frame("MuMu-20261108-210433-099")
+    frames = _ScriptedFrames([frame, frame])
+    actions = _FakeActions()
+    actions.back_failure = OSError("adb 返回键失败：退出码 1")
+    ctx = _navigation_context(tmp_path)
+    result = make_provider(_FakeHost(), actions, ctx, frames).prepare(ENV, ctx)
+    assert result.ok is False
+    assert result.error_code == "E_ENV_NOT_READY"
+    assert "返回键" in result.detail
+    assert actions.calls.count("back") == 1
+    assert frames.calls == 1

@@ -1,18 +1,26 @@
 """导航控制器 ensure_home 的行为：到家、有界返回、覆盖层与战斗停手、证据与注入等待。
 
 全部用假帧源、假判定器、假返回键与假战斗门，不触真机、不写文件、不发事件。
+判定端口适配器与 adb 返回键的生产实现也在本文件测：适配器与返回键用冻结样本
+帧与记录式执行器，不触真机。
 """
 
 from __future__ import annotations
 
+import subprocess
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from pathlib import Path
 
 import numpy as np
+import pytest
 
 from plugins.maa.vision.frames import Frame, FrameOrigin
+from plugins.maa.vision.judge import HomeJudge
 from plugins.maa.vision.navigation import (
     DEFAULT_BACK_BUDGET,
+    AdbBackSender,
+    HomeJudgeAdapter,
     NavigationPorts,
     NavPageState,
     NoBattleGate,
@@ -20,6 +28,7 @@ from plugins.maa.vision.navigation import (
     StopReason,
     ensure_home,
 )
+from tests.maa_vision_support import fixture_frame, frame_entry, load_manifest
 
 NOW = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
 
@@ -225,3 +234,47 @@ def test_frame_loss_stops_with_no_frame_reason() -> None:
     assert result.reached_home is False and result.reason is StopReason.NO_FRAME
     assert back.calls == 1 and judge.calls == 1
     assert [step.pressed_back for step in result.steps] == [True]
+
+
+def test_home_judge_adapter_maps_verdict_states() -> None:
+    """现状 4：交接档命中帧判 home、分辨率错误帧判 other；总分与外观命中数原样带出。"""
+    judge = HomeJudge()
+    adapter = HomeJudgeAdapter(judge)
+    home = fixture_frame(frame_entry(load_manifest(), "主界面"))
+    reading = adapter.judge(home)
+    direct = judge.judge(home.image, home.captured_at)
+    assert direct.handover_hit is True
+    assert reading.state is NavPageState.HOME
+    assert reading.total_score == direct.total_score
+    assert reading.appearance_hits == direct.appearance_hits
+    wrong = Frame(
+        image=np.zeros((360, 640, 3), dtype=np.uint8),
+        width=640,
+        height=360,
+        captured_at=NOW,
+        sha256="wrong-shape",
+        source=FrameOrigin.ADB,
+        png=b"wrong-shape",
+    )
+    bad = adapter.judge(wrong)
+    assert bad.state is NavPageState.OTHER
+    assert bad.total_score == 0 and bad.appearance_hits == 0
+
+
+def test_adb_back_sender_builds_keyevent_command() -> None:
+    """现状 5：命令含 -s 地址与 shell input keyevent 4；退出码非 0 抛 OSError。"""
+    recorded: list[list[str]] = []
+
+    def runner(args: list[str], timeout: float) -> subprocess.CompletedProcess[bytes] | None:
+        recorded.append(args)
+        assert timeout > 0
+        return subprocess.CompletedProcess(args=args, returncode=0)
+
+    AdbBackSender(adb_path=Path("adb"), address="127.0.0.1:16384", runner=runner).send_back()
+    assert recorded == [["adb", "-s", "127.0.0.1:16384", "shell", "input", "keyevent", "4"]]
+
+    def failing(args: list[str], timeout: float) -> subprocess.CompletedProcess[bytes] | None:
+        return subprocess.CompletedProcess(args=args, returncode=1)
+
+    with pytest.raises(OSError):
+        AdbBackSender(adb_path=Path("adb"), address="127.0.0.1:16384", runner=failing).send_back()

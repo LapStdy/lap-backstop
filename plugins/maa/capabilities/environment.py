@@ -2,13 +2,15 @@
 
 ``probe`` 经只读端口核对四件事：模拟器窗口、adb 设备状态、游戏是否在前台、截图分辨率，
 按环境状态机给出 off / booting / degraded / failed / ready。``prepare`` 执行准备的前三步：
-复用或拉起 MuMu、确认 adb 与截图、把游戏拉到前台，随后过主界面门控（``page_gate``
+复用或拉起 MuMu、确认 adb 与截图、把游戏拉到前台，随后按开关跑登录流程
+（``login_flow``）与登录后导航（``navigation``），再过主界面门控（``page_gate``
 开关，规则见 docs/arknights/03、04），放行才算就绪。``reset`` 断开并重连 adb 后重启游戏；
 ``cleanup`` 按保温开关关闭游戏与实例；``warm`` 保证游戏在前台。
 """
 
 from __future__ import annotations
 
+import random
 import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
@@ -28,8 +30,15 @@ from plugins.maa.emulator_host import EmulatorHost, WindowsEmulatorHost
 from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.vision.clicker import AdbClicker
 from plugins.maa.vision.frames import AdbFrameSource, FrameSource
+from plugins.maa.vision.judge import HomeJudge
 from plugins.maa.vision.login_vision import LoginVision
 from plugins.maa.vision.mumu_frames import MumuFrameSource, NemuIpc
+from plugins.maa.vision.navigation import (
+    WAIT_RANGE_SECONDS,
+    HomeJudgeAdapter,
+    NavigationPorts,
+    ensure_home,
+)
 from plugins.maa.vision.readiness import LoginPorts, drive_login
 from plugins.maa.windows_host import MachineHost, ScreenSize, WindowsMachineHost
 
@@ -118,7 +127,8 @@ class MaaEnvironment:
         )
 
     def prepare(self, env: EnvironmentRef, ctx: RunContext) -> PhaseResult:
-        """复用或拉起模拟器、确认 adb 与截图、把游戏拉到前台，再过主界面门控。"""
+        """复用或拉起模拟器、确认 adb 与截图、把游戏拉到前台，按开关跑登录流程
+        与登录后导航，再过主界面门控。"""
         config = ctx.config
         started_at = ctx.clock.utc_now()
         host = self._host_for(config)
@@ -143,6 +153,10 @@ class MaaEnvironment:
             login_failure = self._login(config, ctx)
             if login_failure is not None:
                 return _failure(ctx, started_at, login_failure[0], login_failure[1])
+        if _is_navigation_enabled(config):
+            navigation_failure = self._navigate_home(config, actions)
+            if navigation_failure is not None:
+                return _failure(ctx, started_at, navigation_failure[0], navigation_failure[1])
         if _is_gate_enabled(config):
             outcome = self._gate(config).run(ctx)
             gate_error = None if outcome.passed else outcome.error_code
@@ -263,6 +277,32 @@ class MaaEnvironment:
             return None
         return (ErrorCode.ENV_NOT_READY.value, f"登录流程未到主界面：{result.detail}")
 
+    def _navigate_home(
+        self, config: Mapping[str, Any], actions: EmulatorHost
+    ) -> tuple[str, str] | None:
+        """登录后导航到主界面：到家返回 None，否则给出错误码与停手说明。"""
+        frames = self._frames if self._frames is not None else _build_frames(config)
+        ports = NavigationPorts(
+            frames=frames,
+            judge=HomeJudgeAdapter(HomeJudge(), LoginVision()),
+            back=actions,
+        )
+        try:
+            result = ensure_home(ports, wait=self._navigation_wait)
+        except OSError as error:
+            return (ErrorCode.ENV_NOT_READY.value, f"登录后导航返回键发送失败：{error}")
+        if result.reached_home:
+            return None
+        reason = "" if result.reason is None else result.reason.value
+        return (
+            ErrorCode.ENV_NOT_READY.value,
+            f"登录后导航未到主界面：停手原因 {reason}，导航步数 {len(result.steps)}",
+        )
+
+    def _navigation_wait(self) -> None:
+        """导航转场等待：复用 prepare 的等待通道，时长取导航默认区间。"""
+        self._wait(random.uniform(*WAIT_RANGE_SECONDS))
+
     def _instance_running(self, host: MachineHost, config: Mapping[str, Any]) -> bool:
         """实例在跑就不重复拉起；info 读不到时退回窗口判据。"""
         index = _instance_index(config)
@@ -357,6 +397,12 @@ def _is_login_enabled(config: Mapping[str, Any]) -> bool:
     """登录流程开关；未配置或写法非法按开启处理（schema 默认 true）。"""
     value = config.get("login_flow")
     return value if isinstance(value, bool) else True
+
+
+def _is_navigation_enabled(config: Mapping[str, Any]) -> bool:
+    """登录后导航开关；未配置或写法非法按关闭处理（schema 默认 false）。"""
+    value = config.get("navigation")
+    return value if isinstance(value, bool) else False
 
 
 def _build_clicker(config: Mapping[str, Any]) -> AdbClicker:

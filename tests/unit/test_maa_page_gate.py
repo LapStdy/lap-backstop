@@ -149,6 +149,9 @@ class _StubActions:
     def disconnect_adb(self) -> None:
         self.calls.append("disconnect")
 
+    def send_back(self) -> None:
+        self.calls.append("back")
+
     def shutdown_instance(self, instance_index: int) -> None:
         self.calls.append(f"shutdown:{instance_index}")
 

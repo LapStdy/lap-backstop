@@ -98,7 +98,7 @@ def test_manifest_contract_range_covers_api_version() -> None:
 
 
 def test_config_schema_locks_documented_top_level_fields() -> None:
-    """docs/plugins/maa.md 参数 schema 表：21 个配置字段、Draft 2020-12、根封闭。"""
+    """docs/plugins/maa.md 参数 schema 表：22 个配置字段、Draft 2020-12、根封闭。"""
     schema = load_schema()
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["x-schema-version"] == 1
@@ -118,6 +118,7 @@ def test_config_schema_locks_documented_top_level_fields() -> None:
         "game_launch_timeout_s",
         "page_gate",
         "login_flow",
+        "navigation",
         "profile",
         "tasks",
         "launch_timeout_s",
@@ -144,6 +145,7 @@ def test_config_schema_defaults_match_plugin_doc() -> None:
     assert props["mumu_boot_timeout_s"]["default"] == 180
     assert props["game_launch_timeout_s"]["default"] == 60
     assert props["page_gate"]["default"] is True
+    assert props["navigation"]["default"] is False
     assert props["launch_timeout_s"]["default"] == 180
     assert props["wake_timeout_s"]["default"] == 90
     assert props["startup_timeout_s"]["default"] == 300
@@ -295,6 +297,9 @@ class _StubActions:
 
     def stop_package(self, package: str) -> None:
         self.calls.append(f"stop:{package}")
+
+    def send_back(self) -> None:
+        self.calls.append("back")
 
     def shutdown_instance(self, instance_index: int) -> None:
         self.calls.append(f"shutdown:{instance_index}")
