@@ -2,7 +2,8 @@
 
 循环与预算见 docs/arknights/03「导航」：判为主界面即成功；覆盖层、战斗中、
 截不到帧与预算耗尽（默认 3 次返回）即停手。每次按返回前后各判定一次，不
-连续盲按；逐步证据只进返回值，不写文件、不发事件。
+连续盲按；逐步证据只进返回值，不写文件、不发事件。判定与返回键端口的
+生产实现（``HomeJudgeAdapter``、``AdbBackSender``）也在本模块。
 """
 
 from __future__ import annotations
@@ -12,12 +13,23 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import Protocol
 
-from plugins.maa.vision.frames import Frame, FrameSource
+from plugins.maa.vision.frames import (
+    DEFAULT_ADDRESS,
+    Frame,
+    FrameSource,
+    ProcessRunner,
+    subprocess_runner,
+)
+from plugins.maa.vision.judge import HomeJudge
+from plugins.maa.vision.login_vision import LoginVision
+from plugins.maa.vision.readiness import LoginStage
 
 DEFAULT_BACK_BUDGET = 3
 WAIT_RANGE_SECONDS = (0.4, 0.8)
+_BACK_TIMEOUT_SECONDS = 30.0
 
 
 class NavPageState(StrEnum):
@@ -73,6 +85,67 @@ class NoBattleGate:
     def in_battle(self) -> bool:
         """恒答不在战斗。"""
         return False
+
+
+class AdbBackSender:
+    """``BackSender`` 的 adb 实现：发送系统返回键（keyevent 4），失败抛 ``OSError``。
+
+    执行器可注入，测试不真的按键；``None`` 返回与非零退出码都算失败，
+    与 ``AdbClicker`` 同口径。
+    """
+
+    def __init__(
+        self,
+        adb_path: Path = Path("adb"),
+        address: str = DEFAULT_ADDRESS,
+        runner: ProcessRunner = subprocess_runner,
+    ) -> None:
+        self._adb_path = adb_path
+        self._address = address
+        self._runner = runner
+
+    def send_back(self) -> None:
+        """发送一次返回键；执行失败抛 ``OSError``。"""
+        command = [
+            str(self._adb_path),
+            "-s",
+            self._address,
+            "shell",
+            "input",
+            "keyevent",
+            "4",
+        ]
+        completed = self._runner(command, _BACK_TIMEOUT_SECONDS)
+        if completed is None or completed.returncode != 0:
+            code = None if completed is None else completed.returncode
+            raise OSError(f"adb 返回键失败：退出码 {code}")
+
+
+class HomeJudgeAdapter:
+    """``ScreenJudge`` 端口的生产实现：主界面判定结果适配成导航判读。
+
+    ``handover_hit`` 判 ``home``，总分与外观命中数原样带出，不改门槛、不另算分；
+    ``error_code`` 非空（如分辨率不符）与未达交接档都判 ``other``。覆盖层先经
+    ``LoginVision`` 判读：目前只有每日签到有对应模板，公告、限时活动等其余
+    覆盖层没有模板、落不到覆盖层判读，一律按 ``other`` 处理——返回键导航不
+    处置覆盖层，只停手。覆盖层判读没有主界面计分，总分与外观命中记 0。
+    """
+
+    def __init__(self, home: HomeJudge, overlay: LoginVision | None = None) -> None:
+        self._home = home
+        self._overlay = overlay
+
+    def judge(self, frame: Frame) -> ScreenReading:
+        """判定一帧：覆盖层优先，再按主界面判定给 ``home`` 或 ``other``。"""
+        if self._overlay is not None:
+            reading = self._overlay.judge(frame)
+            if reading.stage is LoginStage.OVERLAY:
+                return ScreenReading(state=NavPageState.OVERLAY, total_score=0, appearance_hits=0)
+        result = self._home.judge(frame.image, frame.captured_at)
+        state = NavPageState.HOME if result.handover_hit else NavPageState.OTHER
+        return ScreenReading(
+            state=state, total_score=result.total_score, appearance_hits=result.appearance_hits
+        )
 
 
 @dataclass(frozen=True)

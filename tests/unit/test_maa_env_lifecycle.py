@@ -109,6 +109,9 @@ class _FakeActions:
     def stop_package(self, package: str) -> None:
         self.calls.append(f"stop:{package}")
 
+    def send_back(self) -> None:
+        self.calls.append("back")
+
     def shutdown_instance(self, instance_index: int) -> None:
         self.calls.append(f"shutdown:{instance_index}")
         if self.failure is not None:

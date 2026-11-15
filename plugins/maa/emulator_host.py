@@ -11,6 +11,8 @@ import subprocess
 from pathlib import Path
 from typing import Protocol
 
+from plugins.maa.vision.navigation import AdbBackSender
+
 _CREATE_NO_WINDOW = 0x08000000
 _MANAGER_SECONDS = 60.0
 _ADB_SECONDS = 30.0
@@ -22,7 +24,7 @@ _LAUNCHER_CATEGORY = "android.intent.category.LAUNCHER"
 
 
 class EmulatorHost(Protocol):
-    """模拟器动作端口：四个方法都改变外部状态，失败抛 OSError。"""
+    """模拟器动作端口：各方法都改变外部状态，失败抛 OSError。"""
 
     def start_instance(self, instance_index: int) -> None:
         """拉起指定序号的模拟器实例；已在运行时由实现自行复用。"""
@@ -46,6 +48,10 @@ class EmulatorHost(Protocol):
 
     def disconnect_adb(self) -> None:
         """断开模拟器 adb 连接，供复位重连用。"""
+        ...
+
+    def send_back(self) -> None:
+        """发送系统返回键；命令失败抛 OSError。"""
         ...
 
     def shutdown_instance(self, instance_index: int) -> None:
@@ -115,6 +121,10 @@ class WindowsEmulatorHost:
     def disconnect_adb(self) -> None:
         """adb disconnect 指定地址；没有连接时命令本身也会成功返回。"""
         self._run([str(self._adb), "disconnect", self._address], _ADB_SECONDS, check=False)
+
+    def send_back(self) -> None:
+        """发送系统返回键：命令构造与失败口径见 ``AdbBackSender``。"""
+        AdbBackSender(adb_path=self._adb, address=self._address).send_back()
 
     def shutdown_instance(self, instance_index: int) -> None:
         """调用 MuMuManager 的 control shutdown；失败抛 OSError。"""
