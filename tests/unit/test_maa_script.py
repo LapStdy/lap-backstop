@@ -287,7 +287,7 @@ def test_observe_counts_unknown_lines_and_logs_total(tmp_path: Path) -> None:
     append_log(
         tmp_path,
         "gui.log",
-        "2026-10-20 03:07:14.512 INF 正在连接模拟器……\n"
+        "2026-10-20 03:07:14.512 INF MaaAssistantArknights GUI started\n"
         "\n"
         "2026-10-20 03:07:15.000 INF 最快截图耗时: 7ms (MumuExtras)\n",
     )

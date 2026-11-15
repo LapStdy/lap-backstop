@@ -2,8 +2,9 @@
 
 信号清单与语义真源是 docs/arknights/02 的「日志信号」表。识别用子串匹配
 而非列对齐：GUI 日志的列宽随版本漂移，信号文案才是文档承诺的稳定面。
-asst.log 只提取 SanityBeforeStage 理智采样；AllTasksCompleted 在整轮
-出错时同样触发，不作为完成依据。
+asst.log 提取任务链行（TaskChainStart/Completed/Error、AllTasksCompleted）与
+SanityBeforeStage 理智采样；任务链信号只供观测，AllTasksCompleted 在整轮出错时
+同样触发，不作为完成依据（docs/arknights/00）。
 
 时间戳取自行首：gui.log 是裸时间戳，asst.log 带方括号前缀。MAA 写本地
 墙钟时间且不带时区标记，按宿主本地时区补全（docs/11：不外传 naive
@@ -34,6 +35,12 @@ KIND_RUN_COMPLETED = "run.completed"
 KIND_RUN_FAILED = "run.failed"
 KIND_RUN_DISCONNECTED = "run.disconnected"
 KIND_SANITY_SAMPLE = "sanity.sample"
+KIND_SCRIPT_CONNECTING = "script.connecting"
+KIND_SCRIPT_POST_ACTIONS = "script.post_actions"
+KIND_CHAIN_STARTED = "chain.started"
+KIND_CHAIN_COMPLETED = "chain.completed"
+KIND_CHAIN_ERROR = "chain.error"
+KIND_CHAIN_ALL_COMPLETED = "chain.all_completed"
 
 _TASK_RULES: tuple[tuple[str, str], ...] = (
     ("开始任务: ", KIND_TASK_STARTED),
@@ -45,10 +52,27 @@ _RUN_RULES: tuple[tuple[str, str], ...] = (
     ("任务已结束，以下任务出现错误:", KIND_RUN_FAILED),
     ("游戏掉线，停止任务", KIND_RUN_DISCONNECTED),
 )
-_TASK_KINDS = frozenset(kind for _, kind in _TASK_RULES)
+_SCRIPT_RULES: tuple[tuple[str, str], ...] = (
+    ("正在连接模拟器", KIND_SCRIPT_CONNECTING),
+    ("Post actions: ", KIND_SCRIPT_POST_ACTIONS),
+)
+_PAYLOAD_FIELD_BY_KIND: dict[str, str] = {
+    KIND_TASK_STARTED: "task",
+    KIND_TASK_COMPLETED: "task",
+    KIND_TASK_ERROR: "task",
+    KIND_SCRIPT_POST_ACTIONS: "actions",
+}
 
 _SANITY_MARKER = "SanityBeforeStage"
 _SANITY_KEYS = ("current_sanity", "max_sanity")
+
+_CHAIN_RULES: tuple[tuple[str, str], ...] = (
+    ("TaskChainStart", KIND_CHAIN_STARTED),
+    ("TaskChainCompleted", KIND_CHAIN_COMPLETED),
+    ("TaskChainError", KIND_CHAIN_ERROR),
+    ("AllTasksCompleted", KIND_CHAIN_ALL_COMPLETED),
+)
+_CHAIN_FIELDS = ("taskchain", "taskid", "finished_tasks")
 
 _HEAD_TIME_RE = re.compile(r"^\[?(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:[.,](\d{1,6}))?")
 
@@ -73,17 +97,29 @@ class LogChunk:
 
 
 def parse_gui_line(line: str) -> ParsedSignal | None:
-    """识别 gui.log 单行；命中已知信号返回结构化信号，未知行返回 None。"""
-    for needle, kind in (*_TASK_RULES, *_RUN_RULES):
+    """识别 gui.log 单行；首个命中的信号返回，未知行返回 None。
+
+    一行只产一条信号：规则按任务、整轮、脚本过程排列，命中即止。
+    """
+    for needle, kind in (*_TASK_RULES, *_RUN_RULES, *_SCRIPT_RULES):
         if needle not in line:
             continue
-        payload = {"task": _text_after(line, needle)} if kind in _TASK_KINDS else {}
+        field = _PAYLOAD_FIELD_BY_KIND.get(kind)
+        payload = {field: _text_after(line, needle)} if field is not None else {}
         return ParsedSignal(kind=kind, payload=payload, at=_head_time(line), line=line)
     return None
 
 
 def parse_asst_line(line: str) -> ParsedSignal | None:
-    """识别 asst.log 单行；只提取 SanityBeforeStage 采样，其余返回 None。"""
+    """识别 asst.log 单行：先任务链行后理智采样，一行只产一条信号。
+
+    任务链信号只供观测：整轮判定仍只认 gui.log 的完成与错误行，
+    AllTasksCompleted 在整轮出错时同样触发，不作为完成依据。
+    """
+    for needle, kind in _CHAIN_RULES:
+        if needle not in line:
+            continue
+        return ParsedSignal(kind=kind, payload=_chain_payload(line), at=_head_time(line), line=line)
     if _SANITY_MARKER not in line:
         return None
     payload = _sanity_payload(line)
@@ -144,17 +180,48 @@ def _head_time(line: str) -> datetime | None:
     return local.astimezone()
 
 
-def _sanity_payload(line: str) -> dict[str, int] | None:
-    """从行内首个 JSON 对象收集理智数值；两项齐备才算一次采样。"""
+def _first_json(line: str) -> object | None:
+    """行内首个 JSON 对象；没有花括号或解析残缺返回 None。"""
     start = line.find("{")
     if start < 0:
         return None
+    document: object
     try:
         document, _ = json.JSONDecoder().raw_decode(line[start:])
     except ValueError:
         return None
+    return document
+
+
+def _sanity_payload(line: str) -> dict[str, int] | None:
+    """从行内首个 JSON 对象收集理智数值；两项齐备才算一次采样。"""
+    document = _first_json(line)
+    if document is None:
+        return None
     found = _collect_sanity(document, {})
     return dict(found) if len(found) == len(_SANITY_KEYS) else None
+
+
+def _chain_payload(line: str) -> dict[str, object]:
+    """任务链载荷：回调 JSON 里实际出现的链字段；解不出 JSON 为空载荷。"""
+    document = _first_json(line)
+    if document is None:
+        return {}
+    return _collect_chain_fields(document, {})
+
+
+def _collect_chain_fields(node: object, found: dict[str, object]) -> dict[str, object]:
+    """在回调 JSON 任意层级收集任务链字段；嵌套形态由 MAA 版本决定。"""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key in _CHAIN_FIELDS:
+                found[str(key)] = value
+            else:
+                _collect_chain_fields(value, found)
+    elif isinstance(node, list):
+        for item in node:
+            _collect_chain_fields(item, found)
+    return found
 
 
 def _collect_sanity(node: object, found: dict[str, int]) -> dict[str, int]:
