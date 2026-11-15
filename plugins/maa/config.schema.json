@@ -45,6 +45,13 @@
       "pattern": "^[0-9]+x[0-9]+$",
       "default": "1280x720"
     },
+    "frame_source": {
+      "type": "string",
+      "title": "截帧通道",
+      "description": "mumu 走 MuMu 原生渲染通道（external_renderer_ipc），adb 走 exec-out screencap",
+      "enum": ["adb", "mumu"],
+      "default": "adb"
+    },
     "mumu_instance_index": {
       "type": "integer",
       "title": "模拟器实例序号",

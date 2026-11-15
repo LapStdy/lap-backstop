@@ -98,7 +98,7 @@ def test_manifest_contract_range_covers_api_version() -> None:
 
 
 def test_config_schema_locks_documented_top_level_fields() -> None:
-    """docs/plugins/maa.md 参数 schema 表：19 个配置字段、Draft 2020-12、根封闭。"""
+    """docs/plugins/maa.md 参数 schema 表：20 个配置字段、Draft 2020-12、根封闭。"""
     schema = load_schema()
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["x-schema-version"] == 1
@@ -112,6 +112,7 @@ def test_config_schema_locks_documented_top_level_fields() -> None:
         "emulator_window_title",
         "game_package",
         "screen_size",
+        "frame_source",
         "mumu_instance_index",
         "mumu_boot_timeout_s",
         "game_launch_timeout_s",

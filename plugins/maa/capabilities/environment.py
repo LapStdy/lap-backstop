@@ -26,6 +26,7 @@ from plugins.maa.capabilities.page_gate import PageGate
 from plugins.maa.emulator_host import EmulatorHost, WindowsEmulatorHost
 from plugins.maa.mumu_instance import MumuInstance
 from plugins.maa.vision.frames import AdbFrameSource, FrameSource
+from plugins.maa.vision.mumu_frames import MumuFrameSource, NemuIpc
 from plugins.maa.windows_host import MachineHost, ScreenSize, WindowsMachineHost
 
 _DEFAULT_MUMU_DIR = "H:/MuMuPlayer"
@@ -36,6 +37,7 @@ _DEFAULT_SCREEN_SIZE = "1280x720"
 _DEFAULT_MUMU_BOOT_SECONDS = 180.0
 _DEFAULT_GAME_LAUNCH_SECONDS = 60.0
 _DEFAULT_INSTANCE_INDEX = 0
+_FRAME_SOURCE_MUMU = "mumu"
 _POLL_SECONDS = 1.0
 _ADB_DEVICE = "device"
 _ADB_ABSENT = "absent"
@@ -328,8 +330,11 @@ def _is_gate_enabled(config: Mapping[str, Any]) -> bool:
 
 
 def _build_frames(config: Mapping[str, Any]) -> FrameSource:
-    """按配置拼出 adb 帧端口：与真机端口同一目录树取 adb。"""
+    """按 ``frame_source`` 拼帧端口：mumu 走原生渲染通道，其余走 adb 截帧。"""
     mumu_dir = Path(str(config.get("mumu_dir", _DEFAULT_MUMU_DIR)))
+    if config.get("frame_source") == _FRAME_SOURCE_MUMU:
+        renderer = NemuIpc(mumu_dir, _instance_index(config), _text(config, "game_package"))
+        return MumuFrameSource(renderer)
     return AdbFrameSource(
         adb_path=mumu_dir / "nx_main" / "adb.exe", address=_text(config, "adb_address")
     )
