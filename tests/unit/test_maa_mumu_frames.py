@@ -125,10 +125,11 @@ def test_each_capture_connects_and_disconnects(tmp_path: Path) -> None:
 
 
 def test_build_frames_picks_channel_by_config() -> None:
-    """`frame_source=mumu` 选原生通道，其余（含缺省）走 adb。"""
+    """缺省与非法写法都走原生通道；显式 `adb` 才走截帧命令。"""
+    assert isinstance(_build_frames({}), MumuFrameSource)
     assert isinstance(_build_frames({"frame_source": "mumu"}), MumuFrameSource)
+    assert isinstance(_build_frames({"frame_source": "坏值"}), MumuFrameSource)
     assert isinstance(_build_frames({"frame_source": "adb"}), AdbFrameSource)
-    assert isinstance(_build_frames({}), AdbFrameSource)
 
 
 def test_capture_keeps_image_shape_consistent_with_size() -> None:

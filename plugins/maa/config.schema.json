@@ -50,7 +50,7 @@
       "title": "截帧通道",
       "description": "mumu 走 MuMu 原生渲染通道（external_renderer_ipc），adb 走 exec-out screencap",
       "enum": ["adb", "mumu"],
-      "default": "adb"
+      "default": "mumu"
     },
     "mumu_instance_index": {
       "type": "integer",

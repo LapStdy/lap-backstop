@@ -37,6 +37,7 @@ _DEFAULT_SCREEN_SIZE = "1280x720"
 _DEFAULT_MUMU_BOOT_SECONDS = 180.0
 _DEFAULT_GAME_LAUNCH_SECONDS = 60.0
 _DEFAULT_INSTANCE_INDEX = 0
+_FRAME_SOURCE_ADB = "adb"
 _FRAME_SOURCE_MUMU = "mumu"
 _POLL_SECONDS = 1.0
 _ADB_DEVICE = "device"
@@ -330,14 +331,20 @@ def _is_gate_enabled(config: Mapping[str, Any]) -> bool:
 
 
 def _build_frames(config: Mapping[str, Any]) -> FrameSource:
-    """按 ``frame_source`` 拼帧端口：mumu 走原生渲染通道，其余走 adb 截帧。"""
+    """按 ``frame_source`` 拼帧端口：mumu（默认）走原生渲染通道，adb 走截帧命令。"""
     mumu_dir = Path(str(config.get("mumu_dir", _DEFAULT_MUMU_DIR)))
-    if config.get("frame_source") == _FRAME_SOURCE_MUMU:
+    if _frame_source(config) == _FRAME_SOURCE_MUMU:
         renderer = NemuIpc(mumu_dir, _instance_index(config), _text(config, "game_package"))
         return MumuFrameSource(renderer)
     return AdbFrameSource(
         adb_path=mumu_dir / "nx_main" / "adb.exe", address=_text(config, "adb_address")
     )
+
+
+def _frame_source(config: Mapping[str, Any]) -> str:
+    """截帧通道：缺省与非法写法都按原生通道，``adb`` 才走截帧命令。"""
+    value = config.get("frame_source")
+    return _FRAME_SOURCE_ADB if value == _FRAME_SOURCE_ADB else _FRAME_SOURCE_MUMU
 
 
 def _text(config: Mapping[str, Any], key: str) -> str:
