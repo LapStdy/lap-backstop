@@ -82,6 +82,12 @@
       "description": "prepare 在游戏到前台后跑登录状态机：准备画面点 START、登录界面点开始唤醒、覆盖层处置，到主界面才过门控",
       "default": true
     },
+    "navigation": {
+      "type": "boolean",
+      "title": "登录后导航",
+      "description": "prepare 在登录流程之后、主界面门控之前跑有界返回导航：判到主界面继续，其它页面按返回重试（默认预算 3 次），覆盖层、战斗中、截不到帧或预算耗尽即停手",
+      "default": false
+    },
     "profile": {
       "type": "string",
       "title": "MAA 配置名",
