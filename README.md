@@ -95,7 +95,7 @@
 
 | 选择 | 理由 |
 |---|---|
-| Python 3.12+ | 图像识别、Windows 窗口操作、MAA 生态都在 Python。 |
+| Python 3.12+ | 图像识别、Windows 窗口操作、MAA 生态都在 Python；性能热点按实测判据替换，见 [ADR 0015](docs/adr/0015-语言策略Python基线Rust替换热点.md)。 |
 | HTTP 服务 | Python 标准库 `http.server`，按请求线程分发；不引入 Web 框架，接口契约以 [03](docs/03-数据模型与接口.md) 为准（[ADR 0013](docs/adr/0013-HTTP传输用标准库.md)）。 |
 | SQLite（WAL） | 单机单用户，免部署、可备份；事件与状态同库。 |
 | React + Vite + TypeScript + Tailwind + shadcn/ui | 界面；电脑端窗口与手机 App 加载同一份构建产物，由内核静态托管。 |
