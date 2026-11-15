@@ -13,6 +13,7 @@ from contracts import (
     EnvironmentProvider,
     EnvironmentRef,
     EnvironmentState,
+    ErrorCode,
     EventType,
     PhaseResult,
     RunContext,
@@ -188,7 +189,14 @@ class EnvironmentService:
         keep_warm: bool,
         warm_minutes: int = 0,
     ) -> PhaseResult:
-        """清理环境：按保温策略回到 ready 或 off。"""
+        """清理环境：按保温策略回到 ready 或 off。
+
+        以发起插件调用前读到的环境行为仲裁基准（docs/11 并发与超时）：调用期间
+        前置状态被其它连接先提交时丢弃本次状态与保温写入，只记一条
+        core.env_action_conflict，按 ``E_ENV_NOT_READY`` 失败结果收口，不向调用方
+        抛状态冲突异常。
+        """
+        row = self.get(call.environment_id)
         result = call.provider.cleanup(call.ref, call.ctx, keep_warm)
         now = self._clock.utc_now()
         if not result.ok:
@@ -201,22 +209,37 @@ class EnvironmentService:
             return result
         target = EnvironmentState.READY if keep_warm else EnvironmentState.OFF
         with transaction(self._connection):
-            current = self.get(call.environment_id)
-            if current.state is EnvironmentState.BUSY and target is EnvironmentState.OFF:
-                self._writer.apply(
-                    current,
-                    EnvironmentState.READY,
-                    at=now,
-                    detail={"action": "cleanup"},
-                )
+            try:
+                baseline = row
+                if row.state is EnvironmentState.BUSY and target is EnvironmentState.OFF:
+                    baseline = self._writer.apply(
+                        row,
+                        EnvironmentState.READY,
+                        at=now,
+                        detail={"action": "cleanup"},
+                    )
+                self._writer.apply(baseline, target, at=now, detail={"action": "cleanup"})
+                warm_until = now + timedelta(minutes=warm_minutes) if keep_warm else None
+                self._environments.set_warm_until(call.environment_id, warm_until)
+            except EnvironmentStateError as error:
                 current = self.get(call.environment_id)
-            self._writer.apply(current, target, at=now, detail={"action": "cleanup"})
-            warm_until = now + timedelta(minutes=warm_minutes) if keep_warm else None
-            self._environments.set_warm_until(call.environment_id, warm_until)
+                if current.state is row.state:
+                    raise
+                return PhaseResult(
+                    ok=False,
+                    error_code=ErrorCode.ENV_NOT_READY.value,
+                    detail=str(error),
+                )
         return result
 
     def warm(self, call: EnvironmentCall, *, minutes: int) -> PhaseResult:
-        """维持保温：只在已就绪的环境上生效，写 warm_until。"""
+        """维持保温：只在已就绪的环境上生效，写 warm_until。
+
+        以发起插件调用前读到的环境行为仲裁基准（docs/11 并发与超时）：调用期间
+        前置状态被其它连接先提交时丢弃本次 warm_until 写入，只记一条
+        core.env_action_conflict，按 ``E_ENV_NOT_READY`` 失败结果收口，不向调用方
+        抛状态冲突异常。
+        """
         row = self.get(call.environment_id)
         if row.state is not EnvironmentState.READY:
             raise EnvironmentStateError("保温要求环境已就绪")
@@ -229,10 +252,15 @@ class EnvironmentService:
                 detail={"action": "warm", "error_code": result.error_code or ""},
             )
             return result
-        self._environments.set_warm_until(
-            call.environment_id,
-            self._clock.utc_now() + timedelta(minutes=minutes),
-        )
+        now = self._clock.utc_now()
+        try:
+            self._writer.keep_warm_until(row, now + timedelta(minutes=minutes), at=now)
+        except EnvironmentStateError as error:
+            return PhaseResult(
+                ok=False,
+                error_code=ErrorCode.ENV_NOT_READY.value,
+                detail=str(error),
+            )
         return result
 
     def warm_expired(self, now: datetime | None = None) -> tuple[EnvironmentRow, ...]:
@@ -313,6 +341,28 @@ class _StateWriter:
         if updated is None:
             raise EnvironmentNotFoundError(f"环境不存在：{row.id}")
         return updated
+
+    def keep_warm_until(self, row: EnvironmentRow, warm_until: datetime, *, at: datetime) -> None:
+        """以前置 row.state 为仲裁基准写保温到期；前置失效丢弃写入并记冲突。
+
+        与 ``apply`` 同一仲裁，只写 warm_until 不动状态：前置失效时丢弃写入，
+        只记一条 core.env_action_conflict（action=warm），证据与判定同事务落盘，
+        异常在事务提交后抛出。
+        """
+        conflict: EnvironmentStateError | None = None
+        with transaction(self._connection):
+            current = self._environments.get(row.id)
+            if current is None:
+                raise EnvironmentNotFoundError(f"环境不存在：{row.id}")
+            if current.state is not row.state:
+                self._record_conflict(row, current, at=at, action="warm")
+                conflict = EnvironmentStateError(
+                    f"环境状态已从 {row.state.value} 变为 {current.state.value}，本次保温未写入"
+                )
+            else:
+                self._environments.set_warm_until(row.id, warm_until)
+        if conflict is not None:
+            raise conflict
 
     def _record_conflict(
         self,
