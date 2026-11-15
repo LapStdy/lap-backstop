@@ -45,7 +45,7 @@ class EnvironmentService:
         self._connection = connection
         self._clock = clock
         self._environments = EnvironmentRepository(connection)
-        self._events = EventLog(connection)
+        self._writer = _StateWriter(connection)
 
     def register(self, environment_id: str, *, provider_id: str, name: str) -> EnvironmentRow:
         """注册环境；初始状态 unknown。"""
@@ -83,7 +83,7 @@ class EnvironmentService:
             return None
         at = probe.observed_at if probe.observed_at is not None else now
         try:
-            self._apply(row, probe.state, at=at, detail={"detail": probe.detail})
+            self._writer.apply(row, probe.state, at=at, detail={"detail": probe.detail})
         except EnvironmentStateError:
             current = self.get(call.environment_id)
             if current.state is row.state:
@@ -101,7 +101,7 @@ class EnvironmentService:
         """
         row = self.get(environment_id)
         try:
-            return self._apply(
+            return self._writer.apply(
                 row,
                 EnvironmentState.UNKNOWN,
                 at=self._clock.utc_now(),
@@ -113,18 +113,21 @@ class EnvironmentService:
     def prepare(self, call: EnvironmentCall) -> PhaseResult:
         """准备环境：unknown/off/failed 先进入 booting，成功后 ready。
 
+        已 ready 的环境（保温窗口内复用）先调一次 ``warm(0)`` 确认：库里的 ready
+        只说明上次收尾时的现场，游戏可能已被关掉或不在前台；确认失败按 prepare
+        失败处置，交恢复策略收口。
+
         Raises:
             EnvironmentStateError: 环境 busy、状态机拒绝，或插件调用期间前置
                 状态被其它连接改写（先提交者赢，本次结果丢弃）。
         """
         row = self.get(call.environment_id)
         if row.state is EnvironmentState.READY:
-            now = self._clock.utc_now()
-            return PhaseResult(ok=True, detail="环境已就绪", started_at=now, ended_at=now)
+            return self._confirm_reuse(call, row)
         if row.state is EnvironmentState.BUSY:
             raise EnvironmentStateError("环境执行中，不能准备")
         if row.state is not EnvironmentState.BOOTING:
-            row = self._apply(
+            row = self._writer.apply(
                 row,
                 EnvironmentState.BOOTING,
                 at=self._clock.utc_now(),
@@ -133,6 +136,25 @@ class EnvironmentService:
         result = call.provider.prepare(call.ref, call.ctx)
         self._finish_action(row, result, success=EnvironmentState.READY, action="prepare")
         return result
+
+    def _confirm_reuse(self, call: EnvironmentCall, row: EnvironmentRow) -> PhaseResult:
+        """复用保温中的环境：``warm(0)`` 只确认不延长保温窗口，失败置 failed。"""
+        result = call.provider.warm(call.ref, call.ctx, 0)
+        now = self._clock.utc_now()
+        if not result.ok:
+            self._writer.apply(
+                row,
+                EnvironmentState.FAILED,
+                at=now,
+                detail={"action": "prepare", "error_code": result.error_code or ""},
+            )
+            return result
+        return PhaseResult(
+            ok=True,
+            detail=f"环境已就绪（{result.detail}）",
+            started_at=result.started_at if result.started_at is not None else now,
+            ended_at=result.ended_at if result.ended_at is not None else now,
+        )
 
     def reset(self, call: EnvironmentCall) -> PhaseResult:
         """复位环境：任何状态先进入 booting；复位成功后仍等探针确认 ready。
@@ -143,7 +165,7 @@ class EnvironmentService:
         """
         row = self.get(call.environment_id)
         if row.state is not EnvironmentState.BOOTING:
-            row = self._apply(
+            row = self._writer.apply(
                 row,
                 EnvironmentState.BOOTING,
                 at=self._clock.utc_now(),
@@ -151,7 +173,7 @@ class EnvironmentService:
             )
         result = call.provider.reset(call.ref, call.ctx)
         if not result.ok:
-            self._apply(
+            self._writer.apply(
                 row,
                 EnvironmentState.FAILED,
                 at=self._clock.utc_now(),
@@ -170,7 +192,7 @@ class EnvironmentService:
         result = call.provider.cleanup(call.ref, call.ctx, keep_warm)
         now = self._clock.utc_now()
         if not result.ok:
-            self._apply(
+            self._writer.apply(
                 self.get(call.environment_id),
                 EnvironmentState.FAILED,
                 at=now,
@@ -181,14 +203,14 @@ class EnvironmentService:
         with transaction(self._connection):
             current = self.get(call.environment_id)
             if current.state is EnvironmentState.BUSY and target is EnvironmentState.OFF:
-                self._apply(
+                self._writer.apply(
                     current,
                     EnvironmentState.READY,
                     at=now,
                     detail={"action": "cleanup"},
                 )
                 current = self.get(call.environment_id)
-            self._apply(current, target, at=now, detail={"action": "cleanup"})
+            self._writer.apply(current, target, at=now, detail={"action": "cleanup"})
             warm_until = now + timedelta(minutes=warm_minutes) if keep_warm else None
             self._environments.set_warm_until(call.environment_id, warm_until)
         return result
@@ -200,7 +222,7 @@ class EnvironmentService:
             raise EnvironmentStateError("保温要求环境已就绪")
         result = call.provider.warm(call.ref, call.ctx, minutes)
         if not result.ok:
-            self._apply(
+            self._writer.apply(
                 self.get(call.environment_id),
                 EnvironmentState.FAILED,
                 at=self._clock.utc_now(),
@@ -224,7 +246,7 @@ class EnvironmentService:
     def mark_busy(self, call: EnvironmentCall) -> EnvironmentRow:
         """脚本开始执行：环境从 ready 进入 busy。"""
         row = self.get(call.environment_id)
-        return self._apply(
+        return self._writer.apply(
             row,
             EnvironmentState.BUSY,
             at=self._clock.utc_now(),
@@ -243,14 +265,28 @@ class EnvironmentService:
         target = success if result.ok else EnvironmentState.FAILED
         if row.state is target:
             return
-        self._apply(
+        self._writer.apply(
             row,
             target,
             at=self._clock.utc_now(),
             detail={"action": action, "error_code": result.error_code or ""},
         )
 
-    def _apply(
+
+class _StateWriter:
+    """环境状态写入与跨连接仲裁：读、判迁移、写状态与事件在同一事务内完成。
+
+    事务内重读与前置不符说明另一连接先提交（docs/11 并发与超时），按先提交者赢
+    丢弃本次写：只写一条 core.env_action_conflict，不写状态与 env.state.changed。
+    冲突证据与判定同事务落盘，异常在事务提交后抛出。
+    """
+
+    def __init__(self, connection: sqlite3.Connection) -> None:
+        self._connection = connection
+        self._environments = EnvironmentRepository(connection)
+        self._events = EventLog(connection)
+
+    def apply(
         self,
         row: EnvironmentRow,
         target: EnvironmentState,
@@ -258,13 +294,7 @@ class EnvironmentService:
         at: datetime,
         detail: dict[str, str],
     ) -> EnvironmentRow:
-        """以前置 row.state 为仲裁基准写入目标状态；前置失效时丢弃本次写。
-
-        读、判迁移、写状态与事件在同一 IMMEDIATE 事务内完成；事务内重读与前置
-        不符说明另一连接先提交（docs/11 并发与超时），按先提交者赢丢弃：写一条
-        core.env_action_conflict，不写状态与 env.state.changed，抛 EnvironmentStateError。
-        冲突证据与判定同事务落盘，异常在事务提交后抛出。
-        """
+        """以前置 row.state 为仲裁基准写入目标状态；前置失效时丢弃本次写。"""
         conflict: EnvironmentStateError | None = None
         with transaction(self._connection):
             current = self._environments.get(row.id)
@@ -279,7 +309,10 @@ class EnvironmentService:
                 self._write_state(current, target, at=at, detail=detail)
         if conflict is not None:
             raise conflict
-        return self.get(row.id)
+        updated = self._environments.get(row.id)
+        if updated is None:
+            raise EnvironmentNotFoundError(f"环境不存在：{row.id}")
+        return updated
 
     def _record_conflict(
         self,

@@ -183,25 +183,33 @@ class MaaEnvironment:
         )
 
     def warm(self, env: EnvironmentRef, ctx: RunContext, minutes: int) -> PhaseResult:
-        """确认游戏在前台；不在就拉起并等，保持环境可执行。"""
+        """确认游戏在前台；不在就拉起并等，保持环境可执行。
+
+        ``minutes=0`` 是复用确认：只确认现场可用，不延长保温窗口。
+        """
         config = ctx.config
         started_at = ctx.clock.utc_now()
         host = self._host_for(config)
         actions = self._actions if self._actions is not None else _build_actions(config)
         game = _text(config, "game_package")
+        label = "保温" if minutes > 0 else "复用确认"
         try:
             if host.foreground_package() != game:
                 if not actions.is_package_running(game):
                     actions.launch_package(game)
                 if not self._wait_foreground(host, game, config, ctx):
                     return _failure(
-                        ctx, started_at, "E_ENV_NOT_READY", f"保温失败：游戏未到前台：{game}"
+                        ctx, started_at, "E_ENV_NOT_READY", f"{label}失败：游戏未到前台：{game}"
                     )
         except OSError as error:
-            return _failure(ctx, started_at, "E_ENV_UNREACHABLE", f"保温动作失败：{error}")
+            return _failure(ctx, started_at, "E_ENV_UNREACHABLE", f"{label}动作失败：{error}")
+        if minutes > 0:
+            detail = f"保温 {minutes} 分钟：{game} 在前台"
+        else:
+            detail = f"复用确认：{game} 在前台"
         return PhaseResult(
             ok=True,
-            detail=f"保温 {minutes} 分钟：{game} 在前台",
+            detail=detail,
             started_at=started_at,
             ended_at=ctx.clock.utc_now(),
         )

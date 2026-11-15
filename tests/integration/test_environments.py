@@ -248,15 +248,17 @@ def test_prepare_moves_unknown_to_ready(
     assert service.get(ENV_ID).state is EnvironmentState.READY
 
 
-def test_prepare_is_idempotent_when_ready(
+def test_prepare_confirms_reuse_with_warm_when_ready(
     env: tuple[sqlite3.Connection, VirtualClock, EnvironmentService],
 ) -> None:
+    """已 ready 的环境复用前先 warm(0) 确认一次，确认成功状态不变。"""
     __connection, clock, service = env
     service.prepare(make_call(StubProvider(), clock))
     provider = StubProvider()
     result = service.prepare(make_call(provider, clock))
     assert result.ok
-    assert provider.calls == []
+    assert provider.calls == ["warm"]
+    assert service.get(ENV_ID).state is EnvironmentState.READY
 
 
 def test_prepare_failure_marks_failed(
