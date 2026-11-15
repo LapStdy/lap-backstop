@@ -169,6 +169,12 @@
           "title": "备份保留份数",
           "minimum": 1,
           "default": 20
+        },
+        "strategy": {
+          "type": "string",
+          "title": "合并策略",
+          "enum": ["script_first", "platform_first"],
+          "default": "script_first"
         }
       }
     }

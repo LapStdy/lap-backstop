@@ -149,6 +149,8 @@ def test_config_schema_defaults_match_plugin_doc() -> None:
     projection = props["config_projection"]["properties"]
     assert projection["enabled"]["default"] is True
     assert projection["backup_keep"]["default"] == 20
+    assert projection["strategy"]["default"] == "script_first"
+    assert projection["strategy"]["enum"] == ["script_first", "platform_first"]
 
 
 def test_task_type_enum_follows_maa_config_whitelist() -> None:

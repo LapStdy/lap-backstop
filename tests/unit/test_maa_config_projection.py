@@ -62,7 +62,13 @@ def test_apply_writes_takeover_fields_and_keeps_a_backup(tmp_path: Path) -> None
     backup = Path(str(result.meta["backup"]))
     assert backup.name == f"gui.new.json.{REVISION}.bak"
     assert store.files[backup] == encode(sample_config())
-    assert _written(store, path) == _desired()
+    written = _written(store, path)
+    assert written["Current"] == "Default"
+    assert written["Configurations"]["Default"]["TaskQueue"] == []
+    gui = written["Configurations"]["Default"]["Gui"]
+    assert gui["PostActions"] == "ExitSelf"
+    assert gui["ExternalNotification"]["Delivery"]["Enable"] is False
+    assert written["ConfigVersion"] == 1
     assert result.meta["sha256"] == hashlib.sha256(store.files[path]).hexdigest()
     assert [item["error_code"] for item in result.meta["conflicts"]] == ["E_CONFIG_CONFLICT"]
 
@@ -158,13 +164,67 @@ def test_apply_writes_utf8_without_bom_and_lf_endings(tmp_path: Path) -> None:
     assert not payload.startswith(b"\xef\xbb\xbf")
 
 
-def test_diff_is_empty_after_apply(tmp_path: Path) -> None:
-    """docs/05 契约测试表 config_projection 行：apply 后 diff 为空。"""
+def test_platform_first_apply_leaves_empty_diff(tmp_path: Path) -> None:
+    """docs/05 契约测试表 config_projection 行：`platform_first` 写整份目标，apply 后 diff 为空。"""
     store, path = _store(tmp_path)
     projection = MaaConfigProjection(store=store)
-    ctx = _context(tmp_path)
+    ctx = _context(tmp_path, config_projection={"strategy": "platform_first"})
     assert projection.apply(ctx, _desired()).ok is True
+    assert _written(store, path) == _desired()
     assert projection.diff(ctx, _desired(), _written(store, path)) == []
+
+
+def test_script_first_keeps_script_side_fields_and_writes_platform_fields(tmp_path: Path) -> None:
+    """默认策略：现行文件的普通字段原样保留，平台只覆盖 Current、TaskQueue 与接管值。"""
+    store, path = _store(tmp_path)
+    script_side = sample_config()
+    script_side["ConfigVersion"] = 2
+    script_side["Configurations"]["Default"]["Gui"]["MaaStartupDelay"] = 30
+    script_side["Configurations"]["Default"]["Copilot"] = {"Enabled": False}
+    store.files[path] = encode(script_side)
+    result = _apply(tmp_path, store)
+    assert result.ok is True
+    written = _written(store, path)
+    assert written["ConfigVersion"] == 2
+    assert written["Configurations"]["Default"]["Gui"]["MaaStartupDelay"] == 30
+    assert written["Configurations"]["Default"]["Copilot"] == {"Enabled": False}
+    assert written["Configurations"]["Default"]["TaskQueue"] == []
+
+
+def test_platform_first_drops_script_side_fields(tmp_path: Path) -> None:
+    """`platform_first` 按整份目标覆盖：现行文件里目标未覆盖的键不留。"""
+    store, path = _store(tmp_path)
+    script_side = sample_config()
+    script_side["ConfigVersion"] = 2
+    script_side["Configurations"]["Default"]["Gui"]["MaaStartupDelay"] = 30
+    store.files[path] = encode(script_side)
+    result = _apply(tmp_path, store, config_projection={"strategy": "platform_first"})
+    assert result.ok is True
+    written = _written(store, path)
+    assert "MaaStartupDelay" not in written["Configurations"]["Default"]["Gui"]
+    assert written["ConfigVersion"] == 1
+    assert _desired() == written
+
+
+def test_unknown_strategy_falls_back_to_script_first(tmp_path: Path) -> None:
+    """非法策略值按默认处理：保留普通字段，不因拼写错误整份覆盖。"""
+    store, path = _store(tmp_path)
+    script_side = sample_config()
+    script_side["ConfigVersion"] = 3
+    store.files[path] = encode(script_side)
+    assert _apply(tmp_path, store, config_projection={"strategy": "nonsense"}).ok is True
+    assert _written(store, path)["ConfigVersion"] == 3
+
+
+def test_script_first_creates_profile_section_when_current_file_lacks_it(tmp_path: Path) -> None:
+    """现行文件只有 Current、没有配置段时补建该段，平台字段照常写入。"""
+    store, path = _store(tmp_path)
+    store.files[path] = encode({"Current": "Default"})
+    result = _apply(tmp_path, store)
+    assert result.ok is True
+    written = _written(store, path)
+    assert written["Configurations"]["Default"]["TaskQueue"] == []
+    assert written["Configurations"]["Default"]["Gui"]["PostActions"] == "ExitSelf"
 
 
 def test_rollback_restores_original_bytes(tmp_path: Path) -> None:

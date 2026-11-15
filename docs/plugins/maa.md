@@ -152,7 +152,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 - 每次写入前把现行文件备份为 `gui.new.json.<YYYYmmdd-HHMMSS>.bak`（同一秒内追加序号），保留最近 `backup_keep` 份。
 - 写入走同目录临时文件原子替换，保持 UTF-8 无 BOM、缩进 2、LF 换行；写完读回校验，不一致则把备份写回并按 `E_CONFIG_INVALID` 失败。
 - 现行文件的 `Gui.PostActions` 含 `ExitArknights` 或 `ExitEmulator` 时按平台值重写，`meta.conflicts` 记 `E_CONFIG_CONFLICT`（原因码 `maa.post_actions_conflict`），不阻断本次写入。
-- 普通字段的差异默认以脚本侧为主，导入平台；配置项 `config_projection.strategy` 可取 `script_first` 或 `platform_first`。
+- 合并策略由 `config_projection.strategy` 决定：`script_first`（默认）以现行文件为底，只覆盖 `Current`、当前配置段的 `TaskQueue` 与两处接管值，其余字段原样保留；`platform_first` 按整份目标覆盖，现行文件里目标未覆盖的键不留。
 
 `desired` 只构造目标、不读写文件。`diff` 返回逐字段差异；`apply` 返回修订号、备份路径与写入后的配置哈希（`meta.revision`、`meta.backup`、`meta.sha256`、`meta.conflicts`），现行文件已与期望一致时不写盘（`meta.changed=false`）；`rollback` 按修订号取回备份并读回校验。`apply` 失败（含通道异常）时执行器按 `meta.revision` 回滚一次并写 `config.rolled_back`，运行交恢复策略收口，脚本不启动。日常副本与测试副本不能同时运行，它们连同一个模拟器与同一个账号。
 
@@ -180,6 +180,7 @@ MAA 启动前剔除 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY`，否则上报请
 | `keep_warm_minutes` | integer | 30 | 运行结束后保持环境就绪的时长 |
 | `config_projection.enabled` | boolean | true | 是否在开跑前对账并写入 |
 | `config_projection.backup_keep` | integer | 20 | 备份保留份数 |
+| `config_projection.strategy` | enum | `script_first` | `script_first` 保留脚本侧普通字段；`platform_first` 整份目标覆盖 |
 
 三档验证口径写在 JobTemplate 的 `VerificationPolicy.params.mode`，不在插件配置里。
 

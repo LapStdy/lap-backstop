@@ -5,11 +5,13 @@
 
 ``diff`` 是纯比较：对象字段递归展开，数组按整体值比较，按键名排序保证输出确定。
 
-``apply`` 把期望配置作为整份目标写进 ``gui.new.json``，其中两处平台接管值写死为
-程序值：``Gui.PostActions`` 固定 ``ExitSelf``、``Gui.ExternalNotification.Delivery.Enable``
-置 false。写入顺序是「确认 MAA 没在跑 → 读现行文件 → 备份 → 原子替换 → 读回校验」，
-读回不一致时把备份写回。``rollback`` 按修订号取回备份。文件与进程收在 ``ConfigStore``
-端口后面，单元测试注入假件。
+``apply`` 按 ``config_projection.strategy`` 合并后写进 ``gui.new.json``：``script_first``
+（默认）以现行文件为底，只覆盖 ``Current``、当前配置段的 ``TaskQueue`` 与两处平台接管值，
+其余字段原样保留；``platform_first`` 按整份目标覆盖，现行文件里目标未覆盖的键不留。
+两处平台接管值写死为程序值：``Gui.PostActions`` 固定 ``ExitSelf``、
+``Gui.ExternalNotification.Delivery.Enable`` 置 false。写入顺序是「确认 MAA 没在跑 →
+读现行文件 → 备份 → 原子替换 → 读回校验」，读回不一致时把备份写回。``rollback`` 按
+修订号取回备份。文件与进程收在 ``ConfigStore`` 端口后面，单元测试注入假件。
 """
 
 from __future__ import annotations
@@ -35,6 +37,8 @@ from plugins.maa.config_host import ConfigStore, WindowsConfigStore
 DEFAULT_MAA_DIR = "H:/MAA"
 CONFIG_REL = Path("config") / "gui.new.json"
 DEFAULT_BACKUP_KEEP = 20
+DEFAULT_STRATEGY = "script_first"
+STRATEGIES = ("script_first", "platform_first")
 DEFAULT_PROFILE_NAME = "Default"
 MAA_IMAGE_NAME = "MAA.exe"
 
@@ -253,12 +257,56 @@ def _platform_target(
     desired: Mapping[str, Any],
     current: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """按期望配置构造写入内容：整份目标，两处接管值写死为平台值。"""
-    target = copy.deepcopy(dict(desired))
-    profile = _profile_name(config, target)
+    """按策略合并期望配置与现行文件，平台接管值最后写死。"""
+    profile = _profile_name(config, desired)
     conflicts = _current_conflicts(current, profile)
+    target = _merge_target(config, desired, current, profile)
     _enforce_platform_fields(target, profile)
     return target, conflicts
+
+
+def _merge_target(
+    config: Mapping[str, Any],
+    desired: Mapping[str, Any],
+    current: Mapping[str, Any],
+    profile: str,
+) -> dict[str, Any]:
+    """`platform_first` 拿整份目标；`script_first` 以现行文件为底保留普通字段。"""
+    if _strategy(config) == "platform_first":
+        return copy.deepcopy(dict(desired))
+    return _script_first_target(desired, current, profile)
+
+
+def _script_first_target(
+    desired: Mapping[str, Any],
+    current: Mapping[str, Any],
+    profile: str,
+) -> dict[str, Any]:
+    """现行文件为底，只覆盖平台字段：Current 与该配置段的 TaskQueue。"""
+    target = copy.deepcopy(dict(current))
+    if "Current" in desired:
+        target["Current"] = copy.deepcopy(desired["Current"])
+    section = _desired_section(desired, profile)
+    merged = _ensure_object(_ensure_object(target, "Configurations"), profile)
+    if "TaskQueue" in section:
+        merged["TaskQueue"] = copy.deepcopy(section["TaskQueue"])
+    return target
+
+
+def _desired_section(desired: Mapping[str, Any], profile: str) -> Mapping[str, Any]:
+    """期望配置里该配置段；缺失或结构不对按配置错误拒绝。"""
+    configs = desired.get("Configurations")
+    section = configs.get(profile) if isinstance(configs, Mapping) else None
+    if not isinstance(section, Mapping):
+        raise _Rejected("E_CONFIG", f"期望配置里没有配置段 {profile!r}")
+    return section
+
+
+def _strategy(config: Mapping[str, Any]) -> str:
+    """取合并策略；缺省或非法值按脚本侧为主，schema 的 enum 已挡住界面写入。"""
+    settings = config.get("config_projection")
+    value = settings.get("strategy") if isinstance(settings, Mapping) else None
+    return value if value in STRATEGIES else DEFAULT_STRATEGY
 
 
 def _current_conflicts(root: Mapping[str, Any], profile: str) -> list[dict[str, Any]]:
