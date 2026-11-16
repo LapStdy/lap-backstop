@@ -91,8 +91,31 @@ def make_database(data_root: Path) -> None:
         connection.close()
 
 
+# 编号与检查函数一一对应：collect 跑全部 14 项，其中端口探测在本机对空闲端口要约 2 秒，
+# 单个用例只验一项时不必付其余 13 项的开销。result.number 自检守住编号与函数不串位。
+_CHECKS_BY_NUMBER = {
+    1: doctor._check_data_writable,
+    2: doctor._check_database_integrity,
+    3: doctor._check_migration_version,
+    4: doctor._check_defaults,
+    5: doctor._check_app_current,
+    6: doctor._check_port_free,
+    7: doctor._check_disk_watermark,
+    8: doctor._check_heartbeat_fresh,
+    9: doctor._check_lock_and_mutex,
+    10: doctor._check_autologon,
+    11: doctor._check_scheduled_tasks,
+    12: doctor._check_time_service,
+    13: doctor._check_tailscale_and_power,
+    14: doctor._check_inbound_firewall,
+}
+
+
 def single(deps: doctor.DoctorDeps, number: int) -> doctor.CheckResult:
-    return doctor.collect(deps)[number - 1]
+    """只跑目标那项检查，等价于 collect(deps)[number - 1] 但不付其余 13 项的开销。"""
+    result = _CHECKS_BY_NUMBER[number](deps)
+    assert result.number == number
+    return result
 
 
 def test_check_data_writable(tmp_path: Path) -> None:
@@ -180,8 +203,7 @@ def test_check_heartbeat_fresh(tmp_path: Path) -> None:
 
 
 def test_check_lock_and_mutex(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """锁文件与互斥量的对应关系；互斥量与端口探测用假件，不碰本机全局命名互斥量。"""
-    stub_port_probe(monkeypatch)
+    """锁文件与互斥量的对应关系；互斥量用假件，不碰本机全局命名互斥量。"""
     held: list[bool] = []
 
     def fake_acquire(_name: str) -> int | None:
