@@ -48,3 +48,14 @@ def test_commands_reference_existing_repo_scripts() -> None:
         for part in command:
             if part.startswith("scripts/"):
                 assert (_REPO_ROOT / part).is_file(), part
+
+
+def test_pytest_axis_gets_wider_budget() -> None:
+    """pytest 轴实测 654 秒贴 600 秒上限，预算单独放宽到 900 秒；其余轴不要跟着松。"""
+    pytest_command = [sys.executable, "-m", "pytest", "-q"]
+    assert gate.TIMEOUT_SECONDS == 600
+    assert gate.PYTEST_TIMEOUT_SECONDS == 900
+    assert gate.timeout_for(pytest_command) == 900
+    for command in gate.commands():
+        if command != pytest_command:
+            assert gate.timeout_for(command) == 600
