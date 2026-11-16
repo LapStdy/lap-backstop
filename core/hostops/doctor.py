@@ -5,8 +5,10 @@
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import re
+import select
 import socket
 import sqlite3
 import subprocess
@@ -36,6 +38,9 @@ _ALLOWED_REMOTE_V4 = (
     tailscale.TAILNET_IPV4_NETWORK,
 )
 _ALLOWED_REMOTE_V6 = (ipaddress.IPv6Network("::1/128"),)
+# 端口探测的等待预算：本机对被拒连接要等 2 秒才返回（回程 RST 被过滤层丢弃，DEBT.md D-030），
+# 自检每秒都付这笔账没有意义——非阻塞探测只回答「有没有人在听」。
+PORT_PROBE_SECONDS = 0.2
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess[bytes]]
 RegistryGet = Callable[[str, str], str | None]
@@ -202,12 +207,29 @@ def _check_app_current(deps: DoctorDeps) -> CheckResult:
     return _result(5, "当前版本目录", Level.PASS, str(current.resolve()))
 
 
+def _port_listening(host: str, port: int) -> bool:
+    """非阻塞判端口是否有人在听：写就绪且 SO_ERROR 为 0 才算占用。
+
+    阻塞 ``connect_ex`` 在端口无人监听时要等内核放弃重传（本机 2 秒），自检每次
+    都付这笔时间；非阻塞探测只需确认「连接没被立即拒绝」，判据与阻塞版一致。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.setblocking(False)
+        code = probe.connect_ex((host, port))
+        if code == 0:
+            return True
+        if code not in {errno.EINPROGRESS, errno.EWOULDBLOCK, errno.EALREADY}:
+            return False
+        _, writable, _ = select.select([], [probe], [], PORT_PROBE_SECONDS)
+        if not writable:
+            return False
+        return probe.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0
+
+
 def _check_port_free(deps: DoctorDeps) -> CheckResult:
     """第 6 项：API 端口未被任何进程监听（P0 只查不绑）。"""
     host, port = deps.api_address
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        occupied = probe.connect_ex((host, port)) == 0
-    if occupied:
+    if _port_listening(host, port):
         return _result(6, "API 端口", Level.FAIL, f"{host}:{port} 已被占用")
     return _result(6, "API 端口", Level.PASS, f"{host}:{port} 空闲")
 

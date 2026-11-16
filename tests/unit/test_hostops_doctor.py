@@ -46,6 +46,9 @@ WSAECONNREFUSED = 10061
 class _RefusingProbe:
     """假端口探针：connect_ex 一律按连接被拒返回，探测不落真实端口。"""
 
+    def setblocking(self, _flag: bool) -> None:
+        return None
+
     def connect_ex(self, _address: tuple[str, int]) -> int:
         return WSAECONNREFUSED
 
